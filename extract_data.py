@@ -13,6 +13,33 @@ class _CatInputNeeded(Exception):
     """工事種別ごと入力UIへ遷移するための内部シグナル"""
     pass
 
+def _gold_sparkle_html():
+    import random
+    particles = ""
+    for i in range(35):
+        left = random.randint(0, 100)
+        delay = round(random.uniform(0, 2.5), 2)
+        duration = round(random.uniform(2.5, 5.0), 2)
+        size = random.choice([4, 6, 8, 10, 12])
+        shape = random.choice(["✦", "✧", "★", "·", "✶"])
+        opacity = round(random.uniform(0.6, 1.0), 2)
+        particles += f'<span style="position:absolute;left:{left}%;top:-10px;font-size:{size}px;color:gold;opacity:{opacity};animation:sparkle-fall {duration}s {delay}s ease-in forwards;">{shape}</span>'
+    return f"""
+    <div style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:999999;overflow:hidden;" id="gold-sparkle">
+        {particles}
+    </div>
+    <style>
+    @keyframes sparkle-fall {{
+        0% {{ transform: translateY(0) rotate(0deg) scale(1); opacity: 1; }}
+        25% {{ transform: translateY(25vh) rotate(90deg) scale(1.2); opacity: 0.9; }}
+        50% {{ transform: translateY(50vh) rotate(180deg) scale(0.8); opacity: 0.7; }}
+        75% {{ transform: translateY(75vh) rotate(270deg) scale(1.1); opacity: 0.4; }}
+        100% {{ transform: translateY(105vh) rotate(360deg) scale(0.5); opacity: 0; }}
+    }}
+    </style>
+    <script>setTimeout(function(){{var e=document.getElementById('gold-sparkle');if(e)e.remove();}},6000);</script>
+    """
+
 # 環境によっては標準出力が ascii になり API 応答の日本語でエラーになるため UTF-8 に統一
 if getattr(sys.stdout, "reconfigure", None):
     try:
@@ -389,20 +416,41 @@ if uploaded_files:
 
                     status_area.markdown(f"""
                     <div style="
-                        background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-                        border-left: 4px solid #1565c0; border-radius: 8px;
-                        padding: 12px 16px; margin: 8px 0;
-                        animation: pulse 1.5s ease-in-out infinite;
+                        background: linear-gradient(135deg, #0f2847 0%, #1e3c72 50%, #2a5298 100%);
+                        border-radius: 12px;
+                        padding: 20px 24px; margin: 12px 0;
+                        animation: shimmer 2s ease-in-out infinite;
+                        box-shadow: 0 4px 20px rgba(15, 40, 71, 0.3);
+                        position: relative;
+                        overflow: hidden;
                     ">
-                        <span style="font-size: 1.05rem;">📄 {n_files}件のファイルをアップロード中...</span><br>
-                        <span style="color: #1565c0; font-weight: 600;">
+                        <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
+                            📄 {n_files}件のファイルをアップロード中...
+                        </div>
+                        <div style="color: #a8c8f0; font-size: 0.95rem;">
                             🤖 AIサーバーにデータを転送しています
-                        </span>
+                        </div>
+                        <div style="
+                            margin-top: 12px; height: 4px; border-radius: 2px;
+                            background: rgba(255,255,255,0.15);
+                            overflow: hidden;
+                        ">
+                            <div style="
+                                height: 100%; width: 40%;
+                                background: linear-gradient(90deg, #f0c040, #ffd700, #f0c040);
+                                border-radius: 2px;
+                                animation: loading-slide 1.8s ease-in-out infinite;
+                            "></div>
+                        </div>
                     </div>
                     <style>
-                    @keyframes pulse {{
-                        0%, 100% {{ opacity: 0.85; }}
+                    @keyframes shimmer {{
+                        0%, 100% {{ opacity: 0.92; }}
                         50% {{ opacity: 1; }}
+                    }}
+                    @keyframes loading-slide {{
+                        0% {{ transform: translateX(-100%); }}
+                        100% {{ transform: translateX(350%); }}
                     }}
                     </style>
                     """, unsafe_allow_html=True)
@@ -427,17 +475,31 @@ if uploaded_files:
 
                     status_area.markdown(f"""
                     <div style="
-                        background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-                        border-left: 4px solid #1565c0; border-radius: 8px;
-                        padding: 16px 20px; margin: 8px 0;
-                        animation: pulse 1.5s ease-in-out infinite;
+                        background: linear-gradient(135deg, #0f2847 0%, #1e3c72 50%, #2a5298 100%);
+                        border-radius: 12px;
+                        padding: 20px 24px; margin: 12px 0;
+                        animation: shimmer 2s ease-in-out infinite;
+                        box-shadow: 0 4px 20px rgba(15, 40, 71, 0.3);
+                        position: relative; overflow: hidden;
                     ">
-                        <span style="font-size: 1.1rem; font-weight: 600;">🔍 AI が {n_files}件を一括で読み取り中...</span><br>
-                        <span style="color: #1565c0;">
+                        <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
+                            🔍 AI が {n_files}件を一括で読み取り中...
+                        </div>
+                        <div style="color: #a8c8f0; font-size: 0.95rem;">
                             🧮 各見積書の全ページを解析し、工事種別を自動判別しています
-                        </span>
+                        </div>
+                        <div style="
+                            margin-top: 12px; height: 4px; border-radius: 2px;
+                            background: rgba(255,255,255,0.15); overflow: hidden;
+                        ">
+                            <div style="
+                                height: 100%; width: 40%;
+                                background: linear-gradient(90deg, #f0c040, #ffd700, #f0c040);
+                                border-radius: 2px;
+                                animation: loading-slide 1.8s ease-in-out infinite;
+                            "></div>
+                        </div>
                     </div>
-                    <style>@keyframes pulse {{ 0%,100%{{ opacity:0.85; }} 50%{{ opacity:1; }} }}</style>
                     """, unsafe_allow_html=True)
 
                     prompt = f"""
@@ -458,7 +520,8 @@ if uploaded_files:
                     6. 【見積元の会社名】各ファイルの見積書を出した会社名（差出人）を正確に読み取り、「見積元」に入れてください。
                        宛先（彩架建設 御中など）ではなく、見積書を作成した会社名です。
                     7. 【見積書の税抜合計】各ファイルの見積書に記載されている税抜の最終合計金額（値引き後・税抜）を「見積税抜合計」に入れてください。
-                       表紙の「合計」「見積金額」「改小計」などから読み取ります。
+                       複数ページある場合は最終ページや明細ページの合計・改小計・税抜合計を優先して読み取ってください。
+                       表紙に「〇〇工事一式 ×××円」という概算だけが記載されている場合でも、詳細ページに具体的な明細がある場合はその明細の合計金額を「見積税抜合計」として使ってください。
                     8. 各ファイルの見積書全体が何の工事か（例：防水工事、塗装工事、仮設足場工事など）を自動判別し、
                        同じファイルの項目には同じ「工事種別」を入れてください。
                        【重要】1つのファイルに複数の工事カテゴリ（例：防水工事とシーリング工事）が含まれる場合は、
@@ -488,15 +551,31 @@ if uploaded_files:
                             progress_bar.progress(30 + (model_idx * 15), text=f"🔍 {model_name} で解析中...")
                             status_area.markdown(f"""
                             <div style="
-                                background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-                                border-left: 4px solid #1565c0; border-radius: 8px;
-                                padding: 12px 16px; margin: 8px 0;
-                                animation: pulse 1.5s ease-in-out infinite;
+                                background: linear-gradient(135deg, #0f2847 0%, #1e3c72 50%, #2a5298 100%);
+                                border-radius: 12px;
+                                padding: 20px 24px; margin: 12px 0;
+                                animation: shimmer 2s ease-in-out infinite;
+                                box-shadow: 0 4px 20px rgba(15, 40, 71, 0.3);
+                                position: relative; overflow: hidden;
                             ">
-                                <span style="font-size: 1.1rem; font-weight: 600;">🧮 {model_name} で全ファイルを解析中...</span><br>
-                                <span style="color: #1565c0;">工事種別と明細を自動で仕分けしています</span>
+                                <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
+                                    🧮 {model_name} で全ファイルを解析中...
+                                </div>
+                                <div style="color: #a8c8f0; font-size: 0.95rem;">
+                                    工事種別と明細を自動で仕分けしています
+                                </div>
+                                <div style="
+                                    margin-top: 12px; height: 4px; border-radius: 2px;
+                                    background: rgba(255,255,255,0.15); overflow: hidden;
+                                ">
+                                    <div style="
+                                        height: 100%; width: 40%;
+                                        background: linear-gradient(90deg, #f0c040, #ffd700, #f0c040);
+                                        border-radius: 2px;
+                                        animation: loading-slide 1.8s ease-in-out infinite;
+                                    "></div>
+                                </div>
                             </div>
-                            <style>@keyframes pulse {{ 0%,100%{{ opacity:0.85; }} 50%{{ opacity:1; }} }}</style>
                             """, unsafe_allow_html=True)
 
                             response = client.models.generate_content(
@@ -609,7 +688,14 @@ if uploaded_files:
                                 company_name = str(company) if pd.notna(company) and str(company).strip() != "" else "不明な会社"
                                 item_total = int(grp['金額'].sum())
                                 declared_total = int(grp['見積税抜合計'].iloc[0]) if len(grp) > 0 else 0
-                                display_total = declared_total if declared_total > 0 else item_total
+                                # 明細合計が表紙記載合計以上の場合は明細合計を優先する
+                                # （表紙が概算・丸め表示のケースで正確な明細値を採用）
+                                if item_total > 0 and item_total >= declared_total:
+                                    display_total = item_total
+                                elif declared_total > 0:
+                                    display_total = declared_total
+                                else:
+                                    display_total = item_total
                                 cat_base = int(grp.loc[grp['並び替え優先度'] == 1, '金額'].sum())
                                 work_types = grp['工事種別'].dropna().unique().tolist()
                                 work_label = "・".join([str(w) for w in work_types if str(w).strip()])
@@ -618,6 +704,7 @@ if uploaded_files:
                                     "work_label": work_label,
                                     "total": display_total,
                                     "item_total": item_total,
+                                    "declared_total": declared_total,
                                     "base": cat_base,
                                 })
                             st.session_state["_categories_summary"] = categories_summary
@@ -654,8 +741,12 @@ if uploaded_files:
                             st.markdown(f"**原価合計（税抜・値引後）: {grand_total:,} 円**")
                             for c in cats:
                                 diff_note = ""
-                                if c["item_total"] != c["total"]:
-                                    diff_note = f"　<span style='color:#888; font-size:0.85rem;'>（明細合計: {c['item_total']:,}円 → 見積書記載の税抜合計を採用）</span>"
+                                declared = c.get("declared_total", 0)
+                                if c["item_total"] != c["total"] and declared > 0:
+                                    if c["item_total"] >= declared:
+                                        diff_note = f"　<span style='color:#e65100; font-size:0.85rem;'>（表紙記載: {declared:,}円 ／ 明細合計: {c['item_total']:,}円 → 明細合計を採用）</span>"
+                                    else:
+                                        diff_note = f"　<span style='color:#888; font-size:0.85rem;'>（明細合計: {c['item_total']:,}円 → 表紙記載の税抜合計: {declared:,}円 を採用）</span>"
                                 st.markdown(f"- **{c['name']}**（{c['work_label']}）: **{c['total']:,} 円**{diff_note}", unsafe_allow_html=True)
                             st.success("✅ 読み取り完了！下にスクロールして、各社の上乗せ額を入力してください。")
                             raise _CatInputNeeded()
@@ -800,7 +891,7 @@ if uploaded_files:
 
                         st.toast("計算完了！データ準備OK", icon="✅")
                         st.markdown('<div class="sub-header">計算完了！Numbers にコピペできます</div>', unsafe_allow_html=True)
-                        st.snow()
+                        st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
 
                         if is_simple:
                             df_simple_merged = pd.concat([df_sheet1_final, df_sheet2_final], ignore_index=True)
@@ -1054,7 +1145,7 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             if "No." in df_sheet2_final.columns: df_sheet2_final["No."] = df_sheet2_final["No."].astype(str).replace("", "")
 
             st.toast("計算完了！", icon="✅")
-            st.snow()
+            st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
             st.markdown('<div class="sub-header">計算完了！Numbers にコピペできます</div>', unsafe_allow_html=True)
 
             if is_simple:
