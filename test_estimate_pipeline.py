@@ -1,6 +1,7 @@
 import unittest
 
 from estimate_pipeline import (
+    NUMBERS_OUTPUT_COLUMNS,
     OUTPUT_COLUMNS,
     build_intermediate_dataframe,
     output_dataframe,
@@ -54,10 +55,15 @@ class EstimatePipelineTest(unittest.TestCase):
         detail, issues = numbers_detail_dataframe(df)
         self.assertEqual(issues, [])
         self.assertEqual(len(detail), 8)
-        self.assertEqual(detail["品名"].tolist(), df["品名"].tolist())
-        self.assertIn("場内小運搬 架け・払い", detail["品名"].tolist())
-        self.assertIn("資材運搬費 架け・払い 糸島-柳川", detail["品名"].tolist())
-        self.assertIn("値引き", detail["品名"].tolist())
+        self.assertEqual(detail.columns.tolist(), NUMBERS_OUTPUT_COLUMNS)
+        self.assertEqual(detail["工事品目"].tolist(), df["品名"].tolist())
+        self.assertIn("場内小運搬 架け・払い", detail["工事品目"].tolist())
+        self.assertIn("資材運搬費 架け・払い 糸島-柳川", detail["工事品目"].tolist())
+        self.assertIn("値引き", detail["工事品目"].tolist())
+        self.assertEqual(detail["単価"].tolist(), df["見積単価"].tolist())
+        self.assertEqual(detail["金額"].tolist(), df["見積金額"].tolist())
+        for internal_col in ["見積元", "品名", "原価単価", "原価金額", "上乗せ額", "見積単価", "見積金額"]:
+            self.assertNotIn(internal_col, detail.columns)
 
     def test_subtotal_mismatch_blocks_output(self):
         bad = [dict(r) for r in DANJYO_RECORDS]
