@@ -723,7 +723,7 @@ if uploaded_files:
                         st.toast("計算完了！データ準備OK", icon="✅")
                         st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
                         st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
-                        st.caption("出力直前のDataFrameです。列順は No / 見積元 / 品名 / 数量 / 単位 / 原価単価 / 原価金額 / 上乗せ額 / 見積単価 / 見積金額 / 備考 に固定しています。")
+                        st.caption("Numbers貼り付け用の最終DataFrameです。列順は No / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考 に固定しています。")
                         if extracted_count != detail_count:
                             st.error(f"抽出明細：{extracted_count}行 / 3枚目用明細：{detail_count}行。出力用明細で{extracted_count - detail_count}行欠落しています。")
                             has_blocking_issue = True
@@ -853,8 +853,9 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
         if st.button("✨ 上乗せを適用して出力する ✨", key="apply_cat_profit"):
             df = st.session_state["_extracted_df"].copy()
             has_blocking_issue = bool(st.session_state.get("_extracted_blocking", False))
-            df_output = output_dataframe(apply_profit(df, "見積元（会社）ごとに金額を指定する", company_profits=cat_profits))
-            df_numbers_detail, detail_issues = numbers_detail_dataframe(df_output)
+            df_profit = apply_profit(df, "見積元（会社）ごとに金額を指定する", company_profits=cat_profits)
+            df_output = output_dataframe(df_profit)
+            df_numbers_detail, detail_issues = numbers_detail_dataframe(df_profit)
             if detail_issues:
                 has_blocking_issue = True
             extracted_count = len(df)
@@ -866,6 +867,7 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             st.toast("計算完了！", icon="✅")
             st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
             st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
+            st.caption("Numbers貼り付け用の最終DataFrameです。列順は No / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考 に固定しています。")
             st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
             st.dataframe(df_numbers_detail, use_container_width=True)
 
