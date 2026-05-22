@@ -19,6 +19,17 @@ OUTPUT_COLUMNS = [
     "備考",
 ]
 
+NUMBERS_OUTPUT_COLUMNS = [
+    "No",
+    "工事品目",
+    "仕様",
+    "数量",
+    "単位",
+    "単価",
+    "金額",
+    "備考",
+]
+
 SUMMARY_KEYWORDS = [
     "小計",
     "合計",
@@ -247,8 +258,22 @@ def output_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def numbers_detail_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Dict[str, str]]]:
-    """Numbers 3枚目用明細。中間データの全行・全順序を保持する。"""
-    detail = output_dataframe(df)
+    """Numbers貼り付け用明細。中間データの全行・全順序を保持し、最終列だけに整える。"""
+    source = output_dataframe(df)
+    detail = pd.DataFrame(
+        {
+            "No": source["No"],
+            "工事品目": source["品名"],
+            "仕様": "",
+            "数量": source["数量"],
+            "単位": source["単位"],
+            "単価": source["見積単価"],
+            "金額": source["見積金額"],
+            "備考": source["備考"],
+        },
+        index=source.index,
+    )
+    detail = detail[NUMBERS_OUTPUT_COLUMNS]
     issues: List[Dict[str, str]] = []
     if len(detail) != len(df):
         issues.append({
