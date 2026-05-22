@@ -723,7 +723,7 @@ if uploaded_files:
                         st.toast("計算完了！データ準備OK", icon="✅")
                         st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
                         st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
-                        st.caption("Numbers貼り付け用の最終DataFrameです。列順は No / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考 に固定しています。")
+                        st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。")
                         if extracted_count != detail_count:
                             st.error(f"抽出明細：{extracted_count}行 / 3枚目用明細：{detail_count}行。出力用明細で{extracted_count - detail_count}行欠落しています。")
                             has_blocking_issue = True
@@ -735,9 +735,9 @@ if uploaded_files:
 
                         output = BytesIO()
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name='明細データ')
+                            df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name='明細データ')
                         excel_data = output.getvalue()
-                        csv_data = df_numbers_detail.to_csv(index=False).encode("utf-8-sig")
+                        csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
 
                         st.markdown("""
                         <div class="download-done-box" style="position: relative; overflow: hidden;">
@@ -867,15 +867,15 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             st.toast("計算完了！", icon="✅")
             st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
             st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
-            st.caption("Numbers貼り付け用の最終DataFrameです。列順は No / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考 に固定しています。")
+            st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。")
             st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
             st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name='明細データ')
+                df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name='明細データ')
             excel_data = output.getvalue()
-            csv_data = df_numbers_detail.to_csv(index=False).encode("utf-8-sig")
+            csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
 
             st.markdown("""
             <div class="download-done-box" style="position: relative; overflow: hidden;">
