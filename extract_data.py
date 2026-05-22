@@ -8,6 +8,14 @@ import sys
 import time
 from io import BytesIO
 import openpyxl  # ExcelWriter engine 用
+from estimate_pipeline import (
+    OUTPUT_COLUMNS,
+    apply_profit,
+    build_intermediate_dataframe,
+    numbers_detail_dataframe,
+    output_dataframe,
+    validate_intermediate,
+)
 
 class _CatInputNeeded(Exception):
     """工事種別ごと入力UIへ遷移するための内部シグナル"""
@@ -528,11 +536,17 @@ if uploaded_files:
                        それぞれの明細行に正しい工事種別を入れてください。ただし「見積元」は同じファイルなら同じ会社名です。
                     9. ```json などのマークダウン記号は含めず、純粋なJSON文字列のみを返してください。
 
+                    【明細の列分けルール】
+                    - 品名が複数行に分かれている場合は、1つの「品名」に結合してください。
+                    - 「665架㎡」「1,534架㎡」「10基」「1式」のように数量と単位が連結している場合は、数量と単位を分けてください。
+                    - 値引き・調整額などマイナス金額の明細も、通常の明細行として必ず残してください。
+                    - 小計・消費税・税込合計は明細行としては出さず、各明細の「PDF小計」「消費税」「税込合計」に同じ値を入れてください。
+
                     【出力形式見本（キーを変えないこと）】
                     [
-                        {{"見積元": "瀧上工業", "見積税抜合計": 2600000, "工事種別": "防水工事", "項目名": "平場 ウレタン塗膜防水", "仕様": "X-1工法", "数量": 76.1, "単位": "㎡", "単価": 6400, "金額": 487040}},
-                        {{"見積元": "瀧上工業", "見積税抜合計": 2600000, "工事種別": "シーリング工事", "項目名": "サッシ廻りシーリング打替え", "仕様": "変成シリコン系", "数量": 84.0, "単位": "m", "単価": 800, "金額": 67200}},
-                        {{"見積元": "アキヨシ塗装", "見積税抜合計": 2400000, "工事種別": "外部塗装工事", "項目名": "壁面塗装", "仕様": "エスケープレミアムシリコン", "数量": 634.0, "単位": "㎡", "単価": 1700, "金額": 1077800}}
+                        {{"No": 1, "見積元": "瀧上工業", "PDF小計": 2600000, "消費税": 260000, "税込合計": 2860000, "工事種別": "防水工事", "品名": "平場 ウレタン塗膜防水", "仕様": "X-1工法", "数量": 76.1, "単位": "㎡", "単価": 6400, "金額": 487040}},
+                        {{"No": 2, "見積元": "瀧上工業", "PDF小計": 2600000, "消費税": 260000, "税込合計": 2860000, "工事種別": "シーリング工事", "品名": "サッシ廻りシーリング打替え", "仕様": "変成シリコン系", "数量": 84.0, "単位": "m", "単価": 800, "金額": 67200}},
+                        {{"No": 1, "見積元": "アキヨシ塗装", "PDF小計": 2400000, "消費税": 240000, "税込合計": 2640000, "工事種別": "外部塗装工事", "品名": "壁面塗装", "仕様": "エスケープレミアムシリコン", "数量": 634.0, "単位": "㎡", "単価": 1700, "金額": 1077800}}
                     ]
                     """
 
@@ -637,100 +651,49 @@ if uploaded_files:
                     if not all_extracted_data:
                         st.warning("読み取れたデータがありませんでした。ファイル形式（PDF・JPG・PNG）と内容をご確認ください。")
                     else:
-                        df = pd.DataFrame(all_extracted_data)
-                        
-                        # エラー回避用の保険
-                        if "工事種別" not in df.columns: df["工事種別"] = "一般工事"
-                        if "見積元" not in df.columns: df["見積元"] = "不明"
-                        if "見積税抜合計" not in df.columns: df["見積税抜合計"] = 0
-                        df["見積税抜合計"] = pd.to_numeric(df["見積税抜合計"], errors='coerce').fillna(0).astype(int)
-                        if "項目名" not in df.columns:
-                            if "工事品目" in df.columns: df["項目名"] = df["工事品目"]
-                            elif "名称・内容" in df.columns: df["項目名"] = df["名称・内容"]
-                            elif "名称" in df.columns: df["項目名"] = df["名称"]
-                            else: df["項目名"] = df.iloc[:, 0]
+                        df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
+                        issues = validate_intermediate(df, pdf_totals)
+                        has_blocking_issue = any(i.get("レベル") == "停止" for i in issues)
 
-                        if "仕様" not in df.columns: df["仕様"] = ""
-                        if "単位" not in df.columns: df["単位"] = ""
-                        
-                        s_qty = pd.to_numeric(df["数量"], errors='coerce')
-                        s_pri = pd.to_numeric(df["単価"], errors='coerce')
-                        s_amt = pd.to_numeric(df["金額"], errors='coerce')
-                        df["要確認"] = s_qty.isna() | s_pri.isna() | s_amt.isna()
-                        df["数量"] = s_qty.fillna(0)
-                        df["単価"] = s_pri.fillna(0)
-                        df["金額"] = s_amt.fillna(0)
+                        st.markdown('<div class="sub-header">PDFから抽出した明細プレビュー</div>', unsafe_allow_html=True)
+                        st.caption("利益計算前の原価明細です。行数・品名・数量・単位・単価・金額をここで確認できます。")
+                        st.dataframe(output_dataframe(df), use_container_width=True)
 
-                        # ▼▼▼ プログラム側での最終ゴミ排除フィルター ▼▼▼
-                        invalid_keywords = ["小計", "合計", "消費税", "税込", "税抜", "見積額", "見積金額", "総合計", "内訳合計", "改小計"]
-                        pattern = '|'.join(invalid_keywords)
-                        df = df[~df['項目名'].astype(str).str.contains(pattern, na=False, regex=True)].reset_index(drop=True)
+                        subtotal = int(round(pd.to_numeric(df["原価金額"], errors="coerce").fillna(0).sum()))
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("抽出明細数", f"{len(df)} 行")
+                        c2.metric("明細合計", f"{subtotal:,} 円")
+                        c3.metric("PDF小計", f"{int(pdf_totals.get('小計') or 0):,} 円")
+                        c4.metric("税込合計", f"{int(pdf_totals.get('税込合計') or 0):,} 円")
 
-                        def get_sort_priority(item_name):
-                            name = str(item_name)
-                            if any(kw in name for kw in ["値引", "調整"]): return 3
-                            elif any(kw in name for kw in ["諸経費", "法定福利費", "運搬", "処分", "荷揚げ", "現場管理", "養生"]): return 2
-                            else: return 1
-
-                        df['並び替え優先度'] = df['項目名'].apply(get_sort_priority)
-
-                        # ==========================================
-                        # 利益上乗せ計算
-                        # ==========================================
-                        adjustment_amount = 0
-                        target_mask = df['並び替え優先度'] == 1
+                        if issues:
+                            st.warning("確認が必要な明細があります。出力前に内容を確認してください。")
+                            st.dataframe(pd.DataFrame(issues), use_container_width=True)
+                        if has_blocking_issue:
+                            st.error("PDFの小計と抽出明細の合計が一致していないため、このまま出力すると危険です。PDFまたは抽出結果を確認してください。")
 
                         if profit_mode == "見積元（会社）ごとに金額を指定する":
                             st.session_state["_extracted_df"] = df.copy()
+                            st.session_state["_extracted_totals"] = pdf_totals
+                            st.session_state["_extracted_issues"] = issues
+                            st.session_state["_extracted_blocking"] = has_blocking_issue
                             st.session_state["_extracted_format_choice"] = format_choice
                             categories_summary = []
                             for company, grp in df.groupby('見積元', sort=False):
                                 company_name = str(company) if pd.notna(company) and str(company).strip() != "" else "不明な会社"
-                                item_total = int(grp['金額'].sum())
-                                declared_total = int(grp['見積税抜合計'].iloc[0]) if len(grp) > 0 else 0
-                                # 明細合計が表紙記載合計以上の場合は明細合計を優先する
-                                # （表紙が概算・丸め表示のケースで正確な明細値を採用）
-                                if item_total > 0 and item_total >= declared_total:
-                                    display_total = item_total
-                                elif declared_total > 0:
-                                    display_total = declared_total
-                                else:
-                                    display_total = item_total
-                                cat_base = int(grp.loc[grp['並び替え優先度'] == 1, '金額'].sum())
-                                work_types = grp['工事種別'].dropna().unique().tolist()
-                                work_label = "・".join([str(w) for w in work_types if str(w).strip()])
+                                item_total = int(pd.to_numeric(grp['原価金額'], errors="coerce").fillna(0).sum())
                                 categories_summary.append({
                                     "name": company_name,
-                                    "work_label": work_label,
-                                    "total": display_total,
+                                    "work_label": "原価明細",
+                                    "total": item_total,
                                     "item_total": item_total,
-                                    "declared_total": declared_total,
-                                    "base": cat_base,
+                                    "declared_total": int(pdf_totals.get("小計") or 0),
+                                    "base": item_total,
                                 })
                             st.session_state["_categories_summary"] = categories_summary
 
-                        elif profit_mode != "上乗せしない（原価そのまま）":
-                            total_base_amount = df.loc[target_mask, '金額'].sum()
-
-                            if total_base_amount > 0:
-                                if profit_mode == "パーセンテージ（%）で全体に乗せる":
-                                    target_total_amount = total_base_amount * (1 + profit_val / 100)
-                                elif profit_mode == "固定金額（円）を全体に割り振る":
-                                    target_total_amount = total_base_amount + profit_val
-
-                                for idx in df[target_mask].index:
-                                    orig_amount = df.at[idx, '金額']
-                                    qty = df.at[idx, '数量']
-                                    if qty == 0: qty = 1
-
-                                    exact_unit_price = (target_total_amount * (orig_amount / total_base_amount)) / qty
-                                    rounded_unit_price = int(math.ceil(exact_unit_price / 10.0) * 10)
-
-                                    df.at[idx, '単価'] = rounded_unit_price
-                                    df.at[idx, '金額'] = int(round(rounded_unit_price * qty))
-
-                                actual_new_total = df.loc[target_mask, '金額'].sum()
-                                adjustment_amount = int(target_total_amount - actual_new_total)
+                        else:
+                            df = apply_profit(df, profit_mode, profit_val)
 
                         # 「工事種別ごと」モード：ここでは抽出結果のみ表示し、残りは下の入力UIに任せる
                         if profit_mode == "見積元（会社）ごとに金額を指定する":
@@ -751,171 +714,30 @@ if uploaded_files:
                             st.success("✅ 読み取り完了！下にスクロールして、各社の上乗せ額を入力してください。")
                             raise _CatInputNeeded()
 
-                        # ==========================================
-                        # シート1（2枚目用：総括表）の作成
-                        # ==========================================
-                        _blank = {"項目名": "", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "要確認": False}
-                        sheet1_rows = []
-                        df_main = df[df['並び替え優先度'] == 1]
-                        if not df_main.empty:
-                            for category, group in df_main.groupby('工事種別', sort=False):
-                                category_name = str(category) if pd.notna(category) and str(category).strip() != "" else "その他工事"
-                                cat_sum = int(group['金額'].sum())
-                                sheet1_rows.append({
-                                    "項目名": f"{category_name}一式", "仕様": "", "数量": 1, "単位": "式", "単価": cat_sum, "金額": cat_sum, "要確認": False
-                                })
-                                sheet1_rows.append(_blank.copy())
-
-                        for _, row in df[df['並び替え優先度'] == 2].iterrows():
-                            sheet1_rows.append(row.to_dict())
-                            sheet1_rows.append(_blank.copy())
-
-                        if adjustment_amount != 0:
-                            sheet1_rows.append({
-                                "項目名": "【⚠️要確認】端数調整（任意変更可）", "仕様": "", "数量": 1, "単位": "式", "単価": adjustment_amount, "金額": adjustment_amount, "要確認": False
-                            })
-                            sheet1_rows.append(_blank.copy())
-
-                        for _, row in df[df['並び替え優先度'] == 3].iterrows():
-                            sheet1_rows.append(row.to_dict())
-                            sheet1_rows.append(_blank.copy())
-
-                        if sheet1_rows and sheet1_rows[-1] == _blank:
-                            sheet1_rows.pop()
-
-                        df_sheet1 = pd.DataFrame(sheet1_rows)
-
-                        # ==========================================
-                        # シート2（明細用：美しいブロック）の作成
-                        # ==========================================
-                        sheet2_rows = []
-                        if not df_main.empty:
-                            for category, group in df_main.groupby('工事種別', sort=False):
-                                category_name = str(category) if pd.notna(category) and str(category).strip() != "" else "その他工事"
-                                sheet2_rows.append({
-                                    "項目名": f"【 {category_name} 】", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "要確認": False
-                                })
-                                for _, row in group.iterrows():
-                                    sheet2_rows.append(row.to_dict())
-
-                        df_sheet2 = pd.DataFrame(sheet2_rows)
-
-                        # ==========================================
-                        # 彩架建設フォーマットに成形（コピペ用）
-                        # ==========================================
-                        # --- 企業用見積: No./工事品目/仕様/数量/単位/単価/金額/備考 ---
-                        cyca_corp_columns = ["No.", "工事品目", "仕様", "数量", "単位", "単価", "金額", "備考"]
-
-                        def format_cyca_corp(df_in):
-                            if df_in.empty: return pd.DataFrame(columns=cyca_corp_columns)
-                            rows = []
-                            seq = 0
-                            for _, row in df_in.iterrows():
-                                item = row.get("項目名", "")
-                                amt = row.get("金額", "")
-                                has_amount = amt != "" and pd.notna(amt) and amt != 0
-                                is_category_header = str(item).startswith("【") and not has_amount
-                                if is_category_header or str(item) == "":
-                                    rows.append({"No.": "", "工事品目": item, "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "備考": ""})
-                                else:
-                                    seq += 1
-                                    rows.append({
-                                        "No.": seq,
-                                        "工事品目": item,
-                                        "仕様": row.get("仕様", ""),
-                                        "数量": row.get("数量", ""),
-                                        "単位": row.get("単位", ""),
-                                        "単価": row.get("単価", ""),
-                                        "金額": row.get("金額", ""),
-                                        "備考": "要確認" if row.get("要確認") else ""
-                                    })
-                            return pd.DataFrame(rows)
-
-                        # --- 簡易工事見積: 商品名・工事名/数量/単/単価（円）/金額（円） ---
-                        cyca_simple_columns = ["商品名・工事名", "数量", "単", "単価（円）", "金額（円）"]
-
-                        def format_cyca_simple(df_in):
-                            if df_in.empty: return pd.DataFrame(columns=cyca_simple_columns)
-                            rows = []
-                            for _, row in df_in.iterrows():
-                                item = row.get("項目名", "")
-                                if str(item).startswith("【") or str(item) == "":
-                                    continue
-                                spec = row.get("仕様", "")
-                                name = str(item)
-                                if spec and str(spec) not in ("", "nan"):
-                                    name = f"{item}　{spec}"
-                                rows.append({
-                                    "商品名・工事名": name,
-                                    "数量": row.get("数量", ""),
-                                    "単": row.get("単位", ""),
-                                    "単価（円）": row.get("単価", ""),
-                                    "金額（円）": row.get("金額", ""),
-                                })
-                            return pd.DataFrame(rows)
-
-                        # --- 汎用: 工事品目/仕様/数量/単位/単価/金額/備考 ---
-                        def format_generic(df_in):
-                            if df_in.empty: return pd.DataFrame()
-                            df_out = df_in.copy()
-                            df_out["工事品目"] = df_out["項目名"]
-                            if "要確認" in df_out.columns:
-                                df_out["備考"] = df_out["要確認"].map(lambda x: "要確認" if x else "")
-                            else:
-                                df_out["備考"] = ""
-                            return df_out[["工事品目", "仕様", "数量", "単位", "単価", "金額", "備考"]]
-
-                        is_cyca = format_choice.startswith("彩架建設")
-                        is_simple = "簡易" in format_choice
-
-                        if is_simple:
-                            df_sheet1_final = format_cyca_simple(df_sheet1)
-                            df_sheet2_final = format_cyca_simple(df_sheet2)
-                        elif is_cyca:
-                            df_sheet1_final = format_cyca_corp(df_sheet1)
-                            df_sheet2_final = format_cyca_corp(df_sheet2)
-                        else:
-                            df_sheet1_final = format_generic(df_sheet1)
-                            df_sheet2_final = format_generic(df_sheet2)
-
-                        for col in ["数量", "単価", "金額", "単価（円）", "金額（円）"]:
-                            if col in df_sheet1_final.columns:
-                                df_sheet1_final[col] = pd.to_numeric(df_sheet1_final[col], errors="coerce")
-                            if col in df_sheet2_final.columns:
-                                df_sheet2_final[col] = pd.to_numeric(df_sheet2_final[col], errors="coerce")
-                        # No.列を文字列に統一（ArrowTypeError防止）
-                        if "No." in df_sheet1_final.columns:
-                            df_sheet1_final["No."] = df_sheet1_final["No."].astype(str).replace("", "")
-                        if "No." in df_sheet2_final.columns:
-                            df_sheet2_final["No."] = df_sheet2_final["No."].astype(str).replace("", "")
-
+                        df_output = output_dataframe(df)
+                        df_numbers_detail, detail_issues = numbers_detail_dataframe(df)
+                        if detail_issues:
+                            issues.extend(detail_issues)
+                        extracted_count = len(df)
+                        detail_count = len(df_numbers_detail)
                         st.toast("計算完了！データ準備OK", icon="✅")
-                        st.markdown('<div class="sub-header">計算完了！Numbers にコピペできます</div>', unsafe_allow_html=True)
+                        st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
                         st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
+                        st.caption("出力直前のDataFrameです。列順は No / 見積元 / 品名 / 数量 / 単位 / 原価単価 / 原価金額 / 上乗せ額 / 見積単価 / 見積金額 / 備考 に固定しています。")
+                        if extracted_count != detail_count:
+                            st.error(f"抽出明細：{extracted_count}行 / 3枚目用明細：{detail_count}行。出力用明細で{extracted_count - detail_count}行欠落しています。")
+                            has_blocking_issue = True
+                        st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
+                        st.dataframe(df_numbers_detail, use_container_width=True)
 
-                        if is_simple:
-                            df_simple_merged = pd.concat([df_sheet1_final, df_sheet2_final], ignore_index=True)
-                            df_simple_merged = df_simple_merged[df_simple_merged["商品名・工事名"].astype(str).str.strip() != ""]
-                            st.write("▼ 簡易見積データ（Numbers の表にそのままコピペ）")
-                            st.dataframe(df_simple_merged)
-                        else:
-                            st.write("▼ 2枚目用：一式表（Numbers「工事内容」にコピペ）")
-                            st.dataframe(df_sheet1_final)
-                            st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
-                            st.dataframe(df_sheet2_final)
-
-                        check_cols = df_sheet2_final.columns.tolist()
-                        if "備考" in check_cols and df_sheet2_final["備考"].astype(str).str.contains("要確認").any():
-                            st.info("一部の行は見積書から数値が正しく読み取れなかったため「要確認」と表示しています。実際の見積書をご確認ください。")
+                        if df_output["備考"].astype(str).str.strip().ne("").any():
+                            st.info("一部の行は見積書から数値が正しく読み取れなかった、または検算差異があるため備考に表示しています。")
 
                         output = BytesIO()
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            if is_simple:
-                                df_simple_merged.to_excel(writer, index=False, header=False, sheet_name='明細データ')
-                            else:
-                                df_sheet1_final.to_excel(writer, index=False, header=False, sheet_name='一式表（2枚目用）')
-                                df_sheet2_final.to_excel(writer, index=False, header=False, sheet_name='明細データ（3枚目用）')
+                            df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name='明細データ')
                         excel_data = output.getvalue()
+                        csv_data = df_numbers_detail.to_csv(index=False).encode("utf-8-sig")
 
                         st.markdown("""
                         <div class="download-done-box" style="position: relative; overflow: hidden;">
@@ -936,14 +758,27 @@ if uploaded_files:
                         }
                         </style>
                         """, unsafe_allow_html=True)
-                        if st.download_button(
-                            label="📥 Excel をダウンロードする",
-                            data=excel_data,
-                            file_name="CYCA_smartLink_見積完成版.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        ):
-                            st.toast("ダウンロード完了！Numbers にコピペして仕上げましょう 🚀", icon="🎉")
-                            st.markdown("""
+                        if has_blocking_issue:
+                            st.error("検算エラーが残っているため、Excel / CSV 出力は停止しています。")
+                        else:
+                            dcol1, dcol2 = st.columns(2)
+                            with dcol1:
+                                excel_clicked = st.download_button(
+                                    label="📥 Excel をダウンロードする",
+                                    data=excel_data,
+                                    file_name="CYCA_smartLink_見積完成版.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
+                            with dcol2:
+                                csv_clicked = st.download_button(
+                                    label="📥 CSV をダウンロードする",
+                                    data=csv_data,
+                                    file_name="CYCA_smartLink_見積完成版.csv",
+                                    mime="text/csv"
+                                )
+                            if excel_clicked or csv_clicked:
+                                st.toast("ダウンロード完了！Numbers にコピペして仕上げましょう 🚀", icon="🎉")
+                                st.markdown("""
                             <div style="
                                 background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 50%, #e3f2fd 100%);
                                 border: 2px solid #1565c0; border-radius: 12px;
@@ -1017,156 +852,28 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
 
         if st.button("✨ 上乗せを適用して出力する ✨", key="apply_cat_profit"):
             df = st.session_state["_extracted_df"].copy()
-            format_choice = st.session_state.get("_extracted_format_choice", "彩架建設 企業用見積（2シート：一式表＋明細）")
-            target_mask = df['並び替え優先度'] == 1
-
-            adjustment_amount = 0
-            total_adj = 0
-            for company_name, profit_amount in cat_profits.items():
-                if profit_amount <= 0:
-                    continue
-                company_mask = target_mask & (df['見積元'].astype(str).apply(
-                    lambda x, cn=company_name: (str(x) if pd.notna(x) and str(x).strip() != "" else "不明な会社") == cn
-                ))
-                company_base = df.loc[company_mask, '金額'].sum()
-                if company_base <= 0:
-                    continue
-                company_target = company_base + profit_amount
-
-                for idx in df[company_mask].index:
-                    orig_amount = df.at[idx, '金額']
-                    qty = df.at[idx, '数量']
-                    if qty == 0: qty = 1
-                    exact_unit_price = (company_target * (orig_amount / company_base)) / qty
-                    rounded_unit_price = int(math.ceil(exact_unit_price / 10.0) * 10)
-                    df.at[idx, '単価'] = rounded_unit_price
-                    df.at[idx, '金額'] = int(round(rounded_unit_price * qty))
-
-                company_actual = df.loc[company_mask, '金額'].sum()
-                total_adj += int(company_target - company_actual)
-
-            adjustment_amount = total_adj
-
-            # --- 以下、通常フローと同じ出力処理 ---
-            _blank = {"項目名": "", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "要確認": False}
-            sheet1_rows = []
-            df_main = df[target_mask]
-            if not df_main.empty:
-                for category, group in df_main.groupby('工事種別', sort=False):
-                    category_name = str(category) if pd.notna(category) and str(category).strip() != "" else "その他工事"
-                    cat_sum = int(group['金額'].sum())
-                    sheet1_rows.append({
-                        "項目名": f"{category_name}一式", "仕様": "", "数量": 1, "単位": "式", "単価": cat_sum, "金額": cat_sum, "要確認": False
-                    })
-                    sheet1_rows.append(_blank.copy())
-
-            for _, row in df[df['並び替え優先度'] == 2].iterrows():
-                sheet1_rows.append(row.to_dict())
-                sheet1_rows.append(_blank.copy())
-
-            if adjustment_amount != 0:
-                sheet1_rows.append({
-                    "項目名": "【⚠️要確認】端数調整（任意変更可）", "仕様": "", "数量": 1, "単位": "式", "単価": adjustment_amount, "金額": adjustment_amount, "要確認": False
-                })
-                sheet1_rows.append(_blank.copy())
-
-            for _, row in df[df['並び替え優先度'] == 3].iterrows():
-                sheet1_rows.append(row.to_dict())
-                sheet1_rows.append(_blank.copy())
-
-            if sheet1_rows and sheet1_rows[-1] == _blank:
-                sheet1_rows.pop()
-
-            df_sheet1 = pd.DataFrame(sheet1_rows)
-
-            sheet2_rows = []
-            if not df_main.empty:
-                for category, group in df_main.groupby('工事種別', sort=False):
-                    category_name = str(category) if pd.notna(category) and str(category).strip() != "" else "その他工事"
-                    sheet2_rows.append({
-                        "項目名": f"【 {category_name} 】", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "要確認": False
-                    })
-                    for _, row in group.iterrows():
-                        sheet2_rows.append(row.to_dict())
-
-            df_sheet2 = pd.DataFrame(sheet2_rows)
-
-            cyca_corp_columns = ["No.", "工事品目", "仕様", "数量", "単位", "単価", "金額", "備考"]
-            cyca_simple_columns = ["商品名・工事名", "数量", "単", "単価（円）", "金額（円）"]
-
-            def _fmt_corp(df_in):
-                if df_in.empty: return pd.DataFrame(columns=cyca_corp_columns)
-                rows = []; seq = 0
-                for _, row in df_in.iterrows():
-                    item = row.get("項目名", "")
-                    amt = row.get("金額", "")
-                    has_amount = amt != "" and pd.notna(amt) and amt != 0
-                    is_cat = str(item).startswith("【") and not has_amount
-                    if is_cat or str(item) == "":
-                        rows.append({"No.": "", "工事品目": item, "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "備考": ""})
-                    else:
-                        seq += 1
-                        rows.append({"No.": seq, "工事品目": item, "仕様": row.get("仕様", ""), "数量": row.get("数量", ""), "単位": row.get("単位", ""), "単価": row.get("単価", ""), "金額": row.get("金額", ""), "備考": "要確認" if row.get("要確認") else ""})
-                return pd.DataFrame(rows)
-
-            def _fmt_simple(df_in):
-                if df_in.empty: return pd.DataFrame(columns=cyca_simple_columns)
-                rows = []
-                for _, row in df_in.iterrows():
-                    item = row.get("項目名", "")
-                    if str(item).startswith("【") or str(item) == "": continue
-                    spec = row.get("仕様", "")
-                    name = str(item)
-                    if spec and str(spec) not in ("", "nan"): name = f"{item}　{spec}"
-                    rows.append({"商品名・工事名": name, "数量": row.get("数量", ""), "単": row.get("単位", ""), "単価（円）": row.get("単価", ""), "金額（円）": row.get("金額", "")})
-                return pd.DataFrame(rows)
-
-            def _fmt_generic(df_in):
-                if df_in.empty: return pd.DataFrame()
-                df_out = df_in.copy()
-                df_out["工事品目"] = df_out["項目名"]
-                if "要確認" in df_out.columns: df_out["備考"] = df_out["要確認"].map(lambda x: "要確認" if x else "")
-                else: df_out["備考"] = ""
-                return df_out[["工事品目", "仕様", "数量", "単位", "単価", "金額", "備考"]]
-
-            is_cyca = format_choice.startswith("彩架建設")
-            is_simple = "簡易" in format_choice
-            if is_simple:
-                df_sheet1_final = _fmt_simple(df_sheet1); df_sheet2_final = _fmt_simple(df_sheet2)
-            elif is_cyca:
-                df_sheet1_final = _fmt_corp(df_sheet1); df_sheet2_final = _fmt_corp(df_sheet2)
-            else:
-                df_sheet1_final = _fmt_generic(df_sheet1); df_sheet2_final = _fmt_generic(df_sheet2)
-
-            for col in ["数量", "単価", "金額", "単価（円）", "金額（円）"]:
-                if col in df_sheet1_final.columns: df_sheet1_final[col] = pd.to_numeric(df_sheet1_final[col], errors="coerce")
-                if col in df_sheet2_final.columns: df_sheet2_final[col] = pd.to_numeric(df_sheet2_final[col], errors="coerce")
-            if "No." in df_sheet1_final.columns: df_sheet1_final["No."] = df_sheet1_final["No."].astype(str).replace("", "")
-            if "No." in df_sheet2_final.columns: df_sheet2_final["No."] = df_sheet2_final["No."].astype(str).replace("", "")
+            has_blocking_issue = bool(st.session_state.get("_extracted_blocking", False))
+            df_output = output_dataframe(apply_profit(df, "見積元（会社）ごとに金額を指定する", company_profits=cat_profits))
+            df_numbers_detail, detail_issues = numbers_detail_dataframe(df_output)
+            if detail_issues:
+                has_blocking_issue = True
+            extracted_count = len(df)
+            detail_count = len(df_numbers_detail)
+            if extracted_count != detail_count:
+                st.error(f"抽出明細：{extracted_count}行 / 3枚目用明細：{detail_count}行。出力用明細で{extracted_count - detail_count}行欠落しています。")
+                has_blocking_issue = True
 
             st.toast("計算完了！", icon="✅")
             st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
-            st.markdown('<div class="sub-header">計算完了！Numbers にコピペできます</div>', unsafe_allow_html=True)
-
-            if is_simple:
-                df_simple_merged = pd.concat([df_sheet1_final, df_sheet2_final], ignore_index=True)
-                df_simple_merged = df_simple_merged[df_simple_merged["商品名・工事名"].astype(str).str.strip() != ""]
-                st.write("▼ 簡易見積データ（Numbers の表にそのままコピペ）")
-                st.dataframe(df_simple_merged)
-            else:
-                st.write("▼ 2枚目用：一式表（Numbers「工事内容」にコピペ）")
-                st.dataframe(df_sheet1_final)
-                st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
-                st.dataframe(df_sheet2_final)
+            st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
+            st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
+            st.dataframe(df_numbers_detail, use_container_width=True)
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                if is_simple:
-                    df_simple_merged.to_excel(writer, index=False, header=False, sheet_name='明細データ')
-                else:
-                    df_sheet1_final.to_excel(writer, index=False, header=False, sheet_name='一式表（2枚目用）')
-                    df_sheet2_final.to_excel(writer, index=False, header=False, sheet_name='明細データ（3枚目用）')
+                df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name='明細データ')
             excel_data = output.getvalue()
+            csv_data = df_numbers_detail.to_csv(index=False).encode("utf-8-sig")
 
             st.markdown("""
             <div class="download-done-box" style="position: relative; overflow: hidden;">
@@ -1174,11 +881,25 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                 <div class="sparkle-bar"></div>
             </div>
             """, unsafe_allow_html=True)
-            if st.download_button(
-                label="📥 Excel をダウンロードする",
-                data=excel_data,
-                file_name="CYCA_smartLink_見積完成版.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_cat_profit"
-            ):
-                st.toast("ダウンロード完了！Numbers にコピペして仕上げましょう 🚀", icon="🎉")
+            if has_blocking_issue:
+                st.error("検算エラーが残っているため、Excel / CSV 出力は停止しています。")
+            else:
+                dcol1, dcol2 = st.columns(2)
+                with dcol1:
+                    excel_clicked = st.download_button(
+                        label="📥 Excel をダウンロードする",
+                        data=excel_data,
+                        file_name="CYCA_smartLink_見積完成版.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_cat_profit_xlsx"
+                    )
+                with dcol2:
+                    csv_clicked = st.download_button(
+                        label="📥 CSV をダウンロードする",
+                        data=csv_data,
+                        file_name="CYCA_smartLink_見積完成版.csv",
+                        mime="text/csv",
+                        key="download_cat_profit_csv"
+                    )
+                if excel_clicked or csv_clicked:
+                    st.toast("ダウンロード完了！Numbers にコピペして仕上げましょう 🚀", icon="🎉")
