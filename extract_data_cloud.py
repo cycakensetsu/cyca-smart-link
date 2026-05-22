@@ -657,7 +657,7 @@ if uploaded_files:
 
                         st.markdown('<div class="sub-header">PDFから抽出した明細プレビュー</div>', unsafe_allow_html=True)
                         st.caption("利益計算前の原価明細です。行数・品名・数量・単位・単価・金額をここで確認できます。")
-                        st.dataframe(output_dataframe(df), use_container_width=True)
+                        st.dataframe(output_dataframe(df), use_container_width=True, hide_index=True)
 
                         subtotal = int(round(pd.to_numeric(df["原価金額"], errors="coerce").fillna(0).sum()))
                         c1, c2, c3, c4 = st.columns(4)
@@ -728,7 +728,7 @@ if uploaded_files:
                             st.error(f"抽出明細：{extracted_count}行 / 3枚目用明細：{detail_count}行。出力用明細で{extracted_count - detail_count}行欠落しています。")
                             has_blocking_issue = True
                         st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
-                        st.dataframe(df_numbers_detail, use_container_width=True)
+                        st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
                         if df_output["備考"].astype(str).str.strip().ne("").any():
                             st.info("一部の行は見積書から数値が正しく読み取れなかった、または検算差異があるため備考に表示しています。")
@@ -869,7 +869,7 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
             st.caption("Numbers貼り付け用の最終DataFrameです。列順は No / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考 に固定しています。")
             st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
-            st.dataframe(df_numbers_detail, use_container_width=True)
+            st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
