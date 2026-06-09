@@ -2,3 +2,5 @@ streamlit
 pandas
 openpyxl
 google-genai
+PyMuPDF
+Pillow

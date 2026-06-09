@@ -8,12 +8,29 @@ import sys
 import time
 from io import BytesIO
 import openpyxl  # ExcelWriter engine 用
+from gemini_resilience import (
+    AI_RETRY_MESSAGE,
+    GeminiTemporaryUnavailable,
+    build_page_prompt,
+    call_gemini_with_retry,
+    configure_gemini_logging,
+    get_configured_gemini_models,
+    is_gemini_temporary_error,
+    log_gemini_analysis_complete,
+    parse_gemini_json_payload,
+    prepare_upload_for_gemini_pages,
+)
 from estimate_pipeline import (
     OUTPUT_COLUMNS,
+    DETAIL_SHEET_NAME,
+    QUOTE_SHEET_NAME,
     apply_profit,
     build_intermediate_dataframe,
+    build_quote_summary_dataframe,
     numbers_detail_dataframe,
     output_dataframe,
+    normalize_summary_data,
+    split_extraction_payload,
     validate_intermediate,
 )
 
@@ -91,6 +108,14 @@ def _get_response_text(response):
         return (getattr(response, "text", None) or "").strip()
     except (UnicodeDecodeError, UnicodeEncodeError):
         return ""
+
+def _cleanup_temp_paths(temp_paths):
+    for temp_path in temp_paths or []:
+        if os.path.isfile(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
 
 def load_users():
     """複数ユーザーを config/users.json から読み込み。無ければ環境変数で1ユーザー。"""
@@ -403,13 +428,18 @@ if uploaded_files:
         <div style="margin-top:8px; color:#2e7d32; font-size:0.95rem;">{file_names}</div>
     </div>
     """, unsafe_allow_html=True)
-    if st.button("✨ AIでデータを解析 ＆ 利益計算を実行する ✨"):
+    analyze_clicked = st.button("✨ AIでデータを解析 ＆ 利益計算を実行する ✨")
+    if st.session_state.pop("_force_analyze", False):
+        analyze_clicked = True
+    if analyze_clicked:
         if not MY_API_KEY:
             st.error("APIキーが設定されていません。環境変数 GOOGLE_API_KEY または .streamlit/secrets.toml に GOOGLE_API_KEY を設定してください。")
         else:
                 try:
+                    configure_gemini_logging()
                     client = genai.Client(api_key=MY_API_KEY)
                     all_extracted_data = []
+                    summary_sources = []
                     n_files = len(uploaded_files)
 
                     progress_bar = st.progress(0, text="🚀 解析を開始します...")
@@ -463,10 +493,10 @@ if uploaded_files:
                     </style>
                     """, unsafe_allow_html=True)
 
-                    ai_files = []
+                    page_jobs = []
                     temp_paths = []
                     for i, uploaded_file in enumerate(uploaded_files):
-                        progress_bar.progress(int((i / n_files) * 30), text=f"📤 ファイルをアップロード中... ({i+1}/{n_files})")
+                        progress_bar.progress(int((i / n_files) * 30), text=f"📄 PDF/画像をページ単位に準備中... ({i+1}/{n_files})")
                         file_extension = os.path.splitext(uploaded_file.name)[1].lower() or ".pdf"
                         if not file_extension.startswith("."):
                             file_extension = "." + file_extension
@@ -476,10 +506,9 @@ if uploaded_files:
                         with open(temp_file_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
 
-                        ai_file = client.files.upload(file=temp_file_path)
-                        ai_files.append(ai_file)
+                        page_jobs.extend(prepare_upload_for_gemini_pages(temp_file_path, uploaded_file.name))
 
-                    progress_bar.progress(30, text="🔍 AI が全ファイルを一括解析中...")
+                    progress_bar.progress(30, text=f"🔍 AI が{len(page_jobs)}ページを順番に解析中...")
 
                     status_area.markdown(f"""
                     <div style="
@@ -491,7 +520,7 @@ if uploaded_files:
                         position: relative; overflow: hidden;
                     ">
                         <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
-                            🔍 AI が {n_files}件を一括で読み取り中...
+                            🔍 AI が {len(page_jobs)}ページを順番に読み取り中...
                         </div>
                         <div style="color: #a8c8f0; font-size: 0.95rem;">
                             🧮 各見積書の全ページを解析し、工事種別を自動判別しています
@@ -510,139 +539,91 @@ if uploaded_files:
                     </div>
                     """, unsafe_allow_html=True)
 
-                    prompt = f"""
-                    添付した{n_files}件のファイル（PDFまたは画像）の【すべてのページ・すべての行】を漏れなく正確に読み取り、
-                    全ファイル分のデータをまとめて1つのJSON配列で出力してください。
+                    primary_model, fallback_models = get_configured_gemini_models(st.secrets)
+                    successful_models = []
 
-                    【超厳格な仕分けルール】
-                    1. 「小計」「合計」「消費税」「税込」「見積金額」「内訳合計」「改小計」「総合計」などの【計算結果や税金の行】は絶対に抽出しないでください。
-                    2. 「諸経費」「法定福利費」「運搬費」「処分費」「荷揚げ費」「養生費」「安全対策費」などの【経費項目】は絶対に見落とさずに抽出してください。
-                    3. 「値引き」「出精値引き」「端数調整」「調整値引き」などの【値引き項目】も絶対に見落とさずに抽出し、単価と金額は必ずマイナス表記にしてください。
-                    4. 【重要: 二重計上の防止と1枚ペラ対応】
-                       - もしファイル内に「具体的な内訳明細（2ページ目以降）」が存在する場合、表紙にある「〇〇工事一式」や「〇〇工事費」といった総括的な行は【絶対に無視】して、明細のみを抽出してください。
-                       - ただし、ファイルが1枚のみで内訳が一切ない「簡易見積もり」の場合に限り、その「〇〇工事一式」を抽出してください。
-                    5. 【全行読み取りの徹底】
-                       - 各ページの表の行は1行たりとも飛ばさないでください。
-                       - 部位ごと・階ごと・面ごとの小見出し（例：「1階、2階正面」「タイル面」「ポンデ鋼板部」「7階バルコニー」「3階ルーフバルコニー」等）の後にある明細行はすべて個別に抽出してください。
-                       - 内訳明細が複数ページにわたる場合、全ページの全行を漏れなく読み取ってください。
-                    6. 【見積元の会社名】各ファイルの見積書を出した会社名（差出人）を正確に読み取り、「見積元」に入れてください。
-                       宛先（彩架建設 御中など）ではなく、見積書を作成した会社名です。
-                    7. 【見積書の税抜合計】各ファイルの見積書に記載されている税抜の最終合計金額（値引き後・税抜）を「見積税抜合計」に入れてください。
-                       複数ページある場合は最終ページや明細ページの合計・改小計・税抜合計を優先して読み取ってください。
-                       表紙に「〇〇工事一式 ×××円」という概算だけが記載されている場合でも、詳細ページに具体的な明細がある場合はその明細の合計金額を「見積税抜合計」として使ってください。
-                    8. 各ファイルの見積書全体が何の工事か（例：防水工事、塗装工事、仮設足場工事など）を自動判別し、
-                       同じファイルの項目には同じ「工事種別」を入れてください。
-                       【重要】1つのファイルに複数の工事カテゴリ（例：防水工事とシーリング工事）が含まれる場合は、
-                       それぞれの明細行に正しい工事種別を入れてください。ただし「見積元」は同じファイルなら同じ会社名です。
-                    9. ```json などのマークダウン記号は含めず、純粋なJSON文字列のみを返してください。
+                    def _on_gemini_model_start(model_name, page_number):
+                        status_area.info(
+                            f"使用中モデル: {model_name} / リトライ回数: 0 / ページ: {page_number or '-'}"
+                        )
 
-                    【明細の列分けルール】
-                    - 品名が複数行に分かれている場合は、1つの「品名」に結合してください。
-                    - 「665架㎡」「1,534架㎡」「10基」「1式」のように数量と単位が連結している場合は、数量と単位を分けてください。
-                    - 値引き・調整額などマイナス金額の明細も、通常の明細行として必ず残してください。
-                    - 小計・消費税・税込合計は明細行としては出さず、各明細の「PDF小計」「消費税」「税込合計」に同じ値を入れてください。
-
-                    【出力形式見本（キーを変えないこと）】
-                    [
-                        {{"No": 1, "見積元": "瀧上工業", "PDF小計": 2600000, "消費税": 260000, "税込合計": 2860000, "工事種別": "防水工事", "品名": "平場 ウレタン塗膜防水", "仕様": "X-1工法", "数量": 76.1, "単位": "㎡", "単価": 6400, "金額": 487040}},
-                        {{"No": 2, "見積元": "瀧上工業", "PDF小計": 2600000, "消費税": 260000, "税込合計": 2860000, "工事種別": "シーリング工事", "品名": "サッシ廻りシーリング打替え", "仕様": "変成シリコン系", "数量": 84.0, "単位": "m", "単価": 800, "金額": 67200}},
-                        {{"No": 1, "見積元": "アキヨシ塗装", "PDF小計": 2400000, "消費税": 240000, "税込合計": 2640000, "工事種別": "外部塗装工事", "品名": "壁面塗装", "仕様": "エスケープレミアムシリコン", "数量": 634.0, "単位": "㎡", "単価": 1700, "金額": 1077800}}
-                    ]
-                    """
-
-                    _models_to_try = [
-                        "gemini-2.5-flash",
-                        "gemini-2.0-flash",
-                        "gemini-1.5-flash",
-                        "gemini-1.5-pro",
-                    ]
-                    raw_text = None
-                    contents_for_api = ai_files + [prompt]
-                    used_model = None
-
-                    for model_idx, model_name in enumerate(_models_to_try):
-                        try:
-                            progress_bar.progress(30 + (model_idx * 15), text=f"🔍 {model_name} で解析中...")
-                            status_area.markdown(f"""
-                            <div style="
-                                background: linear-gradient(135deg, #0f2847 0%, #1e3c72 50%, #2a5298 100%);
-                                border-radius: 12px;
-                                padding: 20px 24px; margin: 12px 0;
-                                animation: shimmer 2s ease-in-out infinite;
-                                box-shadow: 0 4px 20px rgba(15, 40, 71, 0.3);
-                                position: relative; overflow: hidden;
-                            ">
-                                <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
-                                    🧮 {model_name} で全ファイルを解析中...
-                                </div>
-                                <div style="color: #a8c8f0; font-size: 0.95rem;">
-                                    工事種別と明細を自動で仕分けしています
-                                </div>
-                                <div style="
-                                    margin-top: 12px; height: 4px; border-radius: 2px;
-                                    background: rgba(255,255,255,0.15); overflow: hidden;
-                                ">
-                                    <div style="
-                                        height: 100%; width: 40%;
-                                        background: linear-gradient(90deg, #f0c040, #ffd700, #f0c040);
-                                        border-radius: 2px;
-                                        animation: loading-slide 1.8s ease-in-out infinite;
-                                    "></div>
-                                </div>
+                    def _on_gemini_retry(model_name, attempt, delay, error_code, page_number):
+                        status_area.markdown(f"""
+                        <div style="
+                            background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+                            border-left: 4px solid #ef6c00; border-radius: 8px;
+                            padding: 12px 16px; margin: 8px 0;
+                        ">
+                            <span style="font-size: 1.05rem;">AI解析サーバーが混み合っています。{int(delay)}秒後に自動再試行します。</span>
+                            <div style="color:#6d4c41; font-size:0.9rem; margin-top:4px;">
+                                model={model_name} / retry={attempt} / code={error_code or "unknown"} / page={page_number or "-"}
                             </div>
-                            """, unsafe_allow_html=True)
+                        </div>
+                        """, unsafe_allow_html=True)
 
-                            response = client.models.generate_content(
-                                model=model_name,
-                                contents=contents_for_api
-                            )
-                            raw_text = _get_response_text(response)
-                            if raw_text:
-                                used_model = model_name
-                                break
-                        except Exception as api_err:
-                            err_str = str(api_err)
-                            is_quota = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower()
-                            if is_quota and model_idx < len(_models_to_try) - 1:
-                                next_model = _models_to_try[model_idx + 1]
-                                status_area.markdown(f"""
+                    total_pages = max(len(page_jobs), 1)
+                    for page_idx, page in enumerate(page_jobs, start=1):
+                        progress = 30 + int((page_idx - 1) / total_pages * 50)
+                        progress_bar.progress(
+                            progress,
+                            text=f"🔍 {page.source_name} {page.page_number}/{page.total_pages}ページを解析中..."
+                        )
+                        status_area.markdown(f"""
+                        <div style="
+                            background: linear-gradient(135deg, #0f2847 0%, #1e3c72 50%, #2a5298 100%);
+                            border-radius: 12px;
+                            padding: 20px 24px; margin: 12px 0;
+                            animation: shimmer 2s ease-in-out infinite;
+                            box-shadow: 0 4px 20px rgba(15, 40, 71, 0.3);
+                            position: relative; overflow: hidden;
+                        ">
+                            <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
+                                🧮 {page.source_name} {page.page_number}/{page.total_pages}ページを解析中...
+                            </div>
+                            <div style="color: #a8c8f0; font-size: 0.95rem;">
+                                使用モデル: {primary_model} / フォールバック: {", ".join(fallback_models) or "なし"}
+                            </div>
+                            <div style="
+                                margin-top: 12px; height: 4px; border-radius: 2px;
+                                background: rgba(255,255,255,0.15); overflow: hidden;
+                            ">
                                 <div style="
-                                    background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
-                                    border-left: 4px solid #ef6c00; border-radius: 8px;
-                                    padding: 12px 16px; margin: 8px 0;
-                                ">
-                                    <span style="font-size: 1.05rem;">⚡ {model_name} の無料枠を使い切りました → {next_model} に自動切り替え中...</span>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                time.sleep(2)
-                                continue
-                            else:
-                                raise
+                                    height: 100%; width: 40%;
+                                    background: linear-gradient(90deg, #f0c040, #ffd700, #f0c040);
+                                    border-radius: 2px;
+                                    animation: loading-slide 1.8s ease-in-out infinite;
+                                "></div>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-                    if used_model:
-                        st.toast(f"✅ {used_model} で解析完了！", icon="🤖")
-
-                    for tp in temp_paths:
-                        if os.path.isfile(tp):
-                            try:
-                                os.remove(tp)
-                            except Exception:
-                                pass
-
-                    if not raw_text:
-                        st.error("❌ AIからの応答を取得できませんでした。しばらく時間を置いて再度お試しください。")
-                    else:
-                        progress_bar.progress(80, text="📊 データを整理しています...")
-                        if raw_text.startswith("```"):
-                            raw_text = raw_text.strip("`").replace("json\n", "")
-
+                        result = call_gemini_with_retry(
+                            client,
+                            page.parts + [build_page_prompt(page, n_files)],
+                            primary_model=primary_model,
+                            fallback_models=fallback_models,
+                            page_number=page.page_number,
+                            source_name=page.source_name,
+                            on_retry=_on_gemini_retry,
+                            on_model_start=_on_gemini_model_start,
+                        )
+                        successful_models.append(result.model_name)
+                        if not result.text:
+                            continue
                         try:
-                            all_extracted_data = json.loads(raw_text)
-                            if not isinstance(all_extracted_data, list):
-                                all_extracted_data = [all_extracted_data] if isinstance(all_extracted_data, dict) else []
+                            payload = parse_gemini_json_payload(result.text)
+                            page_summaries, page_records = split_extraction_payload(payload)
+                            summary_sources.extend(page_summaries)
+                            all_extracted_data.extend(page_records)
                         except json.JSONDecodeError:
-                            st.error("❌ AIの応答をJSON形式で解析できませんでした。ファイル内容をご確認ください。")
-                            all_extracted_data = []
+                            st.warning(f"{page.source_name} {page.page_number}ページ目のAI応答をJSONとして読み取れませんでした。このページをスキップして続行します。")
+
+                    if successful_models:
+                        log_gemini_analysis_complete(successful_models, len(page_jobs))
+                        st.toast(f"✅ {successful_models[-1]} で解析完了！", icon="🤖")
+
+                    _cleanup_temp_paths(temp_paths)
+                    progress_bar.progress(80, text="📊 データを整理しています...")
 
                     progress_bar.progress(100, text="🎉 解析完了！")
                     status_area.empty()
@@ -651,6 +632,7 @@ if uploaded_files:
                     if not all_extracted_data:
                         st.warning("読み取れたデータがありませんでした。ファイル形式（PDF・JPG・PNG）と内容をご確認ください。")
                     else:
+                        summary_data = normalize_summary_data(summary_sources)
                         df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
                         issues = validate_intermediate(df, pdf_totals)
                         has_blocking_issue = any(i.get("レベル") == "停止" for i in issues)
@@ -678,6 +660,7 @@ if uploaded_files:
                             st.session_state["_extracted_issues"] = issues
                             st.session_state["_extracted_blocking"] = has_blocking_issue
                             st.session_state["_extracted_format_choice"] = format_choice
+                            st.session_state["_summary_data"] = summary_data
                             categories_summary = []
                             for company, grp in df.groupby('見積元', sort=False):
                                 company_name = str(company) if pd.notna(company) and str(company).strip() != "" else "不明な会社"
@@ -715,6 +698,7 @@ if uploaded_files:
                             raise _CatInputNeeded()
 
                         df_output = output_dataframe(df)
+                        df_quote_summary, quote_totals = build_quote_summary_dataframe(summary_data, df)
                         df_numbers_detail, detail_issues = numbers_detail_dataframe(df)
                         if detail_issues:
                             issues.extend(detail_issues)
@@ -727,6 +711,9 @@ if uploaded_files:
                         if extracted_count != detail_count:
                             st.error(f"抽出明細：{extracted_count}行 / 3枚目用明細：{detail_count}行。出力用明細で{extracted_count - detail_count}行欠落しています。")
                             has_blocking_issue = True
+                        st.write("▼ 1枚目用：見積書")
+                        st.dataframe(df_quote_summary, use_container_width=True, hide_index=True)
+                        st.metric("見積書 合計金額", f"{quote_totals.get('工事費計', 0):,} 円")
                         st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
                         st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
@@ -735,7 +722,8 @@ if uploaded_files:
 
                         output = BytesIO()
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name='明細データ')
+                            df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
+                            df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
                         excel_data = output.getvalue()
                         csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
 
@@ -801,12 +789,32 @@ if uploaded_files:
 
                 except _CatInputNeeded:
                     pass
+                except GeminiTemporaryUnavailable:
+                    _cleanup_temp_paths(locals().get("temp_paths", []))
+                    try:
+                        status_area.empty()
+                    except Exception:
+                        pass
+                    st.error(AI_RETRY_MESSAGE)
+                    if st.button("再解析する", key="retry_ai_analysis_after_busy"):
+                        st.session_state["_force_analyze"] = True
+                        st.rerun()
                 except Exception as e:
+                    _cleanup_temp_paths(locals().get("temp_paths", []))
                     try:
                         err_msg = str(e)
                     except Exception:
                         err_msg = "（エラー内容を表示できませんでした）"
-                    if "ascii" in err_msg.lower() and "codec" in err_msg.lower():
+                    if is_gemini_temporary_error(e):
+                        try:
+                            status_area.empty()
+                        except Exception:
+                            pass
+                        st.error(AI_RETRY_MESSAGE)
+                        if st.button("再解析する", key="retry_ai_analysis_after_raw_busy"):
+                            st.session_state["_force_analyze"] = True
+                            st.rerun()
+                    elif "ascii" in err_msg.lower() and "codec" in err_msg.lower():
                         st.error(
                             "❌ 文字コードのエラーが発生しました。\n\n"
                             "**対処法：** いったん Streamlit を止めて（Ctrl+C）、ターミナルで次のどちらかで起動し直してください。\n\n"
@@ -852,9 +860,11 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
 
         if st.button("✨ 上乗せを適用して出力する ✨", key="apply_cat_profit"):
             df = st.session_state["_extracted_df"].copy()
+            summary_data = st.session_state.get("_summary_data", {})
             has_blocking_issue = bool(st.session_state.get("_extracted_blocking", False))
             df_profit = apply_profit(df, "見積元（会社）ごとに金額を指定する", company_profits=cat_profits)
             df_output = output_dataframe(df_profit)
+            df_quote_summary, quote_totals = build_quote_summary_dataframe(summary_data, df_profit)
             df_numbers_detail, detail_issues = numbers_detail_dataframe(df_profit)
             if detail_issues:
                 has_blocking_issue = True
@@ -868,12 +878,16 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
             st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
             st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。")
+            st.write("▼ 1枚目用：見積書")
+            st.dataframe(df_quote_summary, use_container_width=True, hide_index=True)
+            st.metric("見積書 合計金額", f"{quote_totals.get('工事費計', 0):,} 円")
             st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
             st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name='明細データ')
+                df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
+                df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
             excel_data = output.getvalue()
             csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
 

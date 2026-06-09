@@ -1,12 +1,21 @@
 import unittest
+from io import BytesIO
+
+import openpyxl
+import pandas as pd
 
 from estimate_pipeline import (
+    DETAIL_SHEET_NAME,
     NUMBERS_OUTPUT_COLUMNS,
     OUTPUT_COLUMNS,
+    QUOTE_SHEET_NAME,
     build_intermediate_dataframe,
+    build_quote_summary_dataframe,
+    normalize_summary_data,
     output_dataframe,
     numbers_detail_dataframe,
     parse_money,
+    split_extraction_payload,
     split_quantity_unit,
     validate_intermediate,
 )
@@ -71,6 +80,107 @@ class EstimatePipelineTest(unittest.TestCase):
         df, totals = build_intermediate_dataframe(bad)
         issues = validate_intermediate(df, totals)
         self.assertTrue(any(issue["レベル"] == "停止" for issue in issues))
+
+    def test_summary_payload_keeps_cover_sheet_totals(self):
+        payload = {
+            "page_role": "cover_summary_page",
+            "summary_data": {
+                "工事名称": "瀧上工業 防水改修工事",
+                "工事項目": [
+                    {"工事項目": "防水工事", "金額": 11381700},
+                    {"工事項目": "諸経費", "金額": 65000},
+                    {"工事項目": "厚生福利費", "金額": 55000},
+                ],
+                "小計": 11501700,
+                "端数調整": -1700,
+                "改小計": 11500000,
+                "消費税": 1150000,
+                "工事費計": 12650000,
+            },
+            "detail_data": [
+                {"No": 1, "見積元": "瀧上工業", "品名": "防水明細A", "数量": 1, "単位": "式", "単価": 11381700, "金額": 11381700}
+            ],
+        }
+        summaries, details = split_extraction_payload(payload)
+        summary_data = normalize_summary_data(summaries)
+        df, _ = build_intermediate_dataframe(details)
+        summary_df, totals = build_quote_summary_dataframe(summary_data, df)
+
+        self.assertEqual(totals["工事費計"], 12650000)
+        self.assertEqual(totals["小計"], 11501700)
+        values = summary_df.fillna("").astype(str).to_string()
+        self.assertIn("彩架建設 見積書", values)
+        self.assertIn("防水工事", values)
+        self.assertIn("12650000", values)
+
+    def test_workbook_always_starts_with_quote_sheet_then_detail_sheet(self):
+        payload = {
+            "summary_data": {
+                "宛名": "御中",
+                "工事名称": "（元）海老津ショッピングセンター屋上防水改修工事",
+                "工事場所": "海老津ショッピングセンター",
+                "工事項目": [
+                    {"工事項目": "防水工事", "金額": 11381700},
+                    {"工事項目": "諸経費", "金額": 65000},
+                    {"工事項目": "厚生福利費", "金額": 55000},
+                ],
+                "小計": 11501700,
+                "端数調整": -1700,
+                "改小計": 11500000,
+                "消費税": 1150000,
+                "工事費計": 12650000,
+            },
+            "detail_data": [
+                {"No": 1, "見積元": "瀧上工業", "品名": "防水明細A", "数量": 1, "単位": "式", "単価": 11381700, "金額": 11381700}
+            ],
+        }
+        summaries, details = split_extraction_payload(payload)
+        summary_data = normalize_summary_data(summaries)
+        df, _ = build_intermediate_dataframe(details)
+        quote_df, totals = build_quote_summary_dataframe(summary_data, df)
+        detail_df, issues = numbers_detail_dataframe(df)
+        self.assertEqual(issues, [])
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            quote_df.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
+            detail_df.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
+
+        workbook = openpyxl.load_workbook(BytesIO(output.getvalue()), read_only=True)
+        self.assertEqual(workbook.sheetnames, ["見積書", "明細データ"])
+        self.assertEqual(totals["工事費計"], 12650000)
+        quote_values = [
+            cell
+            for row in workbook["見積書"].iter_rows(values_only=True)
+            for cell in row
+            if cell not in (None, "")
+        ]
+        self.assertIn("彩架建設 見積書", quote_values)
+        self.assertIn("（元）海老津ショッピングセンター屋上防水改修工事", quote_values)
+        self.assertIn(12650000, quote_values)
+
+    def test_summary_sheet_recalculates_after_profit(self):
+        summaries = [{
+            "工事項目": [
+                {"工事項目": "防水工事", "金額": 11381700},
+                {"工事項目": "諸経費", "金額": 65000},
+                {"工事項目": "厚生福利費", "金額": 55000},
+            ],
+            "端数調整": -1700,
+        }]
+        summary_data = normalize_summary_data(summaries)
+        df, _ = build_intermediate_dataframe([
+            {"No": 1, "見積元": "瀧上工業", "品名": "防水明細A", "数量": 1, "単位": "式", "単価": 11381700, "金額": 11381700}
+        ])
+        df["上乗せ額"] = 100000
+        df["見積金額"] = 11481700
+        df["見積単価"] = 11481700
+        _, totals = build_quote_summary_dataframe(summary_data, df)
+
+        self.assertEqual(totals["小計"], 11601700)
+        self.assertEqual(totals["改小計"], 11600000)
+        self.assertEqual(totals["消費税"], 1160000)
+        self.assertEqual(totals["工事費計"], 12760000)
 
 
 if __name__ == "__main__":
