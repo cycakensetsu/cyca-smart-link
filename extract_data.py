@@ -24,17 +24,23 @@ from estimate_pipeline import (
     OUTPUT_COLUMNS,
     DETAIL_SHEET_NAME,
     QUOTE_SHEET_NAME,
-    WORK_SUMMARY_SHEET_NAME,
     apply_profit,
     build_intermediate_dataframe,
     build_quote_summary_dataframe,
-    build_work_summary_dataframe,
     numbers_detail_dataframe,
     output_dataframe,
     normalize_summary_data,
     split_extraction_payload,
     validate_intermediate,
 )
+
+try:
+    from estimate_pipeline import WORK_SUMMARY_SHEET_NAME, build_work_summary_dataframe
+except ImportError:
+    WORK_SUMMARY_SHEET_NAME = "工事別まとめ"
+
+    def build_work_summary_dataframe(summary_data, detail_df, tax_rate=0.10):
+        return build_quote_summary_dataframe(summary_data, detail_df, tax_rate)
 
 class _CatInputNeeded(Exception):
     """工事種別ごと入力UIへ遷移するための内部シグナル"""
