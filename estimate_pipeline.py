@@ -20,6 +20,7 @@ OUTPUT_COLUMNS = [
 ]
 
 QUOTE_SHEET_NAME = "見積書"
+WORK_SUMMARY_SHEET_NAME = "工事別まとめ"
 DETAIL_SHEET_NAME = "明細データ"
 
 QUOTE_SUMMARY_COLUMNS = [
@@ -115,7 +116,7 @@ def _first_present(record: Dict, keys: Iterable[str], default=""):
     return default
 
 
-def split_extraction_payload(payload) -> Tuple[List[Dict], List[Dict]]:
+def split_extraction_payload(payload, source_name: str = "", page_number: Optional[int] = None) -> Tuple[List[Dict], List[Dict]]:
     """AI応答を summary_data と detail_data に分離する。旧配列形式も受け入れる。"""
     if isinstance(payload, list):
         return [], payload
@@ -128,26 +129,56 @@ def split_extraction_payload(payload) -> Tuple[List[Dict], List[Dict]]:
     page_role = normalize_text(_first_present(payload, ["page_role", "role", "ページ種別"]))
     summary_data = _first_present(payload, ["summary_data", "summary", "見積表紙", "一式表", "工事費内訳"], None)
     if isinstance(summary_data, dict):
+        summary_data = dict(summary_data)
+        if source_name:
+            summary_data.setdefault("__source_name", source_name)
+        if page_number is not None:
+            summary_data.setdefault("__page_number", page_number)
         summary_sources.append(summary_data)
     elif page_role in ("cover_summary_page", "summary_page") and payload:
-        summary_sources.append(payload)
+        summary_source = dict(payload)
+        if source_name:
+            summary_source.setdefault("__source_name", source_name)
+        if page_number is not None:
+            summary_source.setdefault("__page_number", page_number)
+        summary_sources.append(summary_source)
 
     for key in ("detail_data", "details", "明細データ", "工事明細", "records"):
         value = payload.get(key)
         if isinstance(value, list):
-            detail_records.extend([item for item in value if isinstance(item, dict)])
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                record = dict(item)
+                if source_name:
+                    record.setdefault("__source_name", source_name)
+                if page_number is not None:
+                    record.setdefault("__page_number", page_number)
+                detail_records.append(record)
 
     return summary_sources, detail_records
 
 
-def _coerce_summary_item(item: Dict) -> Optional[Dict]:
+def _source_vendor(source: Dict) -> str:
+    return normalize_text(_first_present(
+        source,
+        ["見積元", "見積作成会社", "会社名", "発行会社", "vendor", "__source_name"],
+        "",
+    ))
+
+
+def _coerce_summary_item(item: Dict, source_vendor: str = "", source_name: str = "", page_number: Optional[int] = None) -> Optional[Dict]:
     if not isinstance(item, dict):
         return None
     name = normalize_text(_first_present(item, ["工事項目", "項目名", "品名", "name", "label"]))
     amount = parse_money(_first_present(item, ["金額", "amount", "小計", "税抜金額"]))
     if not name or amount is None:
         return None
+    vendor = normalize_text(_first_present(item, ["見積元", "見積作成会社", "会社名", "vendor"], source_vendor))
     return {
+        "見積元": vendor,
+        "元ファイル": source_name,
+        "ページ": page_number,
         "工事項目": name,
         "仕様": normalize_text(_first_present(item, ["仕様", "備考", "摘要"], "")),
         "数量": _first_present(item, ["数量"], 1) or 1,
@@ -161,24 +192,45 @@ def _coerce_summary_item(item: Dict) -> Optional[Dict]:
 def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
     merged: Dict = {}
     items: List[Dict] = []
+    normalized_sources: List[Dict] = []
     page_roles: List[str] = []
 
     for source in summary_sources or []:
         if not isinstance(source, dict):
             continue
+        source_vendor = _source_vendor(source)
+        source_name = normalize_text(source.get("__source_name", ""))
+        page_number = source.get("__page_number")
         role = normalize_text(_first_present(source, ["page_role", "role", "ページ種別"]))
         if role:
             page_roles.append(role)
+        source_items: List[Dict] = []
         for key, value in source.items():
+            if str(key).startswith("__"):
+                continue
             if value not in (None, "", []):
                 merged.setdefault(key, value)
         for key in SUMMARY_ITEM_KEYS:
             value = source.get(key)
             if isinstance(value, list):
                 for item in value:
-                    coerced = _coerce_summary_item(item)
+                    coerced = _coerce_summary_item(item, source_vendor, source_name, page_number)
                     if coerced:
                         items.append(coerced)
+                        source_items.append(coerced)
+        if source_items or any(source.get(key) not in (None, "", []) for key in ("小計", "改小計", "消費税", "工事費計")):
+            normalized_sources.append({
+                "見積元": source_vendor,
+                "元ファイル": source_name,
+                "ページ": page_number,
+                "工事名称": normalize_text(_first_present(source, ["工事名称", "工事名", "件名", "project_name"], "")),
+                "工事項目": source_items,
+                "小計": parse_money(_first_present(source, ["小計", "subtotal"])),
+                "端数調整": parse_money(_first_present(source, ["端数調整", "端末調整", "調整額", "rounding_adjustment"])),
+                "改小計": parse_money(_first_present(source, ["改小計", "税抜合計", "revised_subtotal"])),
+                "消費税": parse_money(_first_present(source, ["消費税", "税額", "tax"])),
+                "工事費計": parse_money(_first_present(source, ["工事費計", "税込合計", "総合計", "total"])),
+            })
 
     return {
         "宛名": normalize_text(_first_present(merged, ["宛名", "提出先", "御中", "client_name"], "")),
@@ -194,6 +246,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
         "消費税": parse_money(_first_present(merged, ["消費税", "税額", "tax"])),
         "工事費計": parse_money(_first_present(merged, ["工事費計", "税込合計", "総合計", "total"])),
         "工事項目": items,
+        "summary_sources": normalized_sources,
         "page_roles": page_roles,
     }
 
@@ -208,8 +261,7 @@ def _amount_series(df: pd.DataFrame) -> pd.Series:
     return pd.Series(dtype=float)
 
 
-def build_quote_summary_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_rate: float = 0.10) -> Tuple[pd.DataFrame, Dict[str, int]]:
-    """見積表紙・一式表シート。summary_data の総額を優先しつつ、上乗せ後は再計算する。"""
+def _build_summary_items_and_totals(summary_data: Dict, detail_df: pd.DataFrame, tax_rate: float = 0.10) -> Tuple[List[Dict], Dict[str, int]]:
     summary_data = summary_data or {}
     items = [dict(item) for item in summary_data.get("工事項目", []) if isinstance(item, dict)]
     detail_total = int(round(_amount_series(detail_df).sum())) if detail_df is not None and not detail_df.empty else 0
@@ -251,6 +303,25 @@ def build_quote_summary_dataframe(summary_data: Dict, detail_df: pd.DataFrame, t
     if not profit_changed and summary_data.get("工事費計") is not None:
         total = int(round(summary_data.get("工事費計") or total))
 
+    return items, {
+        "小計": subtotal,
+        "端数調整": rounding,
+        "改小計": revised_subtotal,
+        "消費税": tax,
+        "工事費計": total,
+    }
+
+
+def build_quote_summary_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_rate: float = 0.10) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """見積表紙シート。総合金額を確認するための先頭シート。"""
+    summary_data = summary_data or {}
+    items, totals = _build_summary_items_and_totals(summary_data, detail_df, tax_rate)
+    subtotal = totals["小計"]
+    rounding = totals["端数調整"]
+    revised_subtotal = totals["改小計"]
+    tax = totals["消費税"]
+    total = totals["工事費計"]
+
     rows = [
         ["", "彩架建設 見積書", "", "", "", "", "", ""],
         ["", "宛名", summary_data.get("宛名", ""), "", "", "", "", ""],
@@ -284,13 +355,88 @@ def build_quote_summary_dataframe(summary_data: Dict, detail_df: pd.DataFrame, t
         ["", "消費税", "", "", "", "", tax, ""],
         ["", "合計金額", "", "", "", "", total, ""],
     ])
-    return pd.DataFrame(rows), {
-        "小計": subtotal,
-        "端数調整": rounding,
-        "改小計": revised_subtotal,
-        "消費税": tax,
-        "工事費計": total,
-    }
+    return pd.DataFrame(rows), totals
+
+
+def _work_summary_fallback_items(detail_df: pd.DataFrame) -> List[Dict]:
+    if detail_df is None or detail_df.empty:
+        return []
+    source = output_dataframe(detail_df)
+    group_col = "見積元" if "見積元" in source.columns else None
+    if not group_col:
+        total = int(round(_amount_series(source).sum()))
+        return [{"工事項目": "工事一式", "数量": 1, "単位": "式", "単価": total, "金額": total, "備考": "明細合計から作成"}]
+
+    items: List[Dict] = []
+    for company, group in source.groupby(group_col, sort=False):
+        company_name = normalize_text(company) or "不明な会社"
+        total = int(round(pd.to_numeric(group["見積金額"], errors="coerce").fillna(0).sum()))
+        items.append({
+            "見積元": company_name,
+            "工事項目": f"{company_name} 工事一式",
+            "仕様": "",
+            "数量": 1,
+            "単位": "式",
+            "単価": total,
+            "金額": total,
+            "備考": "明細合計から作成",
+        })
+    return items
+
+
+def build_work_summary_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_rate: float = 0.10) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """工事別まとめシート。各社のまとめページと明細ページを混ぜず、貼り付け用8列に整える。"""
+    summary_data = summary_data or {}
+    items, totals = _build_summary_items_and_totals(summary_data, detail_df, tax_rate)
+    if not items:
+        items = _work_summary_fallback_items(detail_df)
+        fallback_total = int(round(sum(parse_money(item.get("金額")) or 0 for item in items)))
+        totals = {
+            "小計": fallback_total,
+            "端数調整": 0,
+            "改小計": fallback_total,
+            "消費税": int(round(fallback_total * tax_rate)),
+            "工事費計": fallback_total + int(round(fallback_total * tax_rate)),
+        }
+
+    rows: List[Dict] = []
+    for idx, item in enumerate(items, start=1):
+        vendor = normalize_text(item.get("見積元", ""))
+        note = normalize_text(item.get("備考", ""))
+        if vendor and vendor not in note:
+            note = f"{vendor} / {note}".strip(" /")
+        amount = int(round(parse_money(item.get("金額")) or 0))
+        rows.append({
+            "No": idx,
+            "工事品目": item.get("工事項目", ""),
+            "仕様": item.get("仕様", ""),
+            "数量": item.get("数量", 1),
+            "単位": item.get("単位", "式"),
+            "単価": amount,
+            "金額": amount,
+            "備考": note,
+        })
+
+    total_rows = [
+        ("小計", totals["小計"]),
+        ("端数調整", totals["端数調整"]),
+        ("改小計", totals["改小計"]),
+        ("消費税", totals["消費税"]),
+        ("合計金額", totals["工事費計"]),
+    ]
+    for label, amount in total_rows:
+        rows.append({
+            "No": "",
+            "工事品目": label,
+            "仕様": "",
+            "数量": "",
+            "単位": "",
+            "単価": "",
+            "金額": amount,
+            "備考": "",
+        })
+
+    return pd.DataFrame(rows, columns=NUMBERS_OUTPUT_COLUMNS), totals
 
 
 def _is_summary_name(name: str) -> bool:

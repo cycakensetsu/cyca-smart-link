@@ -24,9 +24,11 @@ from estimate_pipeline import (
     OUTPUT_COLUMNS,
     DETAIL_SHEET_NAME,
     QUOTE_SHEET_NAME,
+    WORK_SUMMARY_SHEET_NAME,
     apply_profit,
     build_intermediate_dataframe,
     build_quote_summary_dataframe,
+    build_work_summary_dataframe,
     numbers_detail_dataframe,
     output_dataframe,
     normalize_summary_data,
@@ -612,7 +614,11 @@ if uploaded_files:
                             continue
                         try:
                             payload = parse_gemini_json_payload(result.text)
-                            page_summaries, page_records = split_extraction_payload(payload)
+                            page_summaries, page_records = split_extraction_payload(
+                                payload,
+                                source_name=page.source_name,
+                                page_number=page.page_number,
+                            )
                             summary_sources.extend(page_summaries)
                             all_extracted_data.extend(page_records)
                         except json.JSONDecodeError:
@@ -699,6 +705,7 @@ if uploaded_files:
 
                         df_output = output_dataframe(df)
                         df_quote_summary, quote_totals = build_quote_summary_dataframe(summary_data, df)
+                        df_work_summary, work_totals = build_work_summary_dataframe(summary_data, df)
                         df_numbers_detail, detail_issues = numbers_detail_dataframe(df)
                         if detail_issues:
                             issues.extend(detail_issues)
@@ -714,6 +721,9 @@ if uploaded_files:
                         st.write("▼ 1枚目用：見積書")
                         st.dataframe(df_quote_summary, use_container_width=True, hide_index=True)
                         st.metric("見積書 合計金額", f"{quote_totals.get('工事費計', 0):,} 円")
+                        st.write("▼ 2枚目用：工事別まとめ（各社の一式・経費・税計算）")
+                        st.dataframe(df_work_summary, use_container_width=True, hide_index=True)
+                        st.metric("工事別まとめ 合計金額", f"{work_totals.get('工事費計', 0):,} 円")
                         st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
                         st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
@@ -723,6 +733,7 @@ if uploaded_files:
                         output = BytesIO()
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
                             df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
+                            df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
                             df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
                         excel_data = output.getvalue()
                         csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
@@ -865,6 +876,7 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             df_profit = apply_profit(df, "見積元（会社）ごとに金額を指定する", company_profits=cat_profits)
             df_output = output_dataframe(df_profit)
             df_quote_summary, quote_totals = build_quote_summary_dataframe(summary_data, df_profit)
+            df_work_summary, work_totals = build_work_summary_dataframe(summary_data, df_profit)
             df_numbers_detail, detail_issues = numbers_detail_dataframe(df_profit)
             if detail_issues:
                 has_blocking_issue = True
@@ -881,12 +893,16 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             st.write("▼ 1枚目用：見積書")
             st.dataframe(df_quote_summary, use_container_width=True, hide_index=True)
             st.metric("見積書 合計金額", f"{quote_totals.get('工事費計', 0):,} 円")
+            st.write("▼ 2枚目用：工事別まとめ（各社の一式・経費・税計算）")
+            st.dataframe(df_work_summary, use_container_width=True, hide_index=True)
+            st.metric("工事別まとめ 合計金額", f"{work_totals.get('工事費計', 0):,} 円")
             st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
             st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
+                df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
                 df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
             excel_data = output.getvalue()
             csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")

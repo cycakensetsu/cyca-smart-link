@@ -9,8 +9,10 @@ from estimate_pipeline import (
     NUMBERS_OUTPUT_COLUMNS,
     OUTPUT_COLUMNS,
     QUOTE_SHEET_NAME,
+    WORK_SUMMARY_SHEET_NAME,
     build_intermediate_dataframe,
     build_quote_summary_dataframe,
+    build_work_summary_dataframe,
     normalize_summary_data,
     output_dataframe,
     numbers_detail_dataframe,
@@ -113,7 +115,7 @@ class EstimatePipelineTest(unittest.TestCase):
         self.assertIn("防水工事", values)
         self.assertIn("12650000", values)
 
-    def test_workbook_always_starts_with_quote_sheet_then_detail_sheet(self):
+    def test_workbook_always_starts_with_quote_work_summary_then_detail_sheet(self):
         payload = {
             "summary_data": {
                 "宛名": "御中",
@@ -138,17 +140,20 @@ class EstimatePipelineTest(unittest.TestCase):
         summary_data = normalize_summary_data(summaries)
         df, _ = build_intermediate_dataframe(details)
         quote_df, totals = build_quote_summary_dataframe(summary_data, df)
+        work_summary_df, work_totals = build_work_summary_dataframe(summary_data, df)
         detail_df, issues = numbers_detail_dataframe(df)
         self.assertEqual(issues, [])
 
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             quote_df.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
+            work_summary_df.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
             detail_df.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
 
         workbook = openpyxl.load_workbook(BytesIO(output.getvalue()), read_only=True)
-        self.assertEqual(workbook.sheetnames, ["見積書", "明細データ"])
+        self.assertEqual(workbook.sheetnames, ["見積書", "工事別まとめ", "明細データ"])
         self.assertEqual(totals["工事費計"], 12650000)
+        self.assertEqual(work_totals["工事費計"], 12650000)
         quote_values = [
             cell
             for row in workbook["見積書"].iter_rows(values_only=True)
@@ -158,6 +163,85 @@ class EstimatePipelineTest(unittest.TestCase):
         self.assertIn("彩架建設 見積書", quote_values)
         self.assertIn("（元）海老津ショッピングセンター屋上防水改修工事", quote_values)
         self.assertIn(12650000, quote_values)
+        work_values = [
+            cell
+            for row in workbook["工事別まとめ"].iter_rows(values_only=True)
+            for cell in row
+            if cell not in (None, "")
+        ]
+        self.assertIn("防水工事", work_values)
+        self.assertIn("諸経費", work_values)
+        self.assertIn("厚生福利費", work_values)
+        self.assertIn(12650000, work_values)
+
+    def test_work_summary_keeps_multiple_company_summary_pages_separate(self):
+        summaries = []
+        details = []
+        payloads = [
+            (
+                "瀧上工業.pdf",
+                {
+                    "page_role": "cover_summary_page",
+                    "summary_data": {
+                        "見積元": "瀧上工業",
+                        "工事項目": [
+                            {"工事項目": "防水工事一式", "金額": 11381700},
+                            {"工事項目": "諸経費", "金額": 65000},
+                            {"工事項目": "厚生福利費", "金額": 55000},
+                        ],
+                        "端数調整": -1700,
+                    },
+                },
+            ),
+            (
+                "塗装工事.pdf",
+                {
+                    "page_role": "summary_page",
+                    "summary_data": {
+                        "見積元": "塗装会社",
+                        "工事項目": [
+                            {"工事項目": "外部塗装工事一式", "金額": 5000000},
+                            {"工事項目": "諸経費", "金額": 300000},
+                        ],
+                    },
+                },
+            ),
+            (
+                "仮設工事.pdf",
+                {
+                    "page_role": "summary_page",
+                    "summary_data": {
+                        "見積元": "足場会社",
+                        "工事項目": [
+                            {"工事項目": "仮設工事一式", "金額": 2500000},
+                        ],
+                    },
+                },
+            ),
+        ]
+        for idx, (source_name, payload) in enumerate(payloads, start=1):
+            page_summaries, page_details = split_extraction_payload(payload, source_name=source_name, page_number=idx)
+            summaries.extend(page_summaries)
+            details.extend(page_details)
+
+        detail_records = [
+            {"No": 1, "見積元": "瀧上工業", "品名": "防水明細", "数量": 1, "単位": "式", "単価": 11381700, "金額": 11381700},
+            {"No": 1, "見積元": "塗装会社", "品名": "塗装明細", "数量": 1, "単位": "式", "単価": 5000000, "金額": 5000000},
+            {"No": 1, "見積元": "足場会社", "品名": "足場明細", "数量": 1, "単位": "式", "単価": 2500000, "金額": 2500000},
+        ]
+        df, _ = build_intermediate_dataframe(detail_records)
+        summary_data = normalize_summary_data(summaries)
+        work_summary_df, totals = build_work_summary_dataframe(summary_data, df)
+
+        values = work_summary_df.fillna("").astype(str).to_string()
+        self.assertIn("防水工事一式", values)
+        self.assertIn("外部塗装工事一式", values)
+        self.assertIn("仮設工事一式", values)
+        self.assertIn("瀧上工業", values)
+        self.assertIn("塗装会社", values)
+        self.assertIn("足場会社", values)
+        self.assertEqual(totals["小計"], 19301700)
+        self.assertEqual(len(work_summary_df[work_summary_df["No"].astype(str).str.strip() != ""]), 6)
 
     def test_summary_sheet_recalculates_after_profit(self):
         summaries = [{
