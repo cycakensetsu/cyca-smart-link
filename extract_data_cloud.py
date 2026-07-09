@@ -28,6 +28,7 @@ from estimate_pipeline import (
     build_intermediate_dataframe,
     build_quote_summary_dataframe,
     numbers_detail_dataframe,
+    deduplicate_estimate_records,
     output_dataframe,
     normalize_summary_data,
     split_extraction_payload,
@@ -644,6 +645,7 @@ if uploaded_files:
                     if not all_extracted_data:
                         st.warning("読み取れたデータがありませんでした。ファイル形式（PDF・JPG・PNG）と内容をご確認ください。")
                     else:
+                        all_extracted_data, dedupe_debug_rows = deduplicate_estimate_records(all_extracted_data)
                         summary_data = normalize_summary_data(summary_sources)
                         df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
                         issues = validate_intermediate(df, pdf_totals)
@@ -659,6 +661,10 @@ if uploaded_files:
                         c2.metric("明細合計", f"{subtotal:,} 円")
                         c3.metric("PDF小計", f"{int(pdf_totals.get('小計') or 0):,} 円")
                         c4.metric("税込合計", f"{int(pdf_totals.get('税込合計') or 0):,} 円")
+
+                        if dedupe_debug_rows:
+                            with st.expander("見積元の重複判定ログ", expanded=False):
+                                st.dataframe(pd.DataFrame(dedupe_debug_rows), use_container_width=True, hide_index=True)
 
                         if issues:
                             st.warning("確認が必要な明細があります。出力前に内容を確認してください。")

@@ -1,8 +1,12 @@
+import logging
 import math
 import re
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 OUTPUT_COLUMNS = [
@@ -61,6 +65,10 @@ SUMMARY_KEYWORDS = [
     "改小計",
 ]
 
+UNKNOWN_VENDOR_NAMES = {"", "不明", "不明な会社", "unknown", "none", "null", "未取得"}
+UNKNOWN_DUPLICATE_REL_TOLERANCE = 0.08
+UNKNOWN_DUPLICATE_MIN_TOLERANCE = 10000
+
 
 def normalize_text(value) -> str:
     if value is None:
@@ -114,6 +122,158 @@ def _first_present(record: Dict, keys: Iterable[str], default=""):
         if key in record and record.get(key) not in (None, ""):
             return record.get(key)
     return default
+
+
+def _is_unknown_vendor(vendor: str) -> bool:
+    return normalize_text(vendor).lower() in UNKNOWN_VENDOR_NAMES
+
+
+def _record_vendor(record: Dict) -> str:
+    return normalize_text(_first_present(record, ["見積元", "見積作成会社", "会社名", "発行会社", "vendor"], "不明")) or "不明"
+
+
+def _record_source_pdf(record: Dict) -> str:
+    return normalize_text(_first_present(record, ["__source_name", "source_pdf", "元ファイル", "source"], ""))
+
+
+def _record_text_range(record: Dict) -> str:
+    text_range = normalize_text(_first_present(
+        record,
+        ["抽出元テキスト範囲", "text_range", "source_text_range", "抽出範囲", "source_snippet"],
+        "",
+    ))
+    if text_range:
+        return text_range[:180]
+    page = _first_present(record, ["__page_number", "ページ", "page"], "")
+    name = normalize_text(_first_present(record, ["品名", "項目名", "工事品目", "名称・内容", "名称", "商品名・工事名"], ""))
+    amount = _first_present(record, ["原価金額", "金額", "amount"], "")
+    parts = []
+    if page not in (None, ""):
+        parts.append(f"page={page}")
+    if name:
+        parts.append(f"item={name[:80]}")
+    if amount not in (None, ""):
+        parts.append(f"amount={amount}")
+    return " / ".join(parts)
+
+
+def _records_amount_total(records: List[Dict]) -> int:
+    total = 0
+    for record in records:
+        name = normalize_text(_first_present(record, ["品名", "項目名", "工事品目", "名称・内容", "名称", "商品名・工事名"]))
+        if name and _is_summary_name(name):
+            continue
+        amount = parse_money(_first_present(record, ["原価金額", "金額", "amount"]))
+        if amount is not None:
+            total += int(round(amount))
+    return total
+
+
+def _records_declared_amount(records: List[Dict], keys: Iterable[str]) -> Optional[int]:
+    for record in records:
+        value = parse_money(_first_present(record, keys))
+        if value is not None:
+            return int(round(value))
+    return None
+
+
+def _amounts_are_near(left: Optional[int], right: Optional[int]) -> bool:
+    if left is None or right is None:
+        return False
+    if left == right:
+        return True
+    larger = max(abs(left), abs(right))
+    if larger <= 0:
+        return False
+    tolerance = max(UNKNOWN_DUPLICATE_MIN_TOLERANCE, int(round(larger * UNKNOWN_DUPLICATE_REL_TOLERANCE)))
+    return abs(left - right) <= tolerance
+
+
+def deduplicate_estimate_records(records: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+    """同一PDF内で会社名付き見積と近い金額の「不明」見積を二重集計しない。"""
+    groups: Dict[Tuple[str, str], List[Dict]] = {}
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        source_pdf = _record_source_pdf(record)
+        company_name = _record_vendor(record)
+        groups.setdefault((source_pdf, company_name), []).append(record)
+
+    group_infos: List[Dict] = []
+    for (source_pdf, company_name), group_records in groups.items():
+        subtotal = _records_declared_amount(group_records, ["PDF小計", "見積税抜合計", "小計", "税抜合計"])
+        detail_total = _records_amount_total(group_records)
+        subtotal_ex_tax = subtotal if subtotal is not None else detail_total
+        total_in_tax = _records_declared_amount(group_records, ["税込合計", "合計", "総合計"])
+        text_ranges = []
+        for record in group_records[:3]:
+            text_range = _record_text_range(record)
+            if text_range:
+                text_ranges.append(text_range)
+        group_infos.append({
+            "source_pdf名": source_pdf,
+            "company_name": company_name,
+            "subtotal_ex_tax": subtotal_ex_tax,
+            "total_in_tax": total_in_tax,
+            "抽出元テキスト範囲": " | ".join(text_ranges),
+            "records": group_records,
+            "excluded": False,
+            "duplicate_reason": "",
+            "duplicate_of": "",
+        })
+
+    named_by_pdf: Dict[str, List[Dict]] = {}
+    for info in group_infos:
+        if not _is_unknown_vendor(info["company_name"]):
+            named_by_pdf.setdefault(info["source_pdf名"], []).append(info)
+
+    excluded_ids = set()
+    for info in group_infos:
+        if not _is_unknown_vendor(info["company_name"]):
+            continue
+        duplicate_of = None
+        for named in named_by_pdf.get(info["source_pdf名"], []):
+            if (
+                _amounts_are_near(info["subtotal_ex_tax"], named["subtotal_ex_tax"])
+                or _amounts_are_near(info["subtotal_ex_tax"], named["total_in_tax"])
+                or _amounts_are_near(info["total_in_tax"], named["subtotal_ex_tax"])
+                or _amounts_are_near(info["total_in_tax"], named["total_in_tax"])
+            ):
+                duplicate_of = named
+                break
+        if duplicate_of:
+            info["excluded"] = True
+            info["duplicate_of"] = duplicate_of["company_name"]
+            info["duplicate_reason"] = "same_pdf_unknown_near_named_amount"
+            for record in info["records"]:
+                excluded_ids.add(id(record))
+
+    filtered = [record for record in records or [] if id(record) not in excluded_ids]
+    debug_rows = []
+    for info in group_infos:
+        row = {
+            "source_pdf名": info["source_pdf名"],
+            "company_name": info["company_name"],
+            "subtotal_ex_tax": info["subtotal_ex_tax"],
+            "total_in_tax": info["total_in_tax"],
+            "抽出元テキスト範囲": info["抽出元テキスト範囲"],
+            "重複判定で除外": info["excluded"],
+            "duplicate_of": info["duplicate_of"],
+            "duplicate_reason": info["duplicate_reason"],
+        }
+        debug_rows.append(row)
+        LOGGER.info(
+            "estimate_dedupe source_pdf=%s company=%s subtotal_ex_tax=%s total_in_tax=%s text_range=%s excluded=%s duplicate_of=%s reason=%s",
+            row["source_pdf名"],
+            row["company_name"],
+            row["subtotal_ex_tax"],
+            row["total_in_tax"],
+            row["抽出元テキスト範囲"],
+            row["重複判定で除外"],
+            row["duplicate_of"],
+            row["duplicate_reason"],
+        )
+    return filtered, debug_rows
 
 
 def split_extraction_payload(payload, source_name: str = "", page_number: Optional[int] = None) -> Tuple[List[Dict], List[Dict]]:

@@ -13,6 +13,7 @@ from estimate_pipeline import (
     build_intermediate_dataframe,
     build_quote_summary_dataframe,
     build_work_summary_dataframe,
+    deduplicate_estimate_records,
     normalize_summary_data,
     output_dataframe,
     numbers_detail_dataframe,
@@ -242,6 +243,59 @@ class EstimatePipelineTest(unittest.TestCase):
         self.assertIn("足場会社", values)
         self.assertEqual(totals["小計"], 19301700)
         self.assertEqual(len(work_summary_df[work_summary_df["No"].astype(str).str.strip() != ""]), 6)
+
+    def test_unknown_same_pdf_near_named_amount_is_excluded_from_cost_total(self):
+        records = [
+            {
+                "__source_name": "塗装見積.pdf",
+                "__page_number": 1,
+                "見積元": "株式会社 山田製作所",
+                "品名": "手摺り部分全塗装",
+                "数量": "145㎡",
+                "単価": "4800",
+                "金額": "696000",
+            },
+            {
+                "__source_name": "塗装見積.pdf",
+                "__page_number": 1,
+                "見積元": "株式会社 山田製作所",
+                "品名": "諸経費",
+                "数量": "1式",
+                "単価": "218000",
+                "金額": "218000",
+            },
+            {
+                "__source_name": "塗装見積.pdf",
+                "__page_number": 2,
+                "見積元": "アキヨシ塗装",
+                "品名": "外壁塗装工事",
+                "数量": "1式",
+                "単価": "3800000",
+                "金額": "3800000",
+                "抽出元テキスト範囲": "アキヨシ塗装 外壁塗装工事 3,800,000",
+            },
+            {
+                "__source_name": "塗装見積.pdf",
+                "__page_number": 2,
+                "見積元": "不明",
+                "品名": "塗装工事一式",
+                "数量": "1式",
+                "単価": "3578500",
+                "金額": "3578500",
+                "抽出元テキスト範囲": "塗装工事一式 3,578,500",
+            },
+        ]
+
+        filtered, debug_rows = deduplicate_estimate_records(records)
+        df, _ = build_intermediate_dataframe(filtered)
+
+        self.assertEqual(len(filtered), 3)
+        self.assertNotIn("不明", df["見積元"].tolist())
+        self.assertEqual(int(df["原価金額"].sum()), 4714000)
+        excluded = [row for row in debug_rows if row["重複判定で除外"]]
+        self.assertEqual(len(excluded), 1)
+        self.assertEqual(excluded[0]["company_name"], "不明")
+        self.assertEqual(excluded[0]["duplicate_of"], "アキヨシ塗装")
 
     def test_summary_sheet_recalculates_after_profit(self):
         summaries = [{
