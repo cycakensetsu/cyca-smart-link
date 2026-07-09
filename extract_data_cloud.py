@@ -33,7 +33,6 @@ from estimate_pipeline import (
     numbers_detail_dataframe,
     output_dataframe,
     normalize_summary_data,
-    simple_detail_dataframe,
     summary_data_from_cost_dataframe,
     split_extraction_payload,
     validate_intermediate,
@@ -51,6 +50,28 @@ except ImportError:
 class _CatInputNeeded(Exception):
     """工事種別ごと入力UIへ遷移するための内部シグナル"""
     pass
+
+
+SIMPLE_DETAIL_COLUMNS = ["商品名・工事名", "数量", "単位", "単価（円）", "金額（円）", "備考"]
+
+
+def simple_detail_dataframe(detail_df):
+    """簡易工事見積用。Numbersへ崩れず貼るための固定6列表。"""
+    if detail_df is None or detail_df.empty:
+        return pd.DataFrame(columns=SIMPLE_DETAIL_COLUMNS), []
+    source = output_dataframe(detail_df)
+    simple = pd.DataFrame(
+        {
+            "商品名・工事名": source["品名"],
+            "数量": pd.to_numeric(source["数量"], errors="coerce"),
+            "単位": source["単位"],
+            "単価（円）": pd.to_numeric(source["原価単価"], errors="coerce"),
+            "金額（円）": pd.to_numeric(source["原価金額"], errors="coerce"),
+            "備考": source["備考"],
+        },
+        index=source.index,
+    )
+    return simple[SIMPLE_DETAIL_COLUMNS], []
 
 def _gold_sparkle_html():
     import random
