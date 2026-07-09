@@ -9,6 +9,7 @@ from estimate_pipeline import (
     NUMBERS_OUTPUT_COLUMNS,
     OUTPUT_COLUMNS,
     QUOTE_SHEET_NAME,
+    SIMPLE_DETAIL_COLUMNS,
     WORK_SUMMARY_SHEET_NAME,
     assign_unknown_vendors_to_pdf_vendor,
     build_intermediate_dataframe,
@@ -20,6 +21,7 @@ from estimate_pipeline import (
     output_dataframe,
     numbers_detail_dataframe,
     parse_money,
+    simple_detail_dataframe,
     vendor_detail_dataframe,
     split_extraction_payload,
     split_quantity_unit,
@@ -79,6 +81,30 @@ class EstimatePipelineTest(unittest.TestCase):
         self.assertEqual(detail["金額"].tolist(), df["見積金額"].tolist())
         for internal_col in ["見積元", "品名", "原価単価", "原価金額", "上乗せ額", "見積単価", "見積金額"]:
             self.assertNotIn(internal_col, detail.columns)
+
+    def test_simple_detail_dataframe_is_stable_six_column_copy_table(self):
+        df, _ = build_intermediate_dataframe([
+            {"No": 1, "見積元": "株式会社 山田製作所", "品名": "上段看板", "数量": "2枚", "単価": "43080", "金額": "86160"},
+            {"No": 2, "見積元": "株式会社 山田製作所", "品名": "下段看板", "数量": "12枚", "単価": "17040", "金額": "204480"},
+            {"No": 3, "見積元": "株式会社 山田製作所", "品名": "現場取付施工費", "数量": "1式", "単価": "75000", "金額": "75000"},
+            {"No": 4, "見積元": "株式会社 山田製作所", "品名": "高所作業車 スーパーデッキ", "数量": "1式", "単価": "55000", "金額": "55000"},
+            {"No": 5, "見積元": "株式会社 山田製作所", "品名": "諸経費", "数量": "1式", "単価": "31000", "金額": "31000"},
+            {"No": 6, "見積元": "株式会社 山田製作所", "品名": "法定福利費", "数量": "1式", "単価": "12619", "金額": "12619"},
+        ])
+        simple, issues = simple_detail_dataframe(df)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(simple.columns.tolist(), SIMPLE_DETAIL_COLUMNS)
+        self.assertEqual(len(simple), 6)
+        self.assertEqual(simple.iloc[0].to_dict(), {
+            "商品名・工事名": "上段看板",
+            "数量": 2.0,
+            "単位": "枚",
+            "単価（円）": 43080,
+            "金額（円）": 86160,
+            "備考": "",
+        })
+        self.assertEqual(int(simple["金額（円）"].sum()), 464259)
 
     def test_subtotal_mismatch_blocks_output(self):
         bad = [dict(r) for r in DANJYO_RECORDS]

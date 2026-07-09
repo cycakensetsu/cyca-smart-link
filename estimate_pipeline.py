@@ -49,6 +49,15 @@ NUMBERS_OUTPUT_COLUMNS = [
     "備考",
 ]
 
+SIMPLE_DETAIL_COLUMNS = [
+    "商品名・工事名",
+    "数量",
+    "単位",
+    "単価（円）",
+    "金額（円）",
+    "備考",
+]
+
 SUMMARY_ITEM_KEYS = ["工事費内訳", "工事内容のまとめ", "工事項目単位の集計", "summary_items", "work_items", "items", "工事項目"]
 EXPENSE_KEYWORDS = ["諸経費", "福利", "厚生", "法定福利", "運搬", "処分", "荷揚げ", "現場管理"]
 
@@ -1075,3 +1084,22 @@ def numbers_detail_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Dict[
             "内容": f"抽出明細：{len(df)}行 / 3枚目用明細：{len(detail)}行。出力用明細で{len(df) - len(detail)}行欠落しています。",
         })
     return detail, issues
+
+
+def simple_detail_dataframe(detail_df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Dict[str, str]]]:
+    """簡易工事見積用。Numbersテンプレートへ値だけ貼るための固定6列表。"""
+    if detail_df is None or detail_df.empty:
+        return pd.DataFrame(columns=SIMPLE_DETAIL_COLUMNS), []
+    source = output_dataframe(detail_df)
+    simple = pd.DataFrame(
+        {
+            "商品名・工事名": source["品名"],
+            "数量": pd.to_numeric(source["数量"], errors="coerce"),
+            "単位": source["単位"],
+            "単価（円）": pd.to_numeric(source["原価単価"], errors="coerce"),
+            "金額（円）": pd.to_numeric(source["原価金額"], errors="coerce"),
+            "備考": source["備考"],
+        },
+        index=source.index,
+    )
+    return simple[SIMPLE_DETAIL_COLUMNS], []

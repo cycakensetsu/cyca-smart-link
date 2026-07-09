@@ -33,6 +33,7 @@ from estimate_pipeline import (
     numbers_detail_dataframe,
     output_dataframe,
     normalize_summary_data,
+    simple_detail_dataframe,
     summary_data_from_cost_dataframe,
     split_extraction_payload,
     validate_intermediate,
@@ -728,32 +729,43 @@ if uploaded_files:
                         quote_summary_data = summary_data_from_cost_dataframe(summary_data, df)
                         df_quote_summary, quote_totals = build_quote_summary_dataframe(quote_summary_data, df)
                         df_work_summary, work_totals = build_vendor_work_summary_dataframe(vendor_summaries, df)
-                        df_numbers_detail, detail_issues = vendor_detail_dataframe(detail_df)
+                        is_simple_format = format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）"
+                        if is_simple_format:
+                            df_numbers_detail, detail_issues = simple_detail_dataframe(detail_df)
+                        else:
+                            df_numbers_detail, detail_issues = vendor_detail_dataframe(detail_df)
                         if detail_issues:
                             issues.extend(detail_issues)
                         st.toast("計算完了！データ準備OK", icon="✅")
                         st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
                         st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
                         st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。")
-                        st.write("▼ 1枚目用：見積書")
-                        st.dataframe(df_quote_summary, use_container_width=True, hide_index=True)
-                        st.metric("見積書 合計金額", f"{quote_totals.get('工事費計', 0):,} 円")
-                        st.write("▼ 2枚目用：工事別まとめ（各社の一式・経費・税計算）")
-                        st.dataframe(df_work_summary, use_container_width=True, hide_index=True)
-                        st.metric("工事別まとめ 合計金額", f"{work_totals.get('工事費計', 0):,} 円")
-                        st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
-                        st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
+                        if is_simple_format:
+                            st.write("▼ 簡易工事見積：明細のみ（Numbers貼り付け用）")
+                            st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
+                        else:
+                            st.write("▼ 1枚目用：見積書")
+                            st.dataframe(df_quote_summary, use_container_width=True, hide_index=True)
+                            st.metric("見積書 合計金額", f"{quote_totals.get('工事費計', 0):,} 円")
+                            st.write("▼ 2枚目用：工事別まとめ（各社の一式・経費・税計算）")
+                            st.dataframe(df_work_summary, use_container_width=True, hide_index=True)
+                            st.metric("工事別まとめ 合計金額", f"{work_totals.get('工事費計', 0):,} 円")
+                            st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
+                            st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
                         if df_output["備考"].astype(str).str.strip().ne("").any():
                             st.info("一部の行は見積書から数値が正しく読み取れなかった、または検算差異があるため備考に表示しています。")
 
                         output = BytesIO()
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
-                            df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
-                            df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
+                            if is_simple_format:
+                                df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name="簡易明細")
+                            else:
+                                df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
+                                df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
+                                df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
                         excel_data = output.getvalue()
-                        csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
+                        csv_data = df_numbers_detail.to_csv(index=False, header=is_simple_format).encode("utf-8-sig")
 
                         st.markdown("""
                         <div class="download-done-box" style="position: relative; overflow: hidden;">
@@ -897,29 +909,41 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             quote_summary_data = summary_data_from_cost_dataframe(summary_data, df_profit)
             df_quote_summary, quote_totals = build_quote_summary_dataframe(quote_summary_data, df_profit)
             df_work_summary, work_totals = build_vendor_work_summary_dataframe(vendor_summaries, df_profit)
-            df_numbers_detail, detail_issues = vendor_detail_dataframe(detail_df)
+            format_choice = st.session_state.get("_extracted_format_choice", "")
+            is_simple_format = format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）"
+            if is_simple_format:
+                df_numbers_detail, detail_issues = simple_detail_dataframe(detail_df)
+            else:
+                df_numbers_detail, detail_issues = vendor_detail_dataframe(detail_df)
             if detail_issues:
                 has_blocking_issue = True
             st.toast("計算完了！", icon="✅")
             st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
             st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
             st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。")
-            st.write("▼ 1枚目用：見積書")
-            st.dataframe(df_quote_summary, use_container_width=True, hide_index=True)
-            st.metric("見積書 合計金額", f"{quote_totals.get('工事費計', 0):,} 円")
-            st.write("▼ 2枚目用：工事別まとめ（各社の一式・経費・税計算）")
-            st.dataframe(df_work_summary, use_container_width=True, hide_index=True)
-            st.metric("工事別まとめ 合計金額", f"{work_totals.get('工事費計', 0):,} 円")
-            st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
-            st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
+            if is_simple_format:
+                st.write("▼ 簡易工事見積：明細のみ（Numbers貼り付け用）")
+                st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
+            else:
+                st.write("▼ 1枚目用：見積書")
+                st.dataframe(df_quote_summary, use_container_width=True, hide_index=True)
+                st.metric("見積書 合計金額", f"{quote_totals.get('工事費計', 0):,} 円")
+                st.write("▼ 2枚目用：工事別まとめ（各社の一式・経費・税計算）")
+                st.dataframe(df_work_summary, use_container_width=True, hide_index=True)
+                st.metric("工事別まとめ 合計金額", f"{work_totals.get('工事費計', 0):,} 円")
+                st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
+                st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
-                df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
-                df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
+                if is_simple_format:
+                    df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name="簡易明細")
+                else:
+                    df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
+                    df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
+                    df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
             excel_data = output.getvalue()
-            csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
+            csv_data = df_numbers_detail.to_csv(index=False, header=is_simple_format).encode("utf-8-sig")
 
             st.markdown("""
             <div class="download-done-box" style="position: relative; overflow: hidden;">
