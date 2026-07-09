@@ -25,7 +25,9 @@ from estimate_pipeline import (
     DETAIL_SHEET_NAME,
     QUOTE_SHEET_NAME,
     assign_unknown_vendors_to_pdf_vendor,
+    apply_company_profit_to_details,
     apply_profit,
+    build_vendor_copy_sheets,
     build_intermediate_dataframe,
     build_cost_basis_dataframe,
     build_quote_summary_dataframe,
@@ -753,8 +755,10 @@ if uploaded_files:
                         is_simple_format = format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）"
                         if is_simple_format:
                             df_numbers_detail, detail_issues = simple_detail_dataframe(detail_df)
+                            vendor_sheet_pairs = []
                         else:
                             df_numbers_detail, detail_issues = vendor_detail_dataframe(detail_df)
+                            vendor_sheet_pairs = build_vendor_copy_sheets(vendor_summaries, detail_df, df)
                         if detail_issues:
                             issues.extend(detail_issues)
                         st.toast("計算完了！データ準備OK", icon="✅")
@@ -781,6 +785,9 @@ if uploaded_files:
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
                             if is_simple_format:
                                 df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name="簡易明細")
+                            elif vendor_sheet_pairs:
+                                for sheet_name, sheet_df in vendor_sheet_pairs:
+                                    sheet_df.to_excel(writer, index=False, header=True, sheet_name=sheet_name)
                             else:
                                 df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
                                 df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
@@ -925,7 +932,7 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             vendor_summaries = st.session_state.get("_vendor_summaries", [])
             summary_data = st.session_state.get("_summary_data", {})
             has_blocking_issue = bool(st.session_state.get("_extracted_blocking", False))
-            df_profit = apply_profit(df, "見積元（会社）ごとに金額を指定する", company_profits=cat_profits)
+            detail_profit_df, df_profit = apply_company_profit_to_details(detail_df, df, cat_profits)
             df_output = output_dataframe(df_profit)
             quote_summary_data = summary_data_from_cost_dataframe(summary_data, df_profit)
             df_quote_summary, quote_totals = build_quote_summary_dataframe(quote_summary_data, df_profit)
@@ -933,9 +940,11 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             format_choice = st.session_state.get("_extracted_format_choice", "")
             is_simple_format = format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）"
             if is_simple_format:
-                df_numbers_detail, detail_issues = simple_detail_dataframe(detail_df)
+                df_numbers_detail, detail_issues = simple_detail_dataframe(detail_profit_df)
+                vendor_sheet_pairs = []
             else:
-                df_numbers_detail, detail_issues = vendor_detail_dataframe(detail_df)
+                df_numbers_detail, detail_issues = vendor_detail_dataframe(detail_profit_df)
+                vendor_sheet_pairs = build_vendor_copy_sheets(vendor_summaries, detail_profit_df, df_profit)
             if detail_issues:
                 has_blocking_issue = True
             st.toast("計算完了！", icon="✅")
@@ -959,6 +968,9 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 if is_simple_format:
                     df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name="簡易明細")
+                elif vendor_sheet_pairs:
+                    for sheet_name, sheet_df in vendor_sheet_pairs:
+                        sheet_df.to_excel(writer, index=False, header=True, sheet_name=sheet_name)
                 else:
                     df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
                     df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)

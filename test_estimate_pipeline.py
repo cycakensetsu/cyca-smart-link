@@ -12,6 +12,8 @@ from estimate_pipeline import (
     SIMPLE_DETAIL_COLUMNS,
     WORK_SUMMARY_SHEET_NAME,
     assign_unknown_vendors_to_pdf_vendor,
+    apply_company_profit_to_details,
+    build_vendor_copy_sheets,
     build_intermediate_dataframe,
     build_cost_basis_dataframe,
     build_quote_summary_dataframe,
@@ -105,6 +107,32 @@ class EstimatePipelineTest(unittest.TestCase):
             "備考": "",
         })
         self.assertEqual(int(simple["金額（円）"].sum()), 464259)
+
+    def test_company_profit_is_distributed_to_natural_detail_items(self):
+        detail_df, _ = build_intermediate_dataframe([
+            {"No": 1, "見積元": "吉村板金", "品名": "屋根大波ガルバリウム鋼鈑", "数量": "1式", "単価": 110000, "金額": 110000},
+            {"No": 2, "見積元": "吉村板金", "品名": "屋根材運搬、クレーン", "数量": "1式", "単価": 80000, "金額": 80000},
+            {"No": 3, "見積元": "吉村板金", "品名": "既存屋根材解体", "数量": "10㎡", "単価": 12000, "金額": 120000},
+            {"No": 4, "見積元": "吉村板金", "品名": "棟板金", "数量": "8m", "単価": 12000, "金額": 96000},
+            {"No": 5, "見積元": "吉村板金", "品名": "ケミカル面戸", "数量": "30m", "単価": 2000, "金額": 60000},
+            {"No": 6, "見積元": "吉村板金", "品名": "廃材処分費", "数量": "1式", "単価": 15000, "金額": 15000},
+            {"No": 7, "見積元": "吉村板金", "品名": "諸経費", "数量": "1式", "単価": 30000, "金額": 30000},
+            {"No": 8, "見積元": "吉村板金", "品名": "屋根工事施工費", "数量": "1式", "単価": 142000, "金額": 142000},
+        ])
+        cost_df, vendor_summaries = build_cost_basis_dataframe({}, detail_df)
+
+        detail_profit_df, cost_profit_df = apply_company_profit_to_details(detail_df, cost_df, {"吉村板金": 400000})
+        sheets = build_vendor_copy_sheets(vendor_summaries, detail_profit_df, cost_profit_df)
+
+        self.assertEqual(int(cost_df["原価金額"].sum()), 653000)
+        self.assertEqual(int(cost_profit_df["見積金額"].sum()), 1053000)
+        self.assertEqual(int(detail_profit_df["見積金額"].sum()), 1053000)
+        chemical = detail_profit_df[detail_profit_df["品名"] == "ケミカル面戸"].iloc[0]
+        self.assertLessEqual(float(chemical["見積単価"]), 6000)
+        expense_markup = int(detail_profit_df[detail_profit_df["品名"].isin(["廃材処分費", "諸経費"])]["上乗せ額"].sum())
+        self.assertLess(expense_markup, 80000)
+        self.assertEqual([name for name, _ in sheets], ["吉村板金 まとめ", "吉村板金 明細"])
+        self.assertEqual(list(sheets[0][1].columns[:6]), ["工事項目", "数量", "単位", "単価（円）", "金額（円）", "備考"])
 
     def test_subtotal_mismatch_blocks_output(self):
         bad = [dict(r) for r in DANJYO_RECORDS]

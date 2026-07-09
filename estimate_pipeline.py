@@ -58,8 +58,14 @@ SIMPLE_DETAIL_COLUMNS = [
     "備考",
 ]
 
+COPY_TABLE_COLUMNS = ["工事項目", "数量", "単位", "単価（円）", "金額（円）", "備考"]
+
 SUMMARY_ITEM_KEYS = ["工事費内訳", "工事内容のまとめ", "工事項目単位の集計", "summary_items", "work_items", "items", "工事項目"]
 EXPENSE_KEYWORDS = ["諸経費", "福利", "厚生", "法定福利", "運搬", "処分", "荷揚げ", "現場管理"]
+PREFERRED_MARKUP_KEYWORDS = ["工事", "施工", "補修", "取付", "取り付け", "塗装", "防水", "板金", "屋根", "外壁"]
+EXPENSE_MARKUP_KEYWORDS = ["諸経費", "廃材", "処分", "運搬", "クレーン", "高所作業車", "法定福利", "福利", "安全", "養生", "交通費", "雑費"]
+LIGHT_WORK_KEYWORDS = ["養生", "清掃", "軽作業"]
+MATERIAL_KEYWORDS = ["材料", "材", "鋼鈑", "板", "シート", "面戸", "副資材"]
 
 SUMMARY_KEYWORDS = [
     "小計",
@@ -1050,6 +1056,279 @@ def apply_profit(df: pd.DataFrame, profit_mode: str, profit_val: float = 0, comp
             apply_to_mask(mask, float(add or 0))
 
     return out[OUTPUT_COLUMNS]
+
+
+def _unit_price_factor(unit_price: float) -> float:
+    if unit_price >= 50000:
+        return 1.5
+    if unit_price >= 10000:
+        return 1.2
+    if unit_price >= 3000:
+        return 1.0
+    if unit_price < 500:
+        return 0.1
+    if unit_price < 1000:
+        return 0.3
+    return 0.6
+
+
+def _item_class_factor(name: str) -> float:
+    text = normalize_text(name)
+    if any(keyword in text for keyword in EXPENSE_MARKUP_KEYWORDS):
+        return 0.2
+    if any(keyword in text for keyword in LIGHT_WORK_KEYWORDS):
+        return 0.6
+    if any(keyword in text for keyword in PREFERRED_MARKUP_KEYWORDS):
+        return 1.5
+    if any(keyword in text for keyword in MATERIAL_KEYWORDS):
+        return 1.0
+    return 1.0
+
+
+def _markup_unit_cap(unit_price: float) -> Optional[float]:
+    if unit_price <= 0:
+        return None
+    if unit_price < 500:
+        return unit_price * 1.2
+    if unit_price < 1000:
+        return unit_price * 2.0
+    if unit_price < 3000:
+        return unit_price * 3.0
+    return None
+
+
+def _round_unit_naturally(value: float) -> int:
+    if value <= 0:
+        return 0
+    unit = 1000 if value >= 50000 else 100
+    return int(math.ceil(value / unit) * unit)
+
+
+def _best_adjustment_index(group: pd.DataFrame) -> Optional[int]:
+    candidates = []
+    for idx, row in group.iterrows():
+        name = normalize_text(row.get("品名", ""))
+        unit_price = float(row.get("原価単価") or 0)
+        amount = float(row.get("原価金額") or 0)
+        if any(keyword in name for keyword in EXPENSE_MARKUP_KEYWORDS):
+            continue
+        candidates.append((unit_price, amount, idx))
+    if not candidates:
+        for idx, row in group.iterrows():
+            candidates.append((float(row.get("原価単価") or 0), float(row.get("原価金額") or 0), idx))
+    if not candidates:
+        return None
+    return sorted(candidates, reverse=True)[0][2]
+
+
+def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int) -> pd.DataFrame:
+    out = detail_df.copy()
+    if out.empty:
+        return out
+    original_total = int(round(pd.to_numeric(out["原価金額"], errors="coerce").fillna(0).sum()))
+    increment = int(round(target_total - original_total))
+    out["上乗せ額"] = 0
+    out["見積単価"] = pd.to_numeric(out["原価単価"], errors="coerce")
+    out["見積金額"] = pd.to_numeric(out["原価金額"], errors="coerce")
+    if increment <= 0:
+        return out
+
+    weights: Dict[int, float] = {}
+    caps: Dict[int, Optional[int]] = {}
+    for idx, row in out.iterrows():
+        amount = float(row.get("原価金額") or 0)
+        unit_price = float(row.get("原価単価") or 0)
+        qty = float(row.get("数量") or 1)
+        if amount <= 0 or qty <= 0 or unit_price <= 0:
+            weights[idx] = 0.0
+            caps[idx] = 0
+            continue
+        weight = amount * _unit_price_factor(unit_price) * _item_class_factor(row.get("品名", ""))
+        weights[idx] = max(weight, 0.0)
+        cap_unit = _markup_unit_cap(unit_price)
+        caps[idx] = None if cap_unit is None else max(0, int(round(cap_unit * qty - amount)))
+
+    remaining = increment
+    active = {idx for idx, weight in weights.items() if weight > 0}
+    allocations = {idx: 0 for idx in out.index}
+    while remaining > 0 and active:
+        total_weight = sum(weights[idx] for idx in active)
+        if total_weight <= 0:
+            break
+        used_this_round = 0
+        next_active = set()
+        for idx in active:
+            raw_add = remaining * (weights[idx] / total_weight)
+            cap = caps.get(idx)
+            available = remaining if cap is None else max(0, cap - allocations[idx])
+            add = min(int(round(raw_add)), available)
+            if add > 0:
+                allocations[idx] += add
+                used_this_round += add
+            if cap is None or allocations[idx] < cap:
+                next_active.add(idx)
+        if used_this_round <= 0:
+            break
+        remaining -= used_this_round
+        active = next_active
+
+    adjustment_idx = _best_adjustment_index(out)
+    if remaining > 0 and adjustment_idx is not None:
+        allocations[adjustment_idx] += remaining
+
+    for idx, row in out.iterrows():
+        qty = float(row.get("数量") or 1)
+        qty = qty if qty != 0 else 1
+        original_amount = float(row.get("原価金額") or 0)
+        estimate_amount = original_amount + allocations.get(idx, 0)
+        estimate_unit = _round_unit_naturally(estimate_amount / qty)
+        estimate_amount = int(round(estimate_unit * qty))
+        cap = caps.get(idx)
+        if cap is not None and estimate_amount - original_amount > cap:
+            estimate_amount = int(round(original_amount + cap))
+            estimate_unit = int(round(estimate_amount / qty))
+        out.at[idx, "見積単価"] = estimate_unit
+        out.at[idx, "見積金額"] = estimate_amount
+        out.at[idx, "上乗せ額"] = int(round(estimate_amount - original_amount))
+
+    rounded_total = int(round(pd.to_numeric(out["見積金額"], errors="coerce").fillna(0).sum()))
+    diff = int(round(target_total - rounded_total))
+    adjustment_idx = _best_adjustment_index(out)
+    if diff != 0 and adjustment_idx is not None:
+        qty = float(out.at[adjustment_idx, "数量"] or 1)
+        qty = qty if qty != 0 else 1
+        current_amount = float(out.at[adjustment_idx, "見積金額"] or 0)
+        new_amount = int(round(current_amount + diff))
+        new_unit = max(0, int(round(new_amount / qty)))
+        out.at[adjustment_idx, "見積単価"] = new_unit
+        out.at[adjustment_idx, "見積金額"] = int(round(new_unit * qty))
+        out.at[adjustment_idx, "上乗せ額"] = int(round(out.at[adjustment_idx, "見積金額"] - float(out.at[adjustment_idx, "原価金額"] or 0)))
+    return out
+
+
+def apply_company_profit_to_details(detail_df: pd.DataFrame, cost_df: pd.DataFrame, company_profits: Optional[Dict[str, float]] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """会社ごとの上乗せ額を明細行へ自然配分し、まとめ小計と明細合計を一致させる。"""
+    company_profits = company_profits or {}
+    detail_out = detail_df.copy()
+    cost_out = cost_df.copy()
+    if detail_out.empty or cost_out.empty:
+        return detail_out, cost_out
+    detail_out["上乗せ額"] = 0
+    detail_out["見積単価"] = detail_out["原価単価"]
+    detail_out["見積金額"] = detail_out["原価金額"]
+
+    for company, cost_group in cost_out.groupby("見積元", sort=False):
+        company_name = normalize_text(company)
+        add = int(round(float(company_profits.get(company_name, 0) or 0)))
+        base_total = int(round(pd.to_numeric(cost_group["原価金額"], errors="coerce").fillna(0).sum()))
+        target_total = base_total + add
+        mask = detail_out["見積元"].astype(str) == str(company_name)
+        if not mask.any():
+            continue
+        allocated = _allocate_group_markup(detail_out.loc[mask], target_total)
+        for col in ["上乗せ額", "見積単価", "見積金額"]:
+            detail_out.loc[allocated.index, col] = allocated[col]
+        actual_total = int(round(pd.to_numeric(allocated["見積金額"], errors="coerce").fillna(0).sum()))
+        cost_mask = cost_out["見積元"].astype(str) == str(company_name)
+        if cost_mask.any():
+            idx = cost_out[cost_mask].index[0]
+            cost_out.at[idx, "上乗せ額"] = actual_total - base_total
+            cost_out.at[idx, "見積単価"] = actual_total
+            cost_out.at[idx, "見積金額"] = actual_total
+    return detail_out, cost_out
+
+
+def _copy_table_from_rows(rows: List[Dict], amount_key: str = "見積金額", unit_key: str = "見積単価") -> pd.DataFrame:
+    out_rows = []
+    for row in rows:
+        out_rows.append({
+            "工事項目": normalize_text(row.get("品名", row.get("工事項目", ""))),
+            "数量": row.get("数量", 1),
+            "単位": normalize_text(row.get("単位", "式")) or "式",
+            "単価（円）": int(round(parse_money(row.get(unit_key)) or parse_money(row.get("単価")) or parse_money(row.get(amount_key)) or 0)),
+            "金額（円）": int(round(parse_money(row.get(amount_key)) or parse_money(row.get("金額")) or 0)),
+            "備考": normalize_text(row.get("備考", "")),
+        })
+    return pd.DataFrame(out_rows, columns=COPY_TABLE_COLUMNS)
+
+
+def _totals_table(subtotal: int, tax_rate: float = 0.10) -> pd.DataFrame:
+    tax = int(round(subtotal * tax_rate))
+    return pd.DataFrame([
+        {"工事項目": "小計", "数量": subtotal, "単位": "", "単価（円）": "", "金額（円）": "", "備考": ""},
+        {"工事項目": "消費税", "数量": tax, "単位": "", "単価（円）": "", "金額（円）": "", "備考": ""},
+        {"工事項目": "合計", "数量": subtotal + tax, "単位": "", "単価（円）": "", "金額（円）": "", "備考": ""},
+    ], columns=COPY_TABLE_COLUMNS)
+
+
+def build_vendor_copy_sheets(vendor_summaries: List[Dict], detail_df: pd.DataFrame, cost_df: pd.DataFrame, tax_rate: float = 0.10) -> List[Tuple[str, pd.DataFrame]]:
+    """業者ごとに まとめ/明細 の貼り付け用シートを作る。"""
+    sheets: List[Tuple[str, pd.DataFrame]] = []
+    if cost_df is None or cost_df.empty:
+        return sheets
+    detail_source = detail_df.copy() if detail_df is not None else pd.DataFrame()
+    summary_by_vendor = {normalize_text(s.get("見積元", "")): s for s in vendor_summaries or []}
+    used_names: Dict[str, int] = {}
+
+    def sheet_name(base: str) -> str:
+        clean = re.sub(r"[:\\\\/?*\\[\\]]", "", base)[:28] or "sheet"
+        count = used_names.get(clean, 0)
+        used_names[clean] = count + 1
+        return clean if count == 0 else f"{clean[:25]}_{count + 1}"
+
+    for vendor, cost_group in cost_df.groupby("見積元", sort=False):
+        vendor_name = normalize_text(vendor) or "不明"
+        subtotal = int(round(pd.to_numeric(cost_group["見積金額"], errors="coerce").fillna(0).sum()))
+        summary = summary_by_vendor.get(vendor_name, {})
+        summary_items = []
+        if summary.get("集計根拠") != "detail_fallback":
+            for item in summary.get("工事項目", []) or []:
+                amount = int(round(parse_money(item.get("金額")) or 0))
+                if not amount:
+                    continue
+                ratio = subtotal / max(int(round(summary.get("改小計") or summary.get("小計") or amount)), 1)
+                estimate_amount = int(round(amount * ratio))
+                qty = parse_money(item.get("数量")) or 1
+                summary_items.append({
+                    "工事項目": normalize_text(item.get("工事項目", "")),
+                    "数量": qty,
+                    "単位": normalize_text(item.get("単位", "式")) or "式",
+                    "単価": int(round(estimate_amount / (qty or 1))),
+                    "金額": estimate_amount,
+                    "備考": normalize_text(item.get("備考", "")),
+                })
+        if not summary_items:
+            for _, row in cost_group.iterrows():
+                summary_items.append({
+                    "工事項目": normalize_text(row.get("品名", f"{vendor_name} 工事一式")),
+                    "数量": row.get("数量", 1),
+                    "単位": normalize_text(row.get("単位", "式")) or "式",
+                    "単価": int(round(parse_money(row.get("見積単価")) or subtotal)),
+                    "金額": int(round(parse_money(row.get("見積金額")) or subtotal)),
+                    "備考": normalize_text(row.get("備考", "")),
+                })
+        summary_table = _copy_table_from_rows(summary_items, amount_key="金額", unit_key="単価")
+        summary_diff = subtotal - int(round(pd.to_numeric(summary_table["金額（円）"], errors="coerce").fillna(0).sum()))
+        if summary_diff and not summary_table.empty:
+            idx = summary_table["金額（円）"].astype(float).idxmax()
+            qty = float(summary_table.at[idx, "数量"] or 1)
+            summary_table.at[idx, "金額（円）"] = int(summary_table.at[idx, "金額（円）"] + summary_diff)
+            summary_table.at[idx, "単価（円）"] = int(round(summary_table.at[idx, "金額（円）"] / (qty or 1)))
+        summary_out = pd.concat([summary_table, pd.DataFrame([{}]), _totals_table(subtotal, tax_rate)], ignore_index=True)
+        sheets.append((sheet_name(f"{vendor_name} まとめ"), summary_out))
+
+        vendor_details = detail_source[detail_source["見積元"].astype(str) == str(vendor_name)] if not detail_source.empty else pd.DataFrame()
+        detail_table = _copy_table_from_rows([row.to_dict() for _, row in vendor_details.iterrows()], amount_key="見積金額", unit_key="見積単価")
+        detail_subtotal = int(round(pd.to_numeric(detail_table["金額（円）"], errors="coerce").fillna(0).sum())) if not detail_table.empty else 0
+        if detail_subtotal != subtotal and not detail_table.empty:
+            idx = detail_table["金額（円）"].astype(float).idxmax()
+            diff = subtotal - detail_subtotal
+            qty = float(detail_table.at[idx, "数量"] or 1)
+            detail_table.at[idx, "金額（円）"] = int(detail_table.at[idx, "金額（円）"] + diff)
+            detail_table.at[idx, "単価（円）"] = int(round(detail_table.at[idx, "金額（円）"] / (qty or 1)))
+        detail_out = pd.concat([detail_table, pd.DataFrame([{}]), _totals_table(subtotal, tax_rate)], ignore_index=True)
+        sheets.append((sheet_name(f"{vendor_name} 明細"), detail_out))
+    return sheets
 
 
 def output_dataframe(df: pd.DataFrame) -> pd.DataFrame:
