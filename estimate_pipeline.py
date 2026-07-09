@@ -411,6 +411,217 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
     }
 
 
+def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+    """同一PDF内に会社名付き見積がある場合、不明明細をその業者の明細として扱う。"""
+    named_by_pdf: Dict[str, List[str]] = {}
+
+    for source in summary_sources or []:
+        if not isinstance(source, dict):
+            continue
+        source_pdf = normalize_text(source.get("__source_name", ""))
+        vendor = _source_vendor(source)
+        if source_pdf and vendor and not _is_unknown_vendor(vendor):
+            named_by_pdf.setdefault(source_pdf, [])
+            if vendor not in named_by_pdf[source_pdf]:
+                named_by_pdf[source_pdf].append(vendor)
+
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        source_pdf = _record_source_pdf(record)
+        vendor = _record_vendor(record)
+        if source_pdf and vendor and not _is_unknown_vendor(vendor):
+            named_by_pdf.setdefault(source_pdf, [])
+            if vendor not in named_by_pdf[source_pdf]:
+                named_by_pdf[source_pdf].append(vendor)
+
+    reassigned: List[Dict] = []
+    debug_rows: List[Dict] = []
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        out = dict(record)
+        source_pdf = _record_source_pdf(out)
+        original_vendor = _record_vendor(out)
+        candidates = named_by_pdf.get(source_pdf, [])
+        assigned_vendor = original_vendor
+        if _is_unknown_vendor(original_vendor) and len(candidates) == 1:
+            assigned_vendor = candidates[0]
+            out["見積元"] = assigned_vendor
+            out["__assigned_vendor_from_pdf"] = True
+        reassigned.append(out)
+        debug_rows.append({
+            "source_pdf名": source_pdf,
+            "original_company_name": original_vendor,
+            "company_name": assigned_vendor,
+            "assigned_from_same_pdf": assigned_vendor != original_vendor,
+            "抽出元テキスト範囲": _record_text_range(out),
+        })
+
+    return reassigned, debug_rows
+
+
+def _detail_vendor_totals(detail_df: pd.DataFrame) -> Dict[Tuple[str, str], int]:
+    if detail_df is None or detail_df.empty:
+        return {}
+    source = detail_df.copy()
+    if "元ファイル" not in source.columns:
+        source["元ファイル"] = ""
+    totals: Dict[Tuple[str, str], int] = {}
+    for (_, row) in source.iterrows():
+        vendor = normalize_text(row.get("見積元", "")) or "不明"
+        source_pdf = normalize_text(row.get("元ファイル", ""))
+        amount = parse_money(row.get("原価金額")) or 0
+        totals[(source_pdf, vendor)] = totals.get((source_pdf, vendor), 0) + int(round(amount))
+    return totals
+
+
+def _detail_items_for_vendor(detail_df: pd.DataFrame, source_pdf: str, vendor: str) -> List[Dict]:
+    if detail_df is None or detail_df.empty:
+        return []
+    source = detail_df.copy()
+    if "元ファイル" not in source.columns:
+        source["元ファイル"] = ""
+    items: List[Dict] = []
+    for (_, row) in source.iterrows():
+        row_vendor = normalize_text(row.get("見積元", ""))
+        row_pdf = normalize_text(row.get("元ファイル", ""))
+        if row_vendor != vendor:
+            continue
+        if source_pdf and row_pdf and row_pdf != source_pdf:
+            continue
+        amount = int(round(parse_money(row.get("原価金額")) or 0))
+        items.append({
+            "工事項目": normalize_text(row.get("品名", "")),
+            "仕様": "",
+            "数量": row.get("数量", 1),
+            "単位": normalize_text(row.get("単位", "式")) or "式",
+            "単価": int(round(parse_money(row.get("原価単価")) or amount)),
+            "金額": amount,
+            "備考": normalize_text(row.get("備考", "")),
+        })
+    return items
+
+
+def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_rate: float = 0.10) -> Tuple[pd.DataFrame, List[Dict]]:
+    """集計対象を業者ごとの最終税抜小計だけに限定した原価DFを作る。"""
+    summary_data = summary_data or {}
+    summary_sources = summary_data.get("summary_sources", []) or []
+    detail_totals = _detail_vendor_totals(detail_df)
+    represented_keys = set()
+    vendor_summaries: List[Dict] = []
+
+    for source in summary_sources:
+        if not isinstance(source, dict):
+            continue
+        source_pdf = normalize_text(source.get("元ファイル", ""))
+        vendor = normalize_text(source.get("見積元", "")) or "不明"
+        if _is_unknown_vendor(vendor):
+            candidates = [key_vendor for (key_pdf, key_vendor) in detail_totals if key_pdf == source_pdf and not _is_unknown_vendor(key_vendor)]
+            if len(set(candidates)) == 1:
+                vendor = candidates[0]
+        items = [dict(item) for item in source.get("工事項目", []) if isinstance(item, dict)]
+        item_sum = int(round(sum(parse_money(item.get("金額")) or 0 for item in items)))
+        subtotal = source.get("改小計")
+        if subtotal is None:
+            subtotal = source.get("小計")
+        if subtotal is None:
+            subtotal = item_sum
+        if subtotal is None or int(round(subtotal or 0)) == 0:
+            subtotal = detail_totals.get((source_pdf, vendor), 0)
+        subtotal = int(round(subtotal or 0))
+        if subtotal == 0 and not items:
+            continue
+        rounding = int(round(source.get("端数調整") or 0))
+        tax = int(round(source.get("消費税") if source.get("消費税") is not None else subtotal * tax_rate))
+        total = int(round(source.get("工事費計") if source.get("工事費計") is not None else subtotal + tax))
+        if not items:
+            items = _detail_items_for_vendor(detail_df, source_pdf, vendor)
+        vendor_summaries.append({
+            "見積元": vendor,
+            "元ファイル": source_pdf,
+            "工事名称": normalize_text(source.get("工事名称", "")),
+            "工事項目": items,
+            "小計": subtotal,
+            "端数調整": rounding,
+            "改小計": subtotal,
+            "消費税": tax,
+            "工事費計": total,
+            "明細合計": detail_totals.get((source_pdf, vendor), 0),
+            "集計根拠": "summary",
+        })
+        represented_keys.add((source_pdf, vendor))
+
+    for (source_pdf, vendor), detail_total in detail_totals.items():
+        if (source_pdf, vendor) in represented_keys:
+            continue
+        if detail_total == 0:
+            continue
+        items = _detail_items_for_vendor(detail_df, source_pdf, vendor)
+        tax = int(round(detail_total * tax_rate))
+        vendor_summaries.append({
+            "見積元": vendor,
+            "元ファイル": source_pdf,
+            "工事名称": "",
+            "工事項目": items,
+            "小計": detail_total,
+            "端数調整": 0,
+            "改小計": detail_total,
+            "消費税": tax,
+            "工事費計": detail_total + tax,
+            "明細合計": detail_total,
+            "集計根拠": "detail_fallback",
+        })
+
+    rows: List[Dict] = []
+    for idx, summary in enumerate(vendor_summaries, start=1):
+        vendor = normalize_text(summary.get("見積元", "")) or "不明"
+        subtotal = int(round(summary.get("改小計") or summary.get("小計") or 0))
+        rows.append({
+            "No": idx,
+            "見積元": vendor,
+            "品名": f"{vendor} まとめ",
+            "数量": 1,
+            "単位": "式",
+            "原価単価": subtotal,
+            "原価金額": subtotal,
+            "上乗せ額": 0,
+            "見積単価": subtotal,
+            "見積金額": subtotal,
+            "備考": "集計対象: 業者見積の税抜小計",
+        })
+
+    df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+    for col in ["数量", "原価単価", "原価金額", "上乗せ額", "見積単価", "見積金額"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df, vendor_summaries
+
+
+def summary_data_from_cost_dataframe(summary_data: Dict, cost_df: pd.DataFrame) -> Dict:
+    out = dict(summary_data or {})
+    items: List[Dict] = []
+    if cost_df is not None and not cost_df.empty:
+        for (_, row) in cost_df.iterrows():
+            amount = int(round(parse_money(row.get("見積金額")) or parse_money(row.get("原価金額")) or 0))
+            items.append({
+                "見積元": normalize_text(row.get("見積元", "")),
+                "工事項目": normalize_text(row.get("品名", "")),
+                "仕様": "",
+                "数量": row.get("数量", 1),
+                "単位": normalize_text(row.get("単位", "式")) or "式",
+                "単価": amount,
+                "金額": amount,
+                "備考": normalize_text(row.get("備考", "")),
+            })
+    out["工事項目"] = items
+    out["小計"] = int(round(sum(parse_money(item.get("金額")) or 0 for item in items)))
+    out["端数調整"] = 0
+    out["改小計"] = out["小計"]
+    out["消費税"] = int(round(out["改小計"] * 0.10))
+    out["工事費計"] = out["改小計"] + out["消費税"]
+    return out
+
+
 def _amount_series(df: pd.DataFrame) -> pd.Series:
     if "見積金額" in df.columns:
         return pd.to_numeric(df["見積金額"], errors="coerce").fillna(0)
@@ -599,6 +810,86 @@ def build_work_summary_dataframe(summary_data: Dict, detail_df: pd.DataFrame, ta
     return pd.DataFrame(rows, columns=NUMBERS_OUTPUT_COLUMNS), totals
 
 
+def build_vendor_work_summary_dataframe(vendor_summaries: List[Dict], cost_df: pd.DataFrame, tax_rate: float = 0.10) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """業者ごとのまとめだけを2枚目に出す。明細合計は集計に使わない。"""
+    cost_amount_by_vendor: Dict[str, int] = {}
+    if cost_df is not None and not cost_df.empty:
+        for vendor, group in cost_df.groupby("見積元", sort=False):
+            cost_amount_by_vendor[normalize_text(vendor)] = int(round(pd.to_numeric(group["見積金額"], errors="coerce").fillna(0).sum()))
+
+    rows: List[Dict] = []
+    subtotal_total = 0
+    for summary in vendor_summaries or []:
+        vendor = normalize_text(summary.get("見積元", "")) or "不明"
+        subtotal = cost_amount_by_vendor.get(vendor, int(round(summary.get("改小計") or summary.get("小計") or 0)))
+        subtotal_total += subtotal
+        tax = int(round(subtotal * tax_rate))
+        total = subtotal + tax
+        rows.append({"No": "", "工事品目": f"【{vendor} まとめ】", "仕様": normalize_text(summary.get("元ファイル", "")), "数量": "", "単位": "", "単価": "", "金額": "", "備考": summary.get("集計根拠", "")})
+        items = [dict(item) for item in summary.get("工事項目", []) if isinstance(item, dict)]
+        if not items:
+            items = [{"工事項目": f"{vendor} 工事一式", "仕様": "", "数量": 1, "単位": "式", "単価": subtotal, "金額": subtotal, "備考": ""}]
+        for item_idx, item in enumerate(items, start=1):
+            amount = int(round(parse_money(item.get("金額")) or 0))
+            rows.append({
+                "No": item_idx,
+                "工事品目": normalize_text(item.get("工事項目", "")),
+                "仕様": normalize_text(item.get("仕様", "")),
+                "数量": item.get("数量", 1),
+                "単位": normalize_text(item.get("単位", "式")) or "式",
+                "単価": int(round(parse_money(item.get("単価")) or amount)),
+                "金額": amount,
+                "備考": normalize_text(item.get("備考", "")),
+            })
+        rows.extend([
+            {"No": "", "工事品目": f"{vendor} 小計", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": subtotal, "備考": "集計対象"},
+            {"No": "", "工事品目": f"{vendor} 消費税", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": tax, "備考": ""},
+            {"No": "", "工事品目": f"{vendor} 合計", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": total, "備考": ""},
+            {"No": "", "工事品目": "", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "備考": ""},
+        ])
+
+    total_tax = int(round(subtotal_total * tax_rate))
+    totals = {
+        "小計": subtotal_total,
+        "端数調整": 0,
+        "改小計": subtotal_total,
+        "消費税": total_tax,
+        "工事費計": subtotal_total + total_tax,
+    }
+    rows.extend([
+        {"No": "", "工事品目": "全業者 小計", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": totals["小計"], "備考": ""},
+        {"No": "", "工事品目": "全業者 消費税", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": totals["消費税"], "備考": ""},
+        {"No": "", "工事品目": "全業者 合計", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": totals["工事費計"], "備考": ""},
+    ])
+    return pd.DataFrame(rows, columns=NUMBERS_OUTPUT_COLUMNS), totals
+
+
+def vendor_detail_dataframe(detail_df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Dict[str, str]]]:
+    """3枚目は業者ごとの確認用明細。ここは原価合計には使わない。"""
+    if detail_df is None or detail_df.empty:
+        return pd.DataFrame(columns=NUMBERS_OUTPUT_COLUMNS), []
+    source = output_dataframe(detail_df)
+    rows: List[Dict] = []
+    for vendor, group in source.groupby("見積元", sort=False):
+        vendor_name = normalize_text(vendor) or "不明"
+        rows.append({"No": "", "工事品目": f"【{vendor_name} 明細】", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "備考": "確認用・集計対象外"})
+        for item_idx, (_, row) in enumerate(group.iterrows(), start=1):
+            rows.append({
+                "No": item_idx,
+                "工事品目": row.get("品名", ""),
+                "仕様": "",
+                "数量": row.get("数量", ""),
+                "単位": row.get("単位", ""),
+                "単価": row.get("原価単価", ""),
+                "金額": row.get("原価金額", ""),
+                "備考": row.get("備考", ""),
+            })
+        detail_total = int(round(pd.to_numeric(group["原価金額"], errors="coerce").fillna(0).sum()))
+        rows.append({"No": "", "工事品目": f"{vendor_name} 明細合計", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": detail_total, "備考": "確認用"})
+        rows.append({"No": "", "工事品目": "", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "備考": ""})
+    return pd.DataFrame(rows, columns=NUMBERS_OUTPUT_COLUMNS), []
+
+
 def _is_summary_name(name: str) -> bool:
     return any(keyword in name for keyword in SUMMARY_KEYWORDS)
 
@@ -668,10 +959,12 @@ def build_intermediate_dataframe(records: List[Dict]) -> Tuple[pd.DataFrame, Dic
                 "見積単価": unit_price if unit_price is not None else pd.NA,
                 "見積金額": amount if amount is not None else pd.NA,
                 "備考": " / ".join(note_parts),
+                "元ファイル": normalize_text(record.get("__source_name", "")),
+                "ページ": record.get("__page_number", ""),
             }
         )
 
-    df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+    df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS + ["元ファイル", "ページ"])
     for col in ["数量", "原価単価", "原価金額", "上乗せ額", "見積単価", "見積金額"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df, totals

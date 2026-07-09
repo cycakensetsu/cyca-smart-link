@@ -10,14 +10,17 @@ from estimate_pipeline import (
     OUTPUT_COLUMNS,
     QUOTE_SHEET_NAME,
     WORK_SUMMARY_SHEET_NAME,
+    assign_unknown_vendors_to_pdf_vendor,
     build_intermediate_dataframe,
+    build_cost_basis_dataframe,
     build_quote_summary_dataframe,
+    build_vendor_work_summary_dataframe,
     build_work_summary_dataframe,
-    deduplicate_estimate_records,
     normalize_summary_data,
     output_dataframe,
     numbers_detail_dataframe,
     parse_money,
+    vendor_detail_dataframe,
     split_extraction_payload,
     split_quantity_unit,
     validate_intermediate,
@@ -244,10 +247,54 @@ class EstimatePipelineTest(unittest.TestCase):
         self.assertEqual(totals["小計"], 19301700)
         self.assertEqual(len(work_summary_df[work_summary_df["No"].astype(str).str.strip() != ""]), 6)
 
-    def test_unknown_same_pdf_near_named_amount_is_excluded_from_cost_total(self):
+    def test_vendor_summary_is_cost_basis_and_unknown_detail_stays_as_vendor_detail(self):
+        summary_sources = [
+            {
+                "__source_name": "山田製作所.pdf",
+                "__page_number": 1,
+                "見積元": "株式会社 山田製作所",
+                "工事項目": [
+                    {"工事項目": "A部 腐食部補修", "金額": 68000},
+                    {"工事項目": "B部 腐食部補強補修", "数量": 2, "単位": "箇所", "金額": 150000},
+                    {"工事項目": "手摺り部分全塗装", "数量": 145, "単位": "㎡", "金額": 696000},
+                ],
+                "小計": 914000,
+                "消費税": 91400,
+                "工事費計": 1005400,
+            },
+            {
+                "__source_name": "アキヨシ塗装.pdf",
+                "__page_number": 1,
+                "見積元": "アキヨシ塗装",
+                "工事項目": [
+                    {"工事項目": "塗装工事一式", "金額": 3800000},
+                ],
+                "小計": 3800000,
+                "消費税": 380000,
+                "工事費計": 4180000,
+            },
+        ]
         records = [
             {
-                "__source_name": "塗装見積.pdf",
+                "__source_name": "山田製作所.pdf",
+                "__page_number": 1,
+                "見積元": "株式会社 山田製作所",
+                "品名": "A部 腐食部補修",
+                "数量": "1式",
+                "単価": "68000",
+                "金額": "68000",
+            },
+            {
+                "__source_name": "山田製作所.pdf",
+                "__page_number": 1,
+                "見積元": "株式会社 山田製作所",
+                "品名": "B部 腐食部補強補修",
+                "数量": "2箇所",
+                "単価": "75000",
+                "金額": "150000",
+            },
+            {
+                "__source_name": "山田製作所.pdf",
                 "__page_number": 1,
                 "見積元": "株式会社 山田製作所",
                 "品名": "手摺り部分全塗装",
@@ -256,14 +303,50 @@ class EstimatePipelineTest(unittest.TestCase):
                 "金額": "696000",
             },
             {
-                "__source_name": "塗装見積.pdf",
-                "__page_number": 1,
-                "見積元": "株式会社 山田製作所",
-                "品名": "諸経費",
+                "__source_name": "アキヨシ塗装.pdf",
+                "__page_number": 2,
+                "見積元": "不明",
+                "品名": "塗装明細A",
                 "数量": "1式",
-                "単価": "218000",
-                "金額": "218000",
+                "単価": "2000000",
+                "金額": "2000000",
             },
+            {
+                "__source_name": "アキヨシ塗装.pdf",
+                "__page_number": 2,
+                "見積元": "不明",
+                "品名": "塗装明細B",
+                "数量": "1式",
+                "単価": "1578500",
+                "金額": "1578500",
+            },
+        ]
+
+        assigned_records, assign_debug = assign_unknown_vendors_to_pdf_vendor(records, summary_sources)
+        summary_data = normalize_summary_data(summary_sources)
+        detail_df, _ = build_intermediate_dataframe(assigned_records)
+        cost_df, vendor_summaries = build_cost_basis_dataframe(summary_data, detail_df)
+        work_df, work_totals = build_vendor_work_summary_dataframe(vendor_summaries, cost_df)
+        detail_sheet_df, detail_issues = vendor_detail_dataframe(detail_df)
+
+        self.assertTrue(any(row["assigned_from_same_pdf"] for row in assign_debug))
+        self.assertNotIn("不明", detail_df["見積元"].tolist())
+        self.assertEqual(int(detail_df["原価金額"].sum()), 4492500)
+        self.assertEqual(int(cost_df["原価金額"].sum()), 4714000)
+        self.assertEqual(cost_df["見積元"].tolist(), ["株式会社 山田製作所", "アキヨシ塗装"])
+        self.assertEqual(work_totals["小計"], 4714000)
+        self.assertEqual(detail_issues, [])
+
+        work_values = work_df.fillna("").astype(str).to_string()
+        detail_values = detail_sheet_df.fillna("").astype(str).to_string()
+        self.assertIn("【株式会社 山田製作所 まとめ】", work_values)
+        self.assertIn("【アキヨシ塗装 まとめ】", work_values)
+        self.assertIn("【株式会社 山田製作所 明細】", detail_values)
+        self.assertIn("【アキヨシ塗装 明細】", detail_values)
+
+    def test_unknown_same_pdf_near_named_amount_can_still_be_removed_for_legacy_cost_flow(self):
+        from estimate_pipeline import deduplicate_estimate_records
+        records = [
             {
                 "__source_name": "塗装見積.pdf",
                 "__page_number": 2,
@@ -272,7 +355,6 @@ class EstimatePipelineTest(unittest.TestCase):
                 "数量": "1式",
                 "単価": "3800000",
                 "金額": "3800000",
-                "抽出元テキスト範囲": "アキヨシ塗装 外壁塗装工事 3,800,000",
             },
             {
                 "__source_name": "塗装見積.pdf",
@@ -289,9 +371,9 @@ class EstimatePipelineTest(unittest.TestCase):
         filtered, debug_rows = deduplicate_estimate_records(records)
         df, _ = build_intermediate_dataframe(filtered)
 
-        self.assertEqual(len(filtered), 3)
+        self.assertEqual(len(filtered), 1)
         self.assertNotIn("不明", df["見積元"].tolist())
-        self.assertEqual(int(df["原価金額"].sum()), 4714000)
+        self.assertEqual(int(df["原価金額"].sum()), 3800000)
         excluded = [row for row in debug_rows if row["重複判定で除外"]]
         self.assertEqual(len(excluded), 1)
         self.assertEqual(excluded[0]["company_name"], "不明")

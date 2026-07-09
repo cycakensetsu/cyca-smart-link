@@ -24,15 +24,19 @@ from estimate_pipeline import (
     OUTPUT_COLUMNS,
     DETAIL_SHEET_NAME,
     QUOTE_SHEET_NAME,
+    assign_unknown_vendors_to_pdf_vendor,
     apply_profit,
     build_intermediate_dataframe,
+    build_cost_basis_dataframe,
     build_quote_summary_dataframe,
+    build_vendor_work_summary_dataframe,
     numbers_detail_dataframe,
-    deduplicate_estimate_records,
     output_dataframe,
     normalize_summary_data,
+    summary_data_from_cost_dataframe,
     split_extraction_payload,
     validate_intermediate,
+    vendor_detail_dataframe,
 )
 
 try:
@@ -645,26 +649,29 @@ if uploaded_files:
                     if not all_extracted_data:
                         st.warning("読み取れたデータがありませんでした。ファイル形式（PDF・JPG・PNG）と内容をご確認ください。")
                     else:
-                        all_extracted_data, dedupe_debug_rows = deduplicate_estimate_records(all_extracted_data)
+                        all_extracted_data, vendor_assign_debug_rows = assign_unknown_vendors_to_pdf_vendor(all_extracted_data, summary_sources)
                         summary_data = normalize_summary_data(summary_sources)
-                        df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
-                        issues = validate_intermediate(df, pdf_totals)
+                        detail_df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
+                        cost_df, vendor_summaries = build_cost_basis_dataframe(summary_data, detail_df)
+                        df = cost_df
+                        issues = validate_intermediate(cost_df, {})
                         has_blocking_issue = any(i.get("レベル") == "停止" for i in issues)
 
-                        st.markdown('<div class="sub-header">PDFから抽出した明細プレビュー</div>', unsafe_allow_html=True)
-                        st.caption("利益計算前の原価明細です。行数・品名・数量・単位・単価・金額をここで確認できます。")
-                        st.dataframe(output_dataframe(df), use_container_width=True, hide_index=True)
+                        st.markdown('<div class="sub-header">PDFから抽出した集計対象プレビュー</div>', unsafe_allow_html=True)
+                        st.caption("原価合計・上乗せ計算に使うのは、業者ごとのまとめ税抜小計だけです。明細は確認用として別シートに出します。")
+                        st.dataframe(output_dataframe(cost_df), use_container_width=True, hide_index=True)
 
-                        subtotal = int(round(pd.to_numeric(df["原価金額"], errors="coerce").fillna(0).sum()))
+                        subtotal = int(round(pd.to_numeric(cost_df["原価金額"], errors="coerce").fillna(0).sum()))
+                        detail_subtotal = int(round(pd.to_numeric(detail_df["原価金額"], errors="coerce").fillna(0).sum()))
                         c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("抽出明細数", f"{len(df)} 行")
-                        c2.metric("明細合計", f"{subtotal:,} 円")
-                        c3.metric("PDF小計", f"{int(pdf_totals.get('小計') or 0):,} 円")
-                        c4.metric("税込合計", f"{int(pdf_totals.get('税込合計') or 0):,} 円")
+                        c1.metric("集計対象", f"{len(cost_df)} 社")
+                        c2.metric("原価合計", f"{subtotal:,} 円")
+                        c3.metric("明細行数", f"{len(detail_df)} 行")
+                        c4.metric("明細合計（確認用）", f"{detail_subtotal:,} 円")
 
-                        if dedupe_debug_rows:
-                            with st.expander("見積元の重複判定ログ", expanded=False):
-                                st.dataframe(pd.DataFrame(dedupe_debug_rows), use_container_width=True, hide_index=True)
+                        if vendor_assign_debug_rows:
+                            with st.expander("見積元の補正ログ", expanded=False):
+                                st.dataframe(pd.DataFrame(vendor_assign_debug_rows), use_container_width=True, hide_index=True)
 
                         if issues:
                             st.warning("確認が必要な明細があります。出力前に内容を確認してください。")
@@ -673,32 +680,34 @@ if uploaded_files:
                             st.error("PDFの小計と抽出明細の合計が一致していないため、このまま出力すると危険です。PDFまたは抽出結果を確認してください。")
 
                         if profit_mode == "見積元（会社）ごとに金額を指定する":
-                            st.session_state["_extracted_df"] = df.copy()
+                            st.session_state["_extracted_df"] = cost_df.copy()
+                            st.session_state["_detail_df"] = detail_df.copy()
+                            st.session_state["_vendor_summaries"] = vendor_summaries
                             st.session_state["_extracted_totals"] = pdf_totals
                             st.session_state["_extracted_issues"] = issues
                             st.session_state["_extracted_blocking"] = has_blocking_issue
                             st.session_state["_extracted_format_choice"] = format_choice
                             st.session_state["_summary_data"] = summary_data
                             categories_summary = []
-                            for company, grp in df.groupby('見積元', sort=False):
+                            for company, grp in cost_df.groupby('見積元', sort=False):
                                 company_name = str(company) if pd.notna(company) and str(company).strip() != "" else "不明な会社"
                                 item_total = int(pd.to_numeric(grp['原価金額'], errors="coerce").fillna(0).sum())
                                 categories_summary.append({
                                     "name": company_name,
-                                    "work_label": "原価明細",
+                                    "work_label": "業者まとめ",
                                     "total": item_total,
                                     "item_total": item_total,
-                                    "declared_total": int(pdf_totals.get("小計") or 0),
+                                    "declared_total": item_total,
                                     "base": item_total,
                                 })
                             st.session_state["_categories_summary"] = categories_summary
 
                         else:
-                            df = apply_profit(df, profit_mode, profit_val)
+                            df = apply_profit(cost_df, profit_mode, profit_val)
 
                         # 「工事種別ごと」モード：ここでは抽出結果のみ表示し、残りは下の入力UIに任せる
                         if profit_mode == "見積元（会社）ごとに金額を指定する":
-                            st.session_state["_extracted_df"] = df.copy()
+                            st.session_state["_extracted_df"] = cost_df.copy()
                             cats = st.session_state.get("_categories_summary", [])
                             grand_total = sum(c["total"] for c in cats)
                             st.markdown('<div class="sub-header">📊 見積元ごとの原価が検出されました</div>', unsafe_allow_html=True)
@@ -716,20 +725,16 @@ if uploaded_files:
                             raise _CatInputNeeded()
 
                         df_output = output_dataframe(df)
-                        df_quote_summary, quote_totals = build_quote_summary_dataframe(summary_data, df)
-                        df_work_summary, work_totals = build_work_summary_dataframe(summary_data, df)
-                        df_numbers_detail, detail_issues = numbers_detail_dataframe(df)
+                        quote_summary_data = summary_data_from_cost_dataframe(summary_data, df)
+                        df_quote_summary, quote_totals = build_quote_summary_dataframe(quote_summary_data, df)
+                        df_work_summary, work_totals = build_vendor_work_summary_dataframe(vendor_summaries, df)
+                        df_numbers_detail, detail_issues = vendor_detail_dataframe(detail_df)
                         if detail_issues:
                             issues.extend(detail_issues)
-                        extracted_count = len(df)
-                        detail_count = len(df_numbers_detail)
                         st.toast("計算完了！データ準備OK", icon="✅")
                         st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
                         st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
                         st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。")
-                        if extracted_count != detail_count:
-                            st.error(f"抽出明細：{extracted_count}行 / 3枚目用明細：{detail_count}行。出力用明細で{extracted_count - detail_count}行欠落しています。")
-                            has_blocking_issue = True
                         st.write("▼ 1枚目用：見積書")
                         st.dataframe(df_quote_summary, use_container_width=True, hide_index=True)
                         st.metric("見積書 合計金額", f"{quote_totals.get('工事費計', 0):,} 円")
@@ -883,21 +888,18 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
 
         if st.button("✨ 上乗せを適用して出力する ✨", key="apply_cat_profit"):
             df = st.session_state["_extracted_df"].copy()
+            detail_df = st.session_state.get("_detail_df", pd.DataFrame())
+            vendor_summaries = st.session_state.get("_vendor_summaries", [])
             summary_data = st.session_state.get("_summary_data", {})
             has_blocking_issue = bool(st.session_state.get("_extracted_blocking", False))
             df_profit = apply_profit(df, "見積元（会社）ごとに金額を指定する", company_profits=cat_profits)
             df_output = output_dataframe(df_profit)
-            df_quote_summary, quote_totals = build_quote_summary_dataframe(summary_data, df_profit)
-            df_work_summary, work_totals = build_work_summary_dataframe(summary_data, df_profit)
-            df_numbers_detail, detail_issues = numbers_detail_dataframe(df_profit)
+            quote_summary_data = summary_data_from_cost_dataframe(summary_data, df_profit)
+            df_quote_summary, quote_totals = build_quote_summary_dataframe(quote_summary_data, df_profit)
+            df_work_summary, work_totals = build_vendor_work_summary_dataframe(vendor_summaries, df_profit)
+            df_numbers_detail, detail_issues = vendor_detail_dataframe(detail_df)
             if detail_issues:
                 has_blocking_issue = True
-            extracted_count = len(df)
-            detail_count = len(df_numbers_detail)
-            if extracted_count != detail_count:
-                st.error(f"抽出明細：{extracted_count}行 / 3枚目用明細：{detail_count}行。出力用明細で{extracted_count - detail_count}行欠落しています。")
-                has_blocking_issue = True
-
             st.toast("計算完了！", icon="✅")
             st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
             st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
