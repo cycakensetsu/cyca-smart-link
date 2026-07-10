@@ -40,6 +40,7 @@ from estimate_pipeline import (
     validate_intermediate,
     vendor_detail_dataframe,
 )
+from template_fill_test import TEMPLATE_FILL_TEST_NAME, build_template_fill_test_workbook
 
 try:
     from estimate_pipeline import WORK_SUMMARY_SHEET_NAME, build_work_summary_dataframe
@@ -963,6 +964,28 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                 st.metric("工事別まとめ 合計金額", f"{work_totals.get('工事費計', 0):,} 円")
                 st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
                 st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
+
+                st.markdown("---")
+                st.markdown("### テスト版：Numbersテンプレート直接流し込み")
+                st.caption("※既存テンプレートは上書きしません。出力ファイルはテスト用の別名保存です。")
+                try:
+                    test_bytes, test_file_name, test_issues = build_template_fill_test_workbook(
+                        detail_df=detail_profit_df,
+                        cost_df=df_profit,
+                        metadata=summary_data,
+                    )
+                    if test_issues:
+                        st.warning("テンプレート流し込みテストの検証で確認事項があります。")
+                        st.dataframe(pd.DataFrame({"確認事項": test_issues}), use_container_width=True, hide_index=True)
+                    st.download_button(
+                        label=f"{TEMPLATE_FILL_TEST_NAME} xlsx をダウンロード",
+                        data=test_bytes,
+                        file_name=test_file_name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_template_fill_test_xlsx",
+                    )
+                except Exception as e:
+                    st.error(f"テンプレート直接流し込みテストの生成に失敗しました: {e}")
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:

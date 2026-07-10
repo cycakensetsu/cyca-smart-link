@@ -1,5 +1,6 @@
 import unittest
 from io import BytesIO
+from pathlib import Path
 
 import openpyxl
 import pandas as pd
@@ -29,6 +30,7 @@ from estimate_pipeline import (
     split_quantity_unit,
     validate_intermediate,
 )
+from template_fill_test import OUTPUT_DIR, TEMPLATE_PATH, build_template_fill_test_workbook
 
 
 DANJYO_RECORDS = [
@@ -133,6 +135,37 @@ class EstimatePipelineTest(unittest.TestCase):
         self.assertLess(expense_markup, 80000)
         self.assertEqual([name for name, _ in sheets], ["吉村板金 まとめ", "吉村板金 明細"])
         self.assertEqual(list(sheets[0][1].columns[:6]), ["工事項目", "数量", "単位", "単価（円）", "金額（円）", "備考"])
+
+    def test_template_fill_test_creates_copy_without_modifying_template(self):
+        before = Path(TEMPLATE_PATH).read_bytes()
+        detail_df, _ = build_intermediate_dataframe([
+            {"No": 1, "見積元": "吉村板金", "品名": "屋根大波ガルバリウム鋼鈑", "数量": "1式", "単価": 110000, "金額": 110000},
+            {"No": 2, "見積元": "吉村板金", "品名": "屋根材運搬、クレーン", "数量": "1式", "単価": 80000, "金額": 80000},
+            {"No": 3, "見積元": "吉村板金", "品名": "屋根工事施工費", "数量": "1式", "単価": 463000, "金額": 463000},
+        ])
+        cost_df, _ = build_cost_basis_dataframe({}, detail_df)
+        detail_profit_df, cost_profit_df = apply_company_profit_to_details(detail_df, cost_df, {"吉村板金": 400000})
+
+        data, file_name, issues = build_template_fill_test_workbook(
+            detail_df=detail_profit_df,
+            cost_df=cost_profit_df,
+            metadata={"工事名称": "吉村板金テスト"},
+        )
+        try:
+            self.assertEqual(issues, [])
+            self.assertTrue(file_name.startswith("TEST_彩架建設見積テンプレート流し込み_吉村板金_"))
+            self.assertGreater(len(data), 10000)
+            self.assertEqual(Path(TEMPLATE_PATH).read_bytes(), before)
+            self.assertEqual(int(cost_profit_df["見積金額"].sum()), 1053000)
+            self.assertEqual(int(detail_profit_df["見積金額"].sum()), 1053000)
+            wb = openpyxl.load_workbook(BytesIO(data), data_only=False)
+            self.assertIn("シート1 - 工　事　内　容", wb.sheetnames)
+            self.assertEqual(wb["シート1 - 工　事　内　容"]["B3"].value, "吉村板金 工事一式")
+            self.assertEqual(wb["シート1 - 工　事　内　容"]["G3"].value, 1053000)
+        finally:
+            generated = OUTPUT_DIR / file_name
+            if generated.exists():
+                generated.unlink()
 
     def test_subtotal_mismatch_blocks_output(self):
         bad = [dict(r) for r in DANJYO_RECORDS]
