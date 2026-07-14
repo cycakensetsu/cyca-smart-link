@@ -159,9 +159,14 @@ class EstimatePipelineTest(unittest.TestCase):
             self.assertEqual(int(cost_profit_df["見積金額"].sum()), 1053000)
             self.assertEqual(int(detail_profit_df["見積金額"].sum()), 1053000)
             wb = openpyxl.load_workbook(BytesIO(data), data_only=False)
-            self.assertIn("シート1 - 工　事　内　容", wb.sheetnames)
-            self.assertEqual(wb["シート1 - 工　事　内　容"]["B3"].value, "吉村板金 工事一式")
-            self.assertEqual(wb["シート1 - 工　事　内　容"]["G3"].value, 1053000)
+            self.assertEqual(wb.sheetnames, ["見積書", "工事内容", "工事内容明細1"])
+            self.assertNotIn("書き出しの概要", wb.sheetnames)
+            self.assertEqual(wb["見積書"]["C23"].value, "吉村板金テスト")
+            self.assertEqual(wb["見積書"]["D16"].value, 1158300)
+            self.assertEqual(wb["工事内容"]["B4"].value, "吉村板金 工事一式")
+            self.assertEqual(wb["工事内容"]["G4"].value, 1053000)
+            self.assertEqual(wb["工事内容"]["F26"].value, 1053000)
+            self.assertEqual(wb["工事内容明細1"]["G27"].value, 1053000)
         finally:
             generated = OUTPUT_DIR / file_name
             if generated.exists():

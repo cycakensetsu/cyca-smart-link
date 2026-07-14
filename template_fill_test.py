@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell.cell import MergedCell
 
 from estimate_pipeline import normalize_text, parse_money
 
@@ -15,15 +16,14 @@ TEMPLATE_FILL_TEST_NAME = "Numbersテンプレート直接流し込みテスト"
 TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "cyca_estimate_template_v2.xlsx"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output" / "template_fill_test"
 
-QUOTE_INFO_SHEET = "シート1 - 表1-1"
-CUSTOMER_SHEET = "シート1 - 表2-1"
-SUMMARY_SHEET = "シート1 - 工　事　内　容"
-DETAIL_SHEET_1 = "シート1 - 工　事　内　容　明　細　１"
+QUOTE_SHEET = "見積書"
+SUMMARY_SHEET = "工事内容"
+DETAIL_SHEET_1 = "工事内容明細1"
 
-TEMPLATE_SUMMARY_START_ROW = 3
-TEMPLATE_SUMMARY_END_ROW = 14
-TEMPLATE_DETAIL_START_ROW = 3
-TEMPLATE_DETAIL_END_ROW = 14
+TEMPLATE_SUMMARY_START_ROW = 4
+TEMPLATE_SUMMARY_END_ROW = 23
+TEMPLATE_DETAIL_START_ROW = 5
+TEMPLATE_DETAIL_END_ROW = 24
 
 
 def _safe_sheet(wb: Workbook, name: str):
@@ -33,13 +33,17 @@ def _safe_sheet(wb: Workbook, name: str):
 
 
 def _set_value(ws, cell: str, value):
+    if isinstance(ws[cell], MergedCell):
+        return
     ws[cell].value = value
 
 
 def _clear_table_values(ws, start_row: int, end_row: int):
     for row in range(start_row, end_row + 1):
         for col in range(1, 9):
-            ws.cell(row=row, column=col).value = None
+            cell = ws.cell(row=row, column=col)
+            if not isinstance(cell, MergedCell):
+                cell.value = None
 
 
 def _write_template_table(ws, rows: List[Dict], start_row: int, end_row: int) -> List[Dict]:
@@ -49,14 +53,20 @@ def _write_template_table(ws, rows: List[Dict], start_row: int, end_row: int) ->
     _clear_table_values(ws, start_row, end_row)
     for offset, row in enumerate(in_template):
         excel_row = start_row + offset
-        ws.cell(excel_row, 1).value = offset + 1
-        ws.cell(excel_row, 2).value = row.get("工事項目", "")
-        ws.cell(excel_row, 3).value = row.get("仕様", "")
-        ws.cell(excel_row, 4).value = row.get("数量", "")
-        ws.cell(excel_row, 5).value = row.get("単位", "")
-        ws.cell(excel_row, 6).value = row.get("単価", "")
-        ws.cell(excel_row, 7).value = row.get("金額", "")
-        ws.cell(excel_row, 8).value = row.get("備考", "")
+        values = [
+            offset + 1,
+            row.get("工事項目", ""),
+            row.get("仕様", ""),
+            row.get("数量", ""),
+            row.get("単位", ""),
+            row.get("単価", ""),
+            row.get("金額", ""),
+            row.get("備考", ""),
+        ]
+        for col, value in enumerate(values, start=1):
+            cell = ws.cell(excel_row, col)
+            if not isinstance(cell, MergedCell):
+                cell.value = value
     return overflow
 
 
@@ -94,29 +104,62 @@ def _detail_rows_for_vendor(detail_df: pd.DataFrame, vendor_name: str) -> List[D
     return rows
 
 
-def _add_overflow_sheet(wb: Workbook, title: str, rows: List[Dict]):
-    if not rows:
-        return
-    clean_title = title[:31]
-    if clean_title in wb.sheetnames:
-        ws = wb[clean_title]
-        for row in ws.iter_rows():
-            for cell in row:
-                cell.value = None
-    else:
-        ws = wb.create_sheet(clean_title)
-    headers = ["No", "工事項目", "仕様", "数量", "単位", "単価", "金額", "備考"]
-    for col, header in enumerate(headers, start=1):
-        ws.cell(1, col).value = header
-    for idx, row in enumerate(rows, start=2):
-        ws.cell(idx, 1).value = idx - 1
-        ws.cell(idx, 2).value = row.get("工事項目", "")
-        ws.cell(idx, 3).value = row.get("仕様", "")
-        ws.cell(idx, 4).value = row.get("数量", "")
-        ws.cell(idx, 5).value = row.get("単位", "")
-        ws.cell(idx, 6).value = row.get("単価", "")
-        ws.cell(idx, 7).value = row.get("金額", "")
-        ws.cell(idx, 8).value = row.get("備考", "")
+def _remove_non_template_sheets(wb: Workbook):
+    keep = {QUOTE_SHEET, SUMMARY_SHEET, DETAIL_SHEET_1}
+    for ws in list(wb.worksheets):
+        if ws.title not in keep:
+            wb.remove(ws)
+
+
+def _clear_detail_sheet(ws):
+    _set_value(ws, "A4", "")
+    _clear_table_values(ws, TEMPLATE_DETAIL_START_ROW, TEMPLATE_DETAIL_END_ROW)
+    _set_value(ws, "G27", None)
+
+
+def _detail_sheet_title(index: int) -> str:
+    return f"工事内容明細{index}"
+
+
+def _write_detail_pages(wb: Workbook, detail_rows: List[Dict], vendor_name: str) -> List[Dict]:
+    base_ws = _safe_sheet(wb, DETAIL_SHEET_1)
+    capacity = TEMPLATE_DETAIL_END_ROW - TEMPLATE_DETAIL_START_ROW + 1
+    if capacity <= 0:
+        return detail_rows
+
+    page_count = max(1, (len(detail_rows) + capacity - 1) // capacity)
+    for idx in range(2, page_count + 1):
+        title = _detail_sheet_title(idx)
+        if title not in wb.sheetnames:
+            new_ws = wb.copy_worksheet(base_ws)
+            new_ws.title = title
+            _set_value(new_ws, "A1", f"工　事　内　容　明　細　{idx}")
+
+    for idx in range(1, page_count + 1):
+        ws = _safe_sheet(wb, _detail_sheet_title(idx))
+        _clear_detail_sheet(ws)
+        _set_value(ws, "A4", f"【 {vendor_name} 明細 】")
+        start = (idx - 1) * capacity
+        page_rows = detail_rows[start:start + capacity]
+        _write_template_table(ws, page_rows, TEMPLATE_DETAIL_START_ROW, TEMPLATE_DETAIL_END_ROW)
+        detail_total = int(round(sum(parse_money(row.get("金額")) or 0 for row in page_rows)))
+        _set_value(ws, "G27", detail_total)
+
+    return []
+
+
+def _write_quote_header(ws, metadata: Dict, subtotal: int):
+    tax = int(round(subtotal * 0.10))
+    total = subtotal + tax
+    _set_value(ws, "H5", metadata.get("見積日", datetime.now().strftime("%Y年%m月%d日")))
+    _set_value(ws, "B8", metadata.get("宛名", metadata.get("顧客名", "")))
+    _set_value(ws, "C23", metadata.get("工事名称", metadata.get("件名", "")))
+    _set_value(ws, "C24", metadata.get("工事場所", ""))
+    _set_value(ws, "C25", metadata.get("工事期間", ""))
+    _set_value(ws, "C26", metadata.get("支払条件", "ご相談の上"))
+    _set_value(ws, "C27", metadata.get("有効期限", "お打ち合わせの上"))
+    _set_value(ws, "C28", metadata.get("見積担当", "中村哲也"))
+    _set_value(ws, "D16", total)
 
 
 def validate_template_fill_test(detail_rows: List[Dict], original_subtotal: int, markup_amount: int, subtotal: int) -> List[str]:
@@ -165,22 +208,14 @@ def build_template_fill_test_workbook(
     issues = validate_template_fill_test(detail_rows, original_subtotal, markup_amount, subtotal)
 
     wb = load_workbook(template_path)
-    ws_customer = _safe_sheet(wb, CUSTOMER_SHEET)
-    ws_info = _safe_sheet(wb, QUOTE_INFO_SHEET)
+    _remove_non_template_sheets(wb)
+    ws_quote = _safe_sheet(wb, QUOTE_SHEET)
     ws_summary = _safe_sheet(wb, SUMMARY_SHEET)
-    ws_detail = _safe_sheet(wb, DETAIL_SHEET_1)
 
-    _set_value(ws_customer, "A1", metadata.get("宛名", ""))
-    _set_value(ws_info, "B1", metadata.get("工事名称", metadata.get("件名", "")))
-    _set_value(ws_info, "B2", metadata.get("工事場所", ""))
-    _set_value(ws_info, "B3", metadata.get("工事期間", ""))
-    _set_value(ws_info, "B4", metadata.get("支払条件", "ご相談の上"))
-    _set_value(ws_info, "B5", metadata.get("有効期限", "お打ち合わせの上"))
-    _set_value(ws_info, "B6", metadata.get("見積担当", "中村哲也"))
-
-    summary_overflow = _write_template_table(ws_summary, summary_rows, TEMPLATE_SUMMARY_START_ROW, TEMPLATE_SUMMARY_END_ROW)
-    detail_overflow = _write_template_table(ws_detail, detail_rows, TEMPLATE_DETAIL_START_ROW, TEMPLATE_DETAIL_END_ROW)
-    _add_overflow_sheet(wb, "TEST_明細データ", summary_overflow + detail_overflow)
+    _write_quote_header(ws_quote, metadata, subtotal)
+    _write_template_table(ws_summary, summary_rows, TEMPLATE_SUMMARY_START_ROW, TEMPLATE_SUMMARY_END_ROW)
+    _set_value(ws_summary, "F26", subtotal)
+    _write_detail_pages(wb, detail_rows, selected_vendor)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     date_part = datetime.now().strftime("%Y%m%d_%H%M%S")
