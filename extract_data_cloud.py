@@ -785,16 +785,16 @@ if uploaded_files:
                         output = BytesIO()
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
                             if is_simple_format:
-                                df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name="簡易明細")
+                                df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name="簡易明細")
                             elif vendor_sheet_pairs:
                                 for sheet_name, sheet_df in vendor_sheet_pairs:
-                                    sheet_df.to_excel(writer, index=False, header=True, sheet_name=sheet_name)
+                                    sheet_df.to_excel(writer, index=False, header=False, sheet_name=sheet_name)
                             else:
                                 df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
                                 df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
                                 df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
                         excel_data = output.getvalue()
-                        csv_data = df_numbers_detail.to_csv(index=False, header=is_simple_format).encode("utf-8-sig")
+                        csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
 
                         st.markdown("""
                         <div class="download-done-box" style="position: relative; overflow: hidden;">
@@ -990,16 +990,16 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 if is_simple_format:
-                    df_numbers_detail.to_excel(writer, index=False, header=True, sheet_name="簡易明細")
+                    df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name="簡易明細")
                 elif vendor_sheet_pairs:
                     for sheet_name, sheet_df in vendor_sheet_pairs:
-                        sheet_df.to_excel(writer, index=False, header=True, sheet_name=sheet_name)
+                        sheet_df.to_excel(writer, index=False, header=False, sheet_name=sheet_name)
                 else:
                     df_quote_summary.to_excel(writer, index=False, header=False, sheet_name=QUOTE_SHEET_NAME)
                     df_work_summary.to_excel(writer, index=False, header=False, sheet_name=WORK_SUMMARY_SHEET_NAME)
                     df_numbers_detail.to_excel(writer, index=False, header=False, sheet_name=DETAIL_SHEET_NAME)
             excel_data = output.getvalue()
-            csv_data = df_numbers_detail.to_csv(index=False, header=is_simple_format).encode("utf-8-sig")
+            csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
 
             st.markdown("""
             <div class="download-done-box" style="position: relative; overflow: hidden;">
