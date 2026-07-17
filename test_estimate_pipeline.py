@@ -159,14 +159,16 @@ class EstimatePipelineTest(unittest.TestCase):
             self.assertEqual(int(cost_profit_df["見積金額"].sum()), 1053000)
             self.assertEqual(int(detail_profit_df["見積金額"].sum()), 1053000)
             wb = openpyxl.load_workbook(BytesIO(data), data_only=False)
-            self.assertEqual(wb.sheetnames, ["見積書", "工事内容", "工事内容明細1"])
+            self.assertEqual(wb.sheetnames, ["TEST_見積書", "TEST_明細データ"])
             self.assertNotIn("書き出しの概要", wb.sheetnames)
-            self.assertEqual(wb["見積書"]["C23"].value, "吉村板金テスト")
-            self.assertEqual(wb["見積書"]["D16"].value, 1158300)
-            self.assertEqual(wb["工事内容"]["B4"].value, "吉村板金 工事一式")
-            self.assertEqual(wb["工事内容"]["G4"].value, 1053000)
-            self.assertEqual(wb["工事内容"]["F26"].value, 1053000)
-            self.assertEqual(wb["工事内容明細1"]["G27"].value, 1053000)
+            self.assertFalse(any(name.startswith("シート1 -") for name in wb.sheetnames))
+            self.assertEqual(wb["TEST_見積書"]["B6"].value, "吉村板金テスト")
+            self.assertEqual(wb["TEST_見積書"]["G6"].value, 1053000)
+            self.assertEqual(wb["TEST_見積書"]["G7"].value, 105300)
+            self.assertEqual(wb["TEST_見積書"]["G8"].value, 1158300)
+            self.assertEqual(wb["TEST_見積書"]["B15"].value, "吉村板金 工事一式")
+            self.assertEqual(wb["TEST_明細データ"]["B4"].value, "屋根大波ガルバリウム鋼鈑")
+            self.assertEqual(sum(wb["TEST_明細データ"].cell(row, 7).value for row in range(4, 7)), 1053000)
         finally:
             generated = OUTPUT_DIR / file_name
             if generated.exists():

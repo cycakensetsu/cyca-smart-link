@@ -12,47 +12,101 @@ from openpyxl.cell.cell import MergedCell
 from estimate_pipeline import normalize_text, parse_money
 
 
-TEMPLATE_FILL_TEST_NAME = "Numbersテンプレート直接流し込みテスト"
-TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "cyca_estimate_template_v2.xlsx"
+TEMPLATE_FILL_TEST_NAME = "テンプレート流し込みテスト"
+TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "test_cyca_estimate_template_excel_compatible.xlsx"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output" / "template_fill_test"
 
-QUOTE_SHEET = "見積書"
-SUMMARY_SHEET = "工事内容"
-DETAIL_SHEET_1 = "工事内容明細1"
+QUOTE_SHEET = "TEST_見積書"
+DETAIL_SHEET = "TEST_明細データ"
 
-TEMPLATE_SUMMARY_START_ROW = 4
-TEMPLATE_SUMMARY_END_ROW = 23
-TEMPLATE_DETAIL_START_ROW = 5
-TEMPLATE_DETAIL_END_ROW = 24
+QUOTE_SUMMARY_ROW = 15
+QUOTE_SUMMARY_END_ROW = 34
+DETAIL_START_ROW = 4
+DETAIL_END_ROW = 203
+DISALLOWED_SHEET_PREFIXES = ("シート1 -",)
+DISALLOWED_SHEET_NAMES = {"書き出しの概要"}
 
 
 def _safe_sheet(wb: Workbook, name: str):
     if name not in wb.sheetnames:
-        raise ValueError(f"テンプレート内に必要なシートがありません: {name}")
+        raise ValueError(f"テスト用テンプレート内に必要なシートがありません: {name}")
     return wb[name]
 
 
-def _set_value(ws, cell: str, value):
-    if isinstance(ws[cell], MergedCell):
+def _set_value(ws, cell_ref: str, value):
+    cell = ws[cell_ref]
+    if isinstance(cell, MergedCell):
         return
-    ws[cell].value = value
+    cell.value = value
 
 
-def _clear_table_values(ws, start_row: int, end_row: int):
+def _set_cell(ws, row: int, col: int, value):
+    cell = ws.cell(row=row, column=col)
+    if not isinstance(cell, MergedCell):
+        cell.value = value
+
+
+def _clear_range_values(ws, start_row: int, end_row: int, start_col: int = 1, end_col: int = 8):
     for row in range(start_row, end_row + 1):
-        for col in range(1, 9):
-            cell = ws.cell(row=row, column=col)
-            if not isinstance(cell, MergedCell):
-                cell.value = None
+        for col in range(start_col, end_col + 1):
+            _set_cell(ws, row, col, None)
 
 
-def _write_template_table(ws, rows: List[Dict], start_row: int, end_row: int) -> List[Dict]:
-    capacity = max(0, end_row - start_row + 1)
-    in_template = rows[:capacity]
-    overflow = rows[capacity:]
-    _clear_table_values(ws, start_row, end_row)
-    for offset, row in enumerate(in_template):
-        excel_row = start_row + offset
+def _row_from_series(row: pd.Series, amount_col: str = "見積金額", unit_col: str = "見積単価") -> Dict:
+    return {
+        "工事項目": normalize_text(row.get("品名", row.get("工事項目", ""))),
+        "仕様": normalize_text(row.get("仕様", "")),
+        "数量": row.get("数量", ""),
+        "単位": normalize_text(row.get("単位", "")),
+        "単価": int(round(parse_money(row.get(unit_col)) or 0)),
+        "金額": int(round(parse_money(row.get(amount_col)) or 0)),
+        "備考": normalize_text(row.get("備考", "")),
+    }
+
+
+def _detail_rows_for_vendor(detail_df: pd.DataFrame, vendor_name: str) -> List[Dict]:
+    if detail_df is None or detail_df.empty or "見積元" not in detail_df.columns:
+        return []
+    rows = []
+    vendor_df = detail_df[detail_df["見積元"].astype(str) == str(vendor_name)]
+    for _, row in vendor_df.iterrows():
+        item = _row_from_series(row)
+        if item["工事項目"] or item["金額"]:
+            rows.append(item)
+    return rows
+
+
+def _write_quote_sheet(ws, metadata: Dict, vendor_name: str, subtotal: int, tax: int, total: int):
+    _set_value(ws, "G4", metadata.get("見積日", datetime.now().strftime("%Y年%m月%d日")))
+    _set_value(ws, "B4", metadata.get("宛名", metadata.get("顧客名", "")))
+    _set_value(ws, "B6", metadata.get("工事名称", metadata.get("件名", "")))
+    _set_value(ws, "B7", metadata.get("工事場所", ""))
+    _set_value(ws, "B8", metadata.get("工事期間", ""))
+    _set_value(ws, "B9", metadata.get("支払条件", "ご相談の上"))
+    _set_value(ws, "B10", metadata.get("有効期限", "お打ち合わせの上"))
+    _set_value(ws, "B11", metadata.get("見積担当", "中村哲也"))
+
+    _set_value(ws, "G6", subtotal)
+    _set_value(ws, "G7", tax)
+    _set_value(ws, "G8", total)
+
+    _clear_range_values(ws, QUOTE_SUMMARY_ROW, QUOTE_SUMMARY_END_ROW)
+    _set_cell(ws, QUOTE_SUMMARY_ROW, 2, f"{vendor_name} 工事一式")
+    _set_cell(ws, QUOTE_SUMMARY_ROW, 4, 1)
+    _set_cell(ws, QUOTE_SUMMARY_ROW, 5, "式")
+    _set_cell(ws, QUOTE_SUMMARY_ROW, 6, subtotal)
+    _set_cell(ws, QUOTE_SUMMARY_ROW, 7, subtotal)
+    _set_cell(ws, QUOTE_SUMMARY_ROW, 8, "TEST直接流し込み")
+
+    _set_value(ws, "G36", subtotal)
+    _set_value(ws, "G37", tax)
+    _set_value(ws, "G38", total)
+
+
+def _write_detail_sheet(ws, detail_rows: List[Dict], subtotal: int, tax: int, total: int):
+    _clear_range_values(ws, DETAIL_START_ROW, DETAIL_END_ROW)
+    for offset, row in enumerate(detail_rows[: DETAIL_END_ROW - DETAIL_START_ROW + 1]):
+        excel_row = DETAIL_START_ROW + offset
         values = [
             offset + 1,
             row.get("工事項目", ""),
@@ -64,102 +118,16 @@ def _write_template_table(ws, rows: List[Dict], start_row: int, end_row: int) ->
             row.get("備考", ""),
         ]
         for col, value in enumerate(values, start=1):
-            cell = ws.cell(excel_row, col)
-            if not isinstance(cell, MergedCell):
-                cell.value = value
-    return overflow
+            _set_cell(ws, excel_row, col, value)
 
-
-def _row_from_series(row: pd.Series, amount_col: str = "見積金額", unit_col: str = "見積単価") -> Dict:
-    return {
-        "工事項目": normalize_text(row.get("品名", "")),
-        "仕様": "",
-        "数量": row.get("数量", ""),
-        "単位": normalize_text(row.get("単位", "")),
-        "単価": int(round(parse_money(row.get(unit_col)) or 0)),
-        "金額": int(round(parse_money(row.get(amount_col)) or 0)),
-        "備考": normalize_text(row.get("備考", "")),
-    }
-
-
-def _summary_rows_for_vendor(vendor_name: str, subtotal: int) -> List[Dict]:
-    return [{
-        "工事項目": f"{vendor_name} 工事一式",
-        "仕様": "",
-        "数量": 1,
-        "単位": "式",
-        "単価": subtotal,
-        "金額": subtotal,
-        "備考": "TEST直接流し込み",
-    }]
-
-
-def _detail_rows_for_vendor(detail_df: pd.DataFrame, vendor_name: str) -> List[Dict]:
-    if detail_df is None or detail_df.empty:
-        return []
-    rows = []
-    vendor_df = detail_df[detail_df["見積元"].astype(str) == str(vendor_name)]
-    for _, row in vendor_df.iterrows():
-        rows.append(_row_from_series(row))
-    return rows
-
-
-def _remove_non_template_sheets(wb: Workbook):
-    keep = {QUOTE_SHEET, SUMMARY_SHEET, DETAIL_SHEET_1}
-    for ws in list(wb.worksheets):
-        if ws.title not in keep:
-            wb.remove(ws)
-
-
-def _clear_detail_sheet(ws):
-    _set_value(ws, "A4", "")
-    _clear_table_values(ws, TEMPLATE_DETAIL_START_ROW, TEMPLATE_DETAIL_END_ROW)
-    _set_value(ws, "G27", None)
-
-
-def _detail_sheet_title(index: int) -> str:
-    return f"工事内容明細{index}"
-
-
-def _write_detail_pages(wb: Workbook, detail_rows: List[Dict], vendor_name: str) -> List[Dict]:
-    base_ws = _safe_sheet(wb, DETAIL_SHEET_1)
-    capacity = TEMPLATE_DETAIL_END_ROW - TEMPLATE_DETAIL_START_ROW + 1
-    if capacity <= 0:
-        return detail_rows
-
-    page_count = max(1, (len(detail_rows) + capacity - 1) // capacity)
-    for idx in range(2, page_count + 1):
-        title = _detail_sheet_title(idx)
-        if title not in wb.sheetnames:
-            new_ws = wb.copy_worksheet(base_ws)
-            new_ws.title = title
-            _set_value(new_ws, "A1", f"工　事　内　容　明　細　{idx}")
-
-    for idx in range(1, page_count + 1):
-        ws = _safe_sheet(wb, _detail_sheet_title(idx))
-        _clear_detail_sheet(ws)
-        _set_value(ws, "A4", f"【 {vendor_name} 明細 】")
-        start = (idx - 1) * capacity
-        page_rows = detail_rows[start:start + capacity]
-        _write_template_table(ws, page_rows, TEMPLATE_DETAIL_START_ROW, TEMPLATE_DETAIL_END_ROW)
-        detail_total = int(round(sum(parse_money(row.get("金額")) or 0 for row in page_rows)))
-        _set_value(ws, "G27", detail_total)
-
-    return []
-
-
-def _write_quote_header(ws, metadata: Dict, subtotal: int):
-    tax = int(round(subtotal * 0.10))
-    total = subtotal + tax
-    _set_value(ws, "H5", metadata.get("見積日", datetime.now().strftime("%Y年%m月%d日")))
-    _set_value(ws, "B8", metadata.get("宛名", metadata.get("顧客名", "")))
-    _set_value(ws, "C23", metadata.get("工事名称", metadata.get("件名", "")))
-    _set_value(ws, "C24", metadata.get("工事場所", ""))
-    _set_value(ws, "C25", metadata.get("工事期間", ""))
-    _set_value(ws, "C26", metadata.get("支払条件", "ご相談の上"))
-    _set_value(ws, "C27", metadata.get("有効期限", "お打ち合わせの上"))
-    _set_value(ws, "C28", metadata.get("見積担当", "中村哲也"))
-    _set_value(ws, "D16", total)
+    total_row = DETAIL_START_ROW + len(detail_rows[: DETAIL_END_ROW - DETAIL_START_ROW + 1]) + 1
+    if total_row + 2 <= DETAIL_END_ROW:
+        _set_cell(ws, total_row, 6, "小計")
+        _set_cell(ws, total_row, 7, subtotal)
+        _set_cell(ws, total_row + 1, 6, "消費税")
+        _set_cell(ws, total_row + 1, 7, tax)
+        _set_cell(ws, total_row + 2, 6, "税込合計")
+        _set_cell(ws, total_row + 2, 7, total)
 
 
 def validate_template_fill_test(detail_rows: List[Dict], original_subtotal: int, markup_amount: int, subtotal: int) -> List[str]:
@@ -175,6 +143,32 @@ def validate_template_fill_test(detail_rows: List[Dict], original_subtotal: int,
         amount = parse_money(row.get("金額")) or 0
         if qty and unit_price and int(round(qty * unit_price)) != int(round(amount)):
             issues.append(f"No.{idx} 数量×単価と金額が一致しません。")
+    if len(detail_rows) > DETAIL_END_ROW - DETAIL_START_ROW + 1:
+        issues.append("明細行がテスト用テンプレートの上限を超えています。")
+    return issues
+
+
+def _validate_output_workbook(wb: Workbook, subtotal: int, detail_rows: List[Dict]) -> List[str]:
+    issues: List[str] = []
+    if len(wb.sheetnames) > 2:
+        issues.append(f"出力シート数が2枚を超えています: {len(wb.sheetnames)}枚")
+    for required in [QUOTE_SHEET, DETAIL_SHEET]:
+        if required not in wb.sheetnames:
+            issues.append(f"必要なシートがありません: {required}")
+    for name in wb.sheetnames:
+        if name in DISALLOWED_SHEET_NAMES or any(name.startswith(prefix) for prefix in DISALLOWED_SHEET_PREFIXES):
+            issues.append(f"不要なNumbers分解シートが残っています: {name}")
+    if QUOTE_SHEET in wb.sheetnames:
+        quote_ws = wb[QUOTE_SHEET]
+        if int(round(parse_money(quote_ws["G6"].value) or 0)) != subtotal:
+            issues.append("見積書シートの小計が正しくありません。")
+    if DETAIL_SHEET in wb.sheetnames:
+        detail_ws = wb[DETAIL_SHEET]
+        detail_sum = 0
+        for row in range(DETAIL_START_ROW, DETAIL_START_ROW + len(detail_rows)):
+            detail_sum += int(round(parse_money(detail_ws.cell(row, 7).value) or 0))
+        if detail_sum != subtotal:
+            issues.append(f"明細データシートの明細合計({detail_sum:,}円)と小計({subtotal:,}円)が一致しません。")
     return issues
 
 
@@ -186,9 +180,9 @@ def build_template_fill_test_workbook(
     metadata: Optional[Dict] = None,
     template_path: Path = TEMPLATE_PATH,
 ) -> Tuple[bytes, str, List[str]]:
-    """Copy the template and fill only cell values for one vendor test output."""
+    """Load the Excel-compatible test template and fill values into fixed cells only."""
     if not template_path.exists():
-        raise FileNotFoundError(f"テスト用テンプレートが見つかりません: {template_path}")
+        raise FileNotFoundError(f"テスト用Excel互換テンプレートが見つかりません: {template_path}")
     if cost_df is None or cost_df.empty:
         raise ValueError("集計対象データがありません。")
 
@@ -199,23 +193,31 @@ def build_template_fill_test_workbook(
         raise ValueError("見積元が取得できません。")
 
     cost_vendor_df = cost_df[cost_df["見積元"].astype(str) == str(selected_vendor)]
-    detail_vendor_df = detail_df[detail_df["見積元"].astype(str) == str(selected_vendor)] if detail_df is not None and not detail_df.empty else pd.DataFrame()
-    original_subtotal = int(round(pd.to_numeric(detail_vendor_df["原価金額"], errors="coerce").fillna(0).sum()))
+    detail_vendor_df = (
+        detail_df[detail_df["見積元"].astype(str) == str(selected_vendor)]
+        if detail_df is not None and not detail_df.empty and "見積元" in detail_df.columns
+        else pd.DataFrame()
+    )
+    original_subtotal = int(round(pd.to_numeric(detail_vendor_df.get("原価金額", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()))
     subtotal = int(round(pd.to_numeric(cost_vendor_df["見積金額"], errors="coerce").fillna(0).sum()))
     markup_amount = subtotal - original_subtotal
-    summary_rows = _summary_rows_for_vendor(selected_vendor, subtotal)
+    tax = int(round(subtotal * 0.10))
+    total = subtotal + tax
+
     detail_rows = _detail_rows_for_vendor(detail_df, selected_vendor)
     issues = validate_template_fill_test(detail_rows, original_subtotal, markup_amount, subtotal)
 
+    template_before = template_path.read_bytes()
     wb = load_workbook(template_path)
-    _remove_non_template_sheets(wb)
-    ws_quote = _safe_sheet(wb, QUOTE_SHEET)
-    ws_summary = _safe_sheet(wb, SUMMARY_SHEET)
+    quote_ws = _safe_sheet(wb, QUOTE_SHEET)
+    detail_ws = _safe_sheet(wb, DETAIL_SHEET)
 
-    _write_quote_header(ws_quote, metadata, subtotal)
-    _write_template_table(ws_summary, summary_rows, TEMPLATE_SUMMARY_START_ROW, TEMPLATE_SUMMARY_END_ROW)
-    _set_value(ws_summary, "F26", subtotal)
-    _write_detail_pages(wb, detail_rows, selected_vendor)
+    _write_quote_sheet(quote_ws, metadata, selected_vendor, subtotal, tax, total)
+    _write_detail_sheet(detail_ws, detail_rows, subtotal, tax, total)
+    issues.extend(_validate_output_workbook(wb, subtotal, detail_rows))
+
+    if template_path.read_bytes() != template_before:
+        issues.append("元テンプレートが変更されています。")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     date_part = datetime.now().strftime("%Y%m%d_%H%M%S")

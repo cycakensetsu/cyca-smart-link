@@ -966,8 +966,8 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                 st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
                 st.markdown("---")
-                st.markdown("### テスト版：Numbersテンプレート直接流し込み")
-                st.caption("※既存テンプレートは上書きしません。出力ファイルはテスト用の別名保存です。")
+                st.markdown("### テスト版：テンプレート流し込み")
+                st.caption("※Excel互換のテスト専用テンプレートを使います。既存テンプレートは上書きしません。")
                 try:
                     test_bytes, test_file_name, test_issues = build_template_fill_test_workbook(
                         detail_df=detail_profit_df,
