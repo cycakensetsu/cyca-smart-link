@@ -41,6 +41,7 @@ from estimate_pipeline import (
     vendor_detail_dataframe,
 )
 from template_fill_test import TEMPLATE_FILL_TEST_NAME, build_template_fill_test_workbook
+import template_fill_test_v2 as tfv2
 
 try:
     from estimate_pipeline import WORK_SUMMARY_SHEET_NAME, build_work_summary_dataframe
@@ -452,10 +453,85 @@ st.markdown('<div class="sub-header">📄 ファイルアップロード</div>',
 st.caption("目安：1ファイル20MBまで・複数は5ファイル程度まで。それ以上はタイムアウトやエラーになる場合があります。")
 
 uploaded_files = st.file_uploader(
-    "PDF・写真（JPG, PNG）を選択、またはドラッグ＆ドロップ（複数社分まとめてOK！）", 
-    type=["pdf", "jpg", "jpeg", "png"], 
+    "PDF・写真（JPG, PNG）を選択、またはドラッグ＆ドロップ（複数社分まとめてOK！）",
+    type=["pdf", "jpg", "jpeg", "png"],
     accept_multiple_files=True
 )
+
+# ==========================================
+# テスト版：Excel互換テンプレート流し込み v2（既存本番処理から独立）
+# ==========================================
+def render_template_fill_test_v2():
+    st.markdown("---")
+    with st.expander(f"🧪 {tfv2.TEMPLATE_FILL_TEST_V2_NAME}", expanded=False):
+        st.caption(
+            "Numbers由来テンプレートは使いません。openpyxlで新規作成したExcel互換の"
+            "1シート見積書テンプレートに『値だけ』を流し込むテストです。"
+            "既存テンプレート・本番出力には一切影響しません。"
+        )
+        default = tfv2.default_test_estimate()
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            v_vendor = st.text_input("見積元", value=default.vendor, key="tfv2_vendor")
+            v_customer = st.text_input("宛名", value=default.customer, key="tfv2_customer")
+        with m2:
+            v_project = st.text_input("工事名", value=default.project_name, key="tfv2_project")
+            v_issue = st.text_input("発行日（見積日）", value=default.issue_date, key="tfv2_issue")
+        with m3:
+            v_valid = st.text_input("有効期限", value=default.valid_days, key="tfv2_valid")
+            v_discount = st.number_input(
+                "値引き（マイナスで入力）", value=int(default.discount), step=1, key="tfv2_discount"
+            )
+
+        st.caption("明細（工事分類ごとにまとまります。数量×単価＝金額 が一致している必要があります）")
+        rows_df = pd.DataFrame(tfv2.estimate_to_rows(default), columns=tfv2.DETAIL_COLUMNS)
+        edited = st.data_editor(
+            rows_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="tfv2_editor",
+        )
+
+        estimate = tfv2.rows_to_estimate(
+            edited.to_dict("records"),
+            vendor=v_vendor,
+            customer=v_customer,
+            project_name=v_project,
+            issue_date=v_issue,
+            valid_days=v_valid,
+            discount=int(v_discount),
+        )
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("小計", f"{estimate.subtotal:,}")
+        c2.metric("値引き", f"{estimate.discount:,}")
+        c3.metric("税抜合計", f"{estimate.net_total:,}")
+        c4.metric("消費税", f"{estimate.tax:,}")
+        c5.metric("税込合計", f"{estimate.grand_total:,}")
+
+        if st.button("🧪 テンプレートへ流し込んで出力する（v2）", key="tfv2_run"):
+            try:
+                result = tfv2.fill_estimate_v2(estimate)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"出力に失敗しました: {e}")
+                return
+            if not result.ok:
+                st.error("出力検証に失敗したため、ダウンロードは表示しません。以下を修正してください。")
+                for msg in result.errors:
+                    st.write(f"- {msg}")
+                return
+            st.success(f"検証OK！ シート構成: {result.sheet_names}")
+            st.download_button(
+                label="✅ 出力xlsx（v2）をダウンロード",
+                data=result.data,
+                file_name=result.file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="tfv2_download",
+            )
+
+
+render_template_fill_test_v2()
 
 if uploaded_files:
     file_names = ", ".join([f.name for f in uploaded_files]).replace("<", "&lt;").replace(">", "&gt;")
@@ -966,26 +1042,38 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                 st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
 
                 st.markdown("---")
-                st.markdown("### テスト版：テンプレート流し込み")
-                st.caption("※Excel互換のテスト専用テンプレートを使います。既存テンプレートは上書きしません。")
+                st.markdown(f"### {tfv2.TEMPLATE_FILL_TEST_V2_NAME}")
+                st.caption(
+                    "※Numbers由来テンプレートは使いません。openpyxlで新規作成したExcel互換の"
+                    "1シートテンプレートに『値だけ』を流し込み、常に2シート（見積書／明細データ）で出力します。"
+                    "既存テンプレート・本番出力には影響しません。"
+                )
                 try:
-                    test_bytes, test_file_name, test_issues = build_template_fill_test_workbook(
-                        detail_df=detail_profit_df,
-                        cost_df=df_profit,
+                    _est = tfv2.estimate_from_production(
+                        detail_profit_df,
+                        df_profit,
                         metadata=summary_data,
                     )
-                    if test_issues:
-                        st.warning("テンプレート流し込みテストの検証で確認事項があります。")
-                        st.dataframe(pd.DataFrame({"確認事項": test_issues}), use_container_width=True, hide_index=True)
-                    st.download_button(
-                        label=f"{TEMPLATE_FILL_TEST_NAME} xlsx をダウンロード",
-                        data=test_bytes,
-                        file_name=test_file_name,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="download_template_fill_test_xlsx",
-                    )
+                    _res = tfv2.fill_estimate_v2(_est)
+                    if _res.warnings:
+                        with st.expander("流し込みの確認事項（出力は可能）", expanded=False):
+                            for _w in _res.warnings:
+                                st.write(f"- {_w}")
+                    if not _res.ok:
+                        st.error("出力検証に失敗したため、ダウンロードは表示しません。")
+                        for _e in _res.errors:
+                            st.write(f"- {_e}")
+                    else:
+                        st.success(f"検証OK！ シート構成: {_res.sheet_names}")
+                        st.download_button(
+                            label="✅ Excel互換テンプレート流し込み（v2）xlsx をダウンロード",
+                            data=_res.data,
+                            file_name=_res.file_name,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="download_template_fill_test_v2_xlsx",
+                        )
                 except Exception as e:
-                    st.error(f"テンプレート直接流し込みテストの生成に失敗しました: {e}")
+                    st.error(f"Excel互換テンプレート流し込み（v2）の生成に失敗しました: {e}")
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
