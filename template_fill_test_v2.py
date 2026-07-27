@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,7 +25,9 @@ from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
+from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.page import PageMargins
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -42,27 +45,55 @@ TEMPLATE_FILL_TEST_V2_NAME = "テスト版：Excel互換テンプレート流し
 # Mac(Numbers)/Windows(Excel) 双方で崩れにくい標準フォント。
 FONT_NAME = "游ゴシック"
 
+# ブランドカラー（ロゴの紺）
+BRAND_NAVY = "1F3557"
+BRAND_RULE = "8A97AB"
+BRAND_TINT = "EDF1F6"
+LOGO_PATH = BASE_DIR / "assets" / "cyca_logo.png"
+
+# 自社情報（正規テンプレート準拠）
+COMPANY = {
+    "name": "彩架建設株式会社",
+    "zip": "〒839-0841",
+    "address": "福岡県久留米市御井旗崎1丁目7-41",
+    "tel": "TEL 0942-65-3300",
+    "fax": "FAX 0942-65-3301",
+    "ceo": "代表取締役　中村 哲也",
+    "reg": "T3290001074771",
+}
+
 # 見積書シートの固定レイアウト（1シート・単一テーブル）
-# 列: A=No. B=工事項目 C=仕様 D=数量 E=単位 F=単価 G=金額 H=備考
+# 列: A=No. B=工事品目 C=仕様 D=数量 E=単位 F=単価 G=金額 H=備考
 COL_NO, COL_ITEM, COL_SPEC, COL_QTY, COL_UNIT, COL_PRICE, COL_AMOUNT, COL_REMARK = 1, 2, 3, 4, 5, 6, 7, 8
 LAST_COL = 8
 
-TITLE_ROW = 1
-CUSTOMER_ROW = 3          # A:宛名  B:E値 / G:見積日  H:値
-PROJECT_ROW = 4           # A:工事名 B:E値 / G:有効期限 H:値
-VENDOR_ROW = 5            # A:見積元 B:E値 / G:御見積金額(税込) H:値
-ITEM_HEADER_ROW = 8
-ITEM_START_ROW = 9
-ITEM_MAX_ROWS = 150
-ITEM_END_ROW = ITEM_START_ROW + ITEM_MAX_ROWS - 1  # 158
+TITLE_ROW = 2             # 御見積書（紺バナー）
+CUSTOMER_ROW = 4          # A:C 宛名 / D 御中
+GREET_ROW = 6             # A:D ごあいさつ
+ISSUE_DATE_ROW = 7        # F ラベル / G:H 値
+REG_ROW = 8               # F ラベル / G:H 値
+AMOUNT_LABEL_ROW = 10     # A:B ラベル / C:E 御見積金額（税込）
+AMOUNT_END_ROW = 11
+INFO_START_ROW = 13       # 工事名称 / 工事場所 / 工事期間 / 支払条件 / 有効期限 / 見積担当
+INFO_LABELS = ["工事名称", "工事場所", "工事期間", "支払条件", "有効期限", "見積担当"]
+INFO_END_ROW = INFO_START_ROW + len(INFO_LABELS) - 1  # 18
+COMPANY_ROW = 13          # E:H 自社情報（13〜16）
 
-SUMMARY_SUBTOTAL_ROW = ITEM_END_ROW + 2  # 160 小計
-SUMMARY_DISCOUNT_ROW = ITEM_END_ROW + 3  # 161 値引き
-SUMMARY_NET_ROW = ITEM_END_ROW + 4       # 162 税抜合計
-SUMMARY_TAX_ROW = ITEM_END_ROW + 5       # 163 消費税
-SUMMARY_TOTAL_ROW = ITEM_END_ROW + 6     # 164 税込合計
+WORK_BAND_ROW = 20        # 工事内容 バンド
+ITEM_HEADER_ROW = 21
+ITEM_START_ROW = 22
+ITEM_MAX_ROWS = 150
+ITEM_END_ROW = ITEM_START_ROW + ITEM_MAX_ROWS - 1  # 171
+
+SUMMARY_SUBTOTAL_ROW = ITEM_END_ROW + 2  # 173 小計
+SUMMARY_DISCOUNT_ROW = ITEM_END_ROW + 3  # 174 値引き
+SUMMARY_NET_ROW = ITEM_END_ROW + 4       # 175 税抜合計
+SUMMARY_TAX_ROW = ITEM_END_ROW + 5       # 176 消費税
+SUMMARY_TOTAL_ROW = ITEM_END_ROW + 6     # 177 税込合計
+REMARK_LABEL_ROW = SUMMARY_TOTAL_ROW + 2  # 179 備考
 
 MONEY_FORMAT = "#,##0"
+YEN_FORMAT = '"¥"#,##0'
 
 DISALLOWED_SHEET_NAMES = {"書き出しの概要"}
 DISALLOWED_SHEET_PREFIXES = ("シート1 -", "シート1-")
@@ -282,7 +313,7 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     ws.sheet_view.showGridLines = False
 
     # 列幅（A4縦想定）
-    widths = {"A": 4, "B": 24, "C": 18, "D": 6, "E": 5, "F": 12, "G": 13, "H": 16}
+    widths = {"A": 5, "B": 26, "C": 19, "D": 7, "E": 6, "F": 12, "G": 14, "H": 15}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
 
@@ -293,91 +324,191 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     tcell.alignment = center
     ws.row_dimensions[TITLE_ROW].height = 34
 
-    # ヘッダー情報（宛名 / 工事名 / 見積元 と 見積日 / 有効期限 / 見積金額）
-    def label(row, text):
-        c = ws.cell(row, COL_NO, text)
-        c.font = label_font
+    navy_font = Font(name=FONT_NAME, size=10, bold=True, color=BRAND_NAVY)
+    rule = Side(style="thin", color=BRAND_RULE)
+    under = Border(bottom=Side(style="medium", color=BRAND_NAVY))
+    box = Border(left=Side(style="medium", color=BRAND_NAVY), right=Side(style="medium", color=BRAND_NAVY),
+                 top=Side(style="medium", color=BRAND_NAVY), bottom=Side(style="medium", color=BRAND_NAVY))
+    navy_fill = PatternFill("solid", fgColor=BRAND_NAVY)
+    tint_fill = PatternFill("solid", fgColor=BRAND_TINT)
+
+    def merge(r1, c1, r2, c2):
+        ws.merge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
+        return ws.cell(r1, c1)
+
+    # --- 表題バンド（紺地に白抜き） ---
+    t = merge(TITLE_ROW, 1, TITLE_ROW, LAST_COL)
+    t.value = "御　見　積　書"
+    t.font = Font(name=FONT_NAME, size=22, bold=True, color="FFFFFF")
+    t.fill = navy_fill
+    t.alignment = center
+    ws.row_dimensions[TITLE_ROW].height = 40
+    ws.row_dimensions[1].height = 10
+    ws.row_dimensions[3].height = 8
+
+    # --- ロゴ（右上） ---
+    if LOGO_PATH.exists():
+        try:
+            img = XLImage(str(LOGO_PATH))
+            img.width, img.height = 186, 67
+            ws.add_image(img, "F4")
+        except Exception:
+            pass
+
+    # --- 宛名 ---
+    cust = merge(CUSTOMER_ROW, COL_NO, CUSTOMER_ROW, COL_SPEC)
+    cust.font = Font(name=FONT_NAME, size=15)
+    cust.alignment = Alignment(horizontal="left", vertical="center")
+    cust.border = under
+    ws.row_dimensions[CUSTOMER_ROW].height = 26
+    hon = ws.cell(CUSTOMER_ROW, COL_QTY, "御中")
+    hon.font = Font(name=FONT_NAME, size=12)
+    hon.alignment = Alignment(horizontal="left", vertical="center")
+
+    g = merge(GREET_ROW, COL_NO, GREET_ROW, COL_QTY)
+    g.value = "下記の通り御見積申し上げます。"
+    g.font = base_font
+    g.alignment = Alignment(horizontal="left", vertical="center")
+
+    # --- 見積日 / 登録番号（右） ---
+    for row, text in ((ISSUE_DATE_ROW, "見積日"), (REG_ROW, "登録番号")):
+        lc = ws.cell(row, COL_PRICE, text)
+        lc.font = navy_font
+        lc.alignment = Alignment(horizontal="left", vertical="center")
+        vc = merge(row, COL_AMOUNT, row, COL_REMARK)
+        vc.font = base_font
+        vc.alignment = Alignment(horizontal="left", vertical="center")
+        vc.border = Border(bottom=rule)
+    ws.cell(REG_ROW, COL_AMOUNT).value = COMPANY["reg"]
+
+    # --- 御見積金額（最も目立たせる） ---
+    al = merge(AMOUNT_LABEL_ROW, COL_NO, AMOUNT_END_ROW, COL_ITEM)
+    al.value = "御 見 積 金 額"
+    al.font = Font(name=FONT_NAME, size=13, bold=True, color="FFFFFF")
+    al.fill = navy_fill
+    al.alignment = center
+    av = merge(AMOUNT_LABEL_ROW, COL_SPEC, AMOUNT_END_ROW, COL_UNIT)
+    av.font = Font(name=FONT_NAME, size=20, bold=True, color=BRAND_NAVY)
+    av.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+    av.number_format = YEN_FORMAT
+    av.border = box
+    ws.row_dimensions[AMOUNT_LABEL_ROW].height = 20
+    ws.row_dimensions[AMOUNT_END_ROW].height = 20
+    tx = merge(AMOUNT_END_ROW + 1, COL_SPEC, AMOUNT_END_ROW + 1, COL_UNIT)
+    tx.value = "（消費税込）"
+    tx.font = Font(name=FONT_NAME, size=8, color="666666")
+    tx.alignment = Alignment(horizontal="right", vertical="center")
+
+    # --- 工事情報（左） ---
+    for offset, text in enumerate(INFO_LABELS):
+        row = INFO_START_ROW + offset
+        lc = merge(row, COL_NO, row, COL_ITEM)     # A:B ラベル（右寄せで値の直前に置く）
+        lc.value = text
+        lc.font = navy_font
+        lc.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+        vc = merge(row, COL_SPEC, row, COL_QTY)    # C:D 値
+        vc.font = base_font
+        # 長い工事名でも右の自社情報に重ならないよう、はみ出さずに縮めて収める。
+        vc.alignment = Alignment(horizontal="left", vertical="center", shrink_to_fit=True)
+        vc.border = Border(bottom=rule)
+        ws.row_dimensions[row].height = 18
+    ws.cell(INFO_START_ROW + 3, COL_SPEC).value = "ご相談の上"
+    ws.cell(INFO_START_ROW + 5, COL_SPEC).value = "中村 哲也"
+
+    # --- 自社情報（右） ---
+    company_lines = [
+        (COMPANY["name"], Font(name=FONT_NAME, size=12, bold=True, color=BRAND_NAVY)),
+        (f'{COMPANY["zip"]} {COMPANY["address"]}', Font(name=FONT_NAME, size=9)),
+        (f'{COMPANY["tel"]}　{COMPANY["fax"]}', Font(name=FONT_NAME, size=9)),
+        (COMPANY["ceo"], Font(name=FONT_NAME, size=9)),
+    ]
+    for offset, (text, font) in enumerate(company_lines):
+        c = merge(COMPANY_ROW + offset, COL_UNIT, COMPANY_ROW + offset, COL_REMARK)
+        c.value = text
+        c.font = font
         c.alignment = Alignment(horizontal="left", vertical="center")
 
-    def rlabel(row, text):
-        c = ws.cell(row, COL_PRICE, text)  # F列
-        c.font = label_font
-        c.alignment = Alignment(horizontal="left", vertical="center")
+    # --- 工事内容バンド ---
+    band = merge(WORK_BAND_ROW, 1, WORK_BAND_ROW, LAST_COL)
+    band.value = "工 事 内 容"
+    band.font = Font(name=FONT_NAME, size=11, bold=True, color="FFFFFF")
+    band.fill = navy_fill
+    band.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.row_dimensions[WORK_BAND_ROW].height = 22
 
-    def value_cell(row):
-        ws.merge_cells(start_row=row, start_column=COL_ITEM, end_row=row, end_column=COL_UNIT)  # B:E
-        c = ws.cell(row, COL_ITEM)
-        c.font = base_font
-        c.alignment = left
-        c.border = bottom
-        return c
-
-    label(CUSTOMER_ROW, "宛名")
-    value_cell(CUSTOMER_ROW)
-    rlabel(CUSTOMER_ROW, "見積日")
-    ws.cell(CUSTOMER_ROW, COL_AMOUNT).font = base_font
-    ws.cell(CUSTOMER_ROW, COL_AMOUNT).border = bottom
-
-    label(PROJECT_ROW, "工事名")
-    value_cell(PROJECT_ROW)
-    rlabel(PROJECT_ROW, "有効期限")
-    ws.cell(PROJECT_ROW, COL_AMOUNT).font = base_font
-    ws.cell(PROJECT_ROW, COL_AMOUNT).border = bottom
-
-    label(VENDOR_ROW, "見積元")
-    value_cell(VENDOR_ROW)
-    rlabel(VENDOR_ROW, "御見積金額(税込)")
-    gcell = ws.cell(VENDOR_ROW, COL_AMOUNT)
-    gcell.font = Font(name=FONT_NAME, size=12, bold=True)
-    gcell.number_format = f'"¥"{MONEY_FORMAT}'
-    gcell.alignment = right
-    gcell.border = bottom
-
-    # 明細テーブルのヘッダー行
-    headers = ["No.", "工事項目", "仕様", "数量", "単位", "単価", "金額", "備考"]
+    # --- 明細テーブル ヘッダー ---
+    headers = ["No.", "工事品目", "仕様", "数量", "単位", "単価", "金額", "備考"]
     for col, text in enumerate(headers, start=1):
         c = ws.cell(ITEM_HEADER_ROW, col, text)
-        c.font = label_font
-        c.fill = header_fill
+        c.font = Font(name=FONT_NAME, size=10, bold=True, color=BRAND_NAVY)
+        c.fill = tint_fill
         c.alignment = center
-        c.border = border
-    ws.row_dimensions[ITEM_HEADER_ROW].height = 20
+        c.border = Border(left=rule, right=rule,
+                          top=Side(style="medium", color=BRAND_NAVY),
+                          bottom=Side(style="medium", color=BRAND_NAVY))
+    ws.row_dimensions[ITEM_HEADER_ROW].height = 22
 
-    # 明細テーブルの本体（枠線のみ・値は空）
+    # --- 明細テーブル 本体（枠線のみ・値は空） ---
     for row in range(ITEM_START_ROW, ITEM_END_ROW + 1):
+        is_last = row == ITEM_END_ROW
         for col in range(1, LAST_COL + 1):
             c = ws.cell(row, col)
             c.font = base_font
-            c.border = border
-            if col == COL_NO:
-                c.alignment = center
-            elif col in (COL_QTY, COL_UNIT):
+            c.border = Border(
+                left=rule, right=rule, top=rule,
+                bottom=Side(style="medium", color=BRAND_NAVY) if is_last else rule,
+            )
+            if col in (COL_NO, COL_QTY, COL_UNIT):
                 c.alignment = center
             elif col in (COL_PRICE, COL_AMOUNT):
-                c.alignment = right
+                c.alignment = Alignment(horizontal="right", vertical="center")
                 c.number_format = MONEY_FORMAT
             else:
                 c.alignment = left
+        # 行高は固定しない（品目名が折り返したときに自動で伸びて見切れないようにする）
 
-    # 集計ブロック（ラベルのみ固定。値は流し込み時に書く）
+    # --- 集計ブロック ---
     summary_rows = [
-        (SUMMARY_SUBTOTAL_ROW, "小計"),
-        (SUMMARY_DISCOUNT_ROW, "値引き"),
-        (SUMMARY_NET_ROW, "税抜合計"),
-        (SUMMARY_TAX_ROW, "消費税"),
-        (SUMMARY_TOTAL_ROW, "税込合計"),
+        (SUMMARY_SUBTOTAL_ROW, "小　　計", False),
+        (SUMMARY_DISCOUNT_ROW, "値 引 き", False),
+        (SUMMARY_NET_ROW, "税抜合計", False),
+        (SUMMARY_TAX_ROW, "消 費 税", False),
+        (SUMMARY_TOTAL_ROW, "税込合計", True),
     ]
-    for row, text in summary_rows:
-        ws.merge_cells(start_row=row, start_column=COL_UNIT, end_row=row, end_column=COL_PRICE)  # E:F
-        lc = ws.cell(row, COL_UNIT, text)
-        lc.font = label_font
-        lc.alignment = right
-        lc.border = border
+    for row, text, emphasize in summary_rows:
+        lc = merge(row, COL_UNIT, row, COL_PRICE)
+        lc.value = text
+        lc.alignment = Alignment(horizontal="center", vertical="center")
         vc = ws.cell(row, COL_AMOUNT)
-        vc.font = label_font if row == SUMMARY_TOTAL_ROW else base_font
-        vc.alignment = right
-        vc.number_format = MONEY_FORMAT
-        vc.border = border
+        vc.alignment = Alignment(horizontal="right", vertical="center")
+        vc.number_format = YEN_FORMAT if emphasize else MONEY_FORMAT
+        if emphasize:
+            lc.font = Font(name=FONT_NAME, size=12, bold=True, color="FFFFFF")
+            lc.fill = navy_fill
+            vc.font = Font(name=FONT_NAME, size=14, bold=True, color=BRAND_NAVY)
+            vc.border = box
+            ws.row_dimensions[row].height = 26
+        else:
+            lc.font = navy_font
+            lc.fill = tint_fill
+            lc.border = Border(left=rule, right=rule, top=rule, bottom=rule)
+            vc.font = base_font
+            vc.border = Border(left=rule, right=rule, top=rule, bottom=rule)
+            ws.row_dimensions[row].height = 19
+
+    # --- 備考欄 ---
+    rl = ws.cell(REMARK_LABEL_ROW, COL_NO, "備考")
+    rl.font = navy_font
+    rl.alignment = Alignment(horizontal="left", vertical="center")
+    rv = merge(REMARK_LABEL_ROW, COL_ITEM, REMARK_LABEL_ROW + 2, COL_REMARK)
+    rv.font = base_font
+    rv.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    rv.border = Border(left=rule, right=rule, top=rule, bottom=rule)
+
+    note = merge(REMARK_LABEL_ROW + 4, COL_NO, REMARK_LABEL_ROW + 4, LAST_COL)
+    note.value = "※本見積書の有効期限を過ぎた場合は、再度お見積りいたします。"
+    note.font = Font(name=FONT_NAME, size=8, color="666666")
+    note.alignment = Alignment(horizontal="left", vertical="center")
 
     # 印刷設定：A4縦・横1ページに収める
     ws.page_setup.orientation = "portrait"
@@ -385,7 +516,8 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    ws.print_area = f"A1:H{SUMMARY_TOTAL_ROW + 1}"
+    ws.page_margins = PageMargins(left=0.5, right=0.5, top=0.6, bottom=0.5)
+    ws.print_area = f"A1:H{REMARK_LABEL_ROW + 4}"
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
@@ -404,20 +536,33 @@ def ensure_template(path: Path = TEMPLATE_PATH) -> Path:
 
 def _write_quote_sheet(ws, estimate: Estimate) -> int:
     """見積書シートへ値だけを書き込む。書き込んだ明細行数（テーブル使用行数）を返す。"""
-    _set(ws, CUSTOMER_ROW, COL_ITEM, estimate.customer)
-    _set(ws, CUSTOMER_ROW, COL_AMOUNT, estimate.issue_date)
-    _set(ws, PROJECT_ROW, COL_ITEM, estimate.project_name)
-    _set(ws, PROJECT_ROW, COL_AMOUNT, estimate.valid_days)
-    _set(ws, VENDOR_ROW, COL_ITEM, estimate.vendor)
-    _set(ws, VENDOR_ROW, COL_AMOUNT, estimate.grand_total, number_format=f'"¥"{MONEY_FORMAT}')
+    # テンプレート側に「御中」があるので、宛名末尾の敬称は取り除いて二重表記を防ぐ。
+    customer = re.sub(r"[\s　]*(御中|様|殿)[\s　]*$", "", estimate.customer or "")
+    _set(ws, CUSTOMER_ROW, COL_NO, customer)
+    _set(ws, ISSUE_DATE_ROW, COL_AMOUNT, estimate.issue_date)
+    _set(ws, AMOUNT_LABEL_ROW, COL_SPEC, estimate.grand_total, number_format=YEN_FORMAT)
+
+    # 工事情報（工事名称 / 工事場所 / 工事期間 / 支払条件 / 有効期限 / 見積担当）
+    _set(ws, INFO_START_ROW, COL_SPEC, estimate.project_name)
+    _set(ws, INFO_START_ROW + 4, COL_SPEC, estimate.valid_days)
+
+    cat_font = Font(name=FONT_NAME, size=10, bold=True, color=BRAND_NAVY)
+    cat_fill = PatternFill("solid", fgColor=BRAND_TINT)
+    sub_font = Font(name=FONT_NAME, size=10, bold=True)
 
     row = ITEM_START_ROW
     no = 0
+    multi = len(estimate.categories) > 1
     for idx, cat in enumerate(estimate.categories, start=1):
-        # 分類見出し行
-        _set(ws, row, COL_ITEM, f"{idx}. {cat.name}")
-        ws.cell(row, COL_ITEM).font = Font(name=FONT_NAME, size=10, bold=True)
-        row += 1
+        if multi:
+            # 分類見出し行（複数業者・複数工種のときだけ出す）
+            _set(ws, row, COL_ITEM, f"{idx}. {cat.name}")
+            for col in range(1, LAST_COL + 1):
+                c = ws.cell(row, col)
+                if not isinstance(c, MergedCell):
+                    c.fill = cat_fill
+            ws.cell(row, COL_ITEM).font = cat_font
+            row += 1
         for item in cat.items:
             no += 1
             _set(ws, row, COL_NO, no)
@@ -429,21 +574,44 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
             _set(ws, row, COL_AMOUNT, int(round(item.amount)), number_format=MONEY_FORMAT)
             _set(ws, row, COL_REMARK, item.remark)
             row += 1
-        # 分類小計行
-        _set(ws, row, COL_PRICE, "小計")
-        ws.cell(row, COL_PRICE).alignment = Alignment(horizontal="right", vertical="center")
-        _set(ws, row, COL_AMOUNT, cat.subtotal, number_format=MONEY_FORMAT)
-        ws.cell(row, COL_AMOUNT).font = Font(name=FONT_NAME, size=10, bold=True)
-        row += 1
+        if multi:
+            # 分類小計行
+            _set(ws, row, COL_PRICE, "小計")
+            ws.cell(row, COL_PRICE).alignment = Alignment(horizontal="right", vertical="center")
+            ws.cell(row, COL_PRICE).font = sub_font
+            _set(ws, row, COL_AMOUNT, cat.subtotal, number_format=MONEY_FORMAT)
+            ws.cell(row, COL_AMOUNT).font = sub_font
+            row += 1
 
     used_rows = row - ITEM_START_ROW
+
+    # 使わなかった明細行は隠して、A4 1枚に収まるようにする。
+    # （行を削除すると集計セルの位置がずれて検証できなくなるため、非表示にする）
+    last_used = row - 1
+    if last_used >= ITEM_START_ROW:
+        for col in range(1, LAST_COL + 1):
+            c = ws.cell(last_used, col)
+            if not isinstance(c, MergedCell):
+                old = c.border
+                c.border = Border(left=old.left, right=old.right, top=old.top,
+                                  bottom=Side(style="medium", color=BRAND_NAVY))
+    for hidden_row in range(max(row, ITEM_START_ROW), ITEM_END_ROW + 1):
+        ws.row_dimensions[hidden_row].hidden = True
 
     # 集計ブロック
     _set(ws, SUMMARY_SUBTOTAL_ROW, COL_AMOUNT, estimate.subtotal, number_format=MONEY_FORMAT)
     _set(ws, SUMMARY_DISCOUNT_ROW, COL_AMOUNT, estimate.discount, number_format=MONEY_FORMAT)
     _set(ws, SUMMARY_NET_ROW, COL_AMOUNT, estimate.net_total, number_format=MONEY_FORMAT)
     _set(ws, SUMMARY_TAX_ROW, COL_AMOUNT, estimate.tax, number_format=MONEY_FORMAT)
-    _set(ws, SUMMARY_TOTAL_ROW, COL_AMOUNT, estimate.grand_total, number_format=MONEY_FORMAT)
+    _set(ws, SUMMARY_TOTAL_ROW, COL_AMOUNT, estimate.grand_total, number_format=YEN_FORMAT)
+
+    # 明細が少ない通常の見積はA4 1枚に収める。行数が多い場合のみ複数ページを許し、
+    # そのときは明細ヘッダーを各ページの先頭に繰り返す。
+    if used_rows <= 45:
+        ws.page_setup.fitToHeight = 1
+    else:
+        ws.page_setup.fitToHeight = 0
+        ws.print_title_rows = f"{ITEM_HEADER_ROW}:{ITEM_HEADER_ROW}"
 
     return used_rows
 
@@ -486,6 +654,16 @@ def _write_detail_sheet(wb: Workbook, estimate: Estimate):
                 if col in (7, 8):
                     c.number_format = MONEY_FORMAT
             row += 1
+
+    # 明細データもA4横1ページ幅に収め、見出し行を各ページで繰り返す。
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.5)
+    ws.print_title_rows = "1:1"
+    ws.freeze_panes = "A2"
 
     row += 1  # 1行空ける
     summary = [
