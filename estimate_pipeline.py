@@ -518,6 +518,57 @@ def _detail_items_for_vendor(detail_df: pd.DataFrame, source_pdf: str, vendor: s
     return items
 
 
+def _dedupe_vendor_summaries(candidates: List[Dict], detail_totals: Dict[Tuple[str, str], int]) -> List[Dict]:
+    """同一PDF・同一業者から複数のまとめが出た場合の二重計上を防ぐ。
+
+    FAX送付案内などの表紙ページと見積本体ページが両方「まとめ」として拾われると、
+    同じ工事が2件分として集計されてしまう（例: 表紙のNET金額180,000 + 本体の167,000）。
+    ここで実体のある1件に絞り込む。
+
+    判定順:
+      1. 明細合計と小計が一致する候補が1件だけ → それを採用（本体ページ）
+      2. 候補の小計の合計が明細合計と一致 → 全件採用（本当に別々の工事）
+      3. それ以外 → 工事項目が最も多い候補を採用（同数なら小計が大きい方）
+    """
+    grouped: Dict[Tuple[str, str], List[Dict]] = {}
+    order: List[Tuple[str, str]] = []
+    for candidate in candidates:
+        key = (normalize_text(candidate.get("元ファイル", "")), normalize_text(candidate.get("見積元", "")))
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(candidate)
+
+    kept: List[Dict] = []
+    for key in order:
+        group = grouped[key]
+        if len(group) == 1:
+            kept.extend(group)
+            continue
+
+        detail_total = int(round(detail_totals.get(key, 0) or 0))
+        subtotals = [int(round(c.get("改小計") or c.get("小計") or 0)) for c in group]
+
+        exact = [c for c, s in zip(group, subtotals) if detail_total and s == detail_total]
+        work_names = {normalize_text(c.get("工事名称", "")) for c in group}
+        work_names.discard("")
+        if len(exact) == 1:
+            chosen = exact
+        elif detail_total and sum(subtotals) == detail_total:
+            chosen = group
+        elif len(work_names) == len(group) and len(work_names) > 1:
+            # 工事名がすべて異なる = 同じPDF内の別々の工事とみなして全件残す。
+            chosen = group
+        else:
+            best = max(group, key=lambda c: (len(c.get("工事項目") or []), int(round(c.get("改小計") or c.get("小計") or 0))))
+            chosen = [best]
+
+        for c in chosen:
+            c["集計根拠"] = f"{c.get('集計根拠', 'summary')}/dedup" if len(chosen) < len(group) else c.get("集計根拠", "summary")
+        kept.extend(chosen)
+    return kept
+
+
 def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_rate: float = 0.10) -> Tuple[pd.DataFrame, List[Dict]]:
     """集計対象を業者ごとの最終税抜小計だけに限定した原価DFを作る。"""
     summary_data = summary_data or {}
@@ -525,6 +576,7 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
     detail_totals = _detail_vendor_totals(detail_df)
     represented_keys = set()
     vendor_summaries: List[Dict] = []
+    summary_candidates: List[Dict] = []
 
     for source in summary_sources:
         if not isinstance(source, dict):
@@ -552,7 +604,7 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
         total = int(round(source.get("工事費計") if source.get("工事費計") is not None else subtotal + tax))
         if not items:
             items = _detail_items_for_vendor(detail_df, source_pdf, vendor)
-        vendor_summaries.append({
+        summary_candidates.append({
             "見積元": vendor,
             "元ファイル": source_pdf,
             "工事名称": normalize_text(source.get("工事名称", "")),
@@ -565,7 +617,11 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
             "明細合計": detail_totals.get((source_pdf, vendor), 0),
             "集計根拠": "summary",
         })
-        represented_keys.add((source_pdf, vendor))
+
+    # 表紙ページと見積本体ページが二重に拾われた場合をここで1件に整理する。
+    for summary in _dedupe_vendor_summaries(summary_candidates, detail_totals):
+        vendor_summaries.append(summary)
+        represented_keys.add((normalize_text(summary.get("元ファイル", "")), normalize_text(summary.get("見積元", ""))))
 
     for (source_pdf, vendor), detail_total in detail_totals.items():
         if (source_pdf, vendor) in represented_keys:
@@ -832,11 +888,31 @@ def build_vendor_work_summary_dataframe(vendor_summaries: List[Dict], cost_df: p
         for vendor, group in cost_df.groupby("見積元", sort=False):
             cost_amount_by_vendor[normalize_text(vendor)] = int(round(pd.to_numeric(group["見積金額"], errors="coerce").fillna(0).sum()))
 
+    # 同じ業者のまとめが複数ある場合、業者合計を各まとめへ按分する。
+    # （全まとめに満額を割り当てると、業者合計が件数ぶん倍増してしまう）
+    vendor_occurrences: Dict[str, int] = {}
+    for summary in vendor_summaries or []:
+        v = normalize_text(summary.get("見積元", "")) or "不明"
+        vendor_occurrences[v] = vendor_occurrences.get(v, 0) + 1
+    vendor_remaining = dict(cost_amount_by_vendor)
+    vendor_seen: Dict[str, int] = {}
+
     rows: List[Dict] = []
     subtotal_total = 0
     for summary in vendor_summaries or []:
         vendor = normalize_text(summary.get("見積元", "")) or "不明"
-        subtotal = cost_amount_by_vendor.get(vendor, int(round(summary.get("改小計") or summary.get("小計") or 0)))
+        own_subtotal = int(round(summary.get("改小計") or summary.get("小計") or 0))
+        if vendor in cost_amount_by_vendor:
+            vendor_seen[vendor] = vendor_seen.get(vendor, 0) + 1
+            if vendor_seen[vendor] >= vendor_occurrences.get(vendor, 1):
+                # 最後の1件で残額を渡し切り、合計が必ず一致するようにする。
+                subtotal = int(round(vendor_remaining.get(vendor, 0)))
+            else:
+                share = int(round(cost_amount_by_vendor[vendor] / max(vendor_occurrences.get(vendor, 1), 1)))
+                subtotal = min(share, int(round(vendor_remaining.get(vendor, 0))))
+            vendor_remaining[vendor] = int(round(vendor_remaining.get(vendor, 0))) - subtotal
+        else:
+            subtotal = own_subtotal
         subtotal_total += subtotal
         tax = int(round(subtotal * tax_rate))
         total = subtotal + tax
@@ -1231,10 +1307,16 @@ def apply_company_profit_to_details(detail_df: pd.DataFrame, cost_df: pd.DataFra
         actual_total = int(round(pd.to_numeric(allocated["見積金額"], errors="coerce").fillna(0).sum()))
         cost_mask = cost_out["見積元"].astype(str) == str(company_name)
         if cost_mask.any():
-            idx = cost_out[cost_mask].index[0]
+            indices = list(cost_out[cost_mask].index)
+            idx = indices[0]
             cost_out.at[idx, "上乗せ額"] = actual_total - base_total
             cost_out.at[idx, "見積単価"] = actual_total
             cost_out.at[idx, "見積金額"] = actual_total
+            # 先頭行に業者の合計を集約するため、同一業者の残り行は0にして二重計上を防ぐ。
+            for extra_idx in indices[1:]:
+                cost_out.at[extra_idx, "上乗せ額"] = 0
+                cost_out.at[extra_idx, "見積単価"] = 0
+                cost_out.at[extra_idx, "見積金額"] = 0
     return detail_out, cost_out
 
 
