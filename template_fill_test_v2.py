@@ -92,6 +92,9 @@ SUMMARY_TAX_ROW = ITEM_END_ROW + 5       # 176 消費税
 SUMMARY_TOTAL_ROW = ITEM_END_ROW + 6     # 177 税込合計
 REMARK_LABEL_ROW = SUMMARY_TOTAL_ROW + 2  # 179 備考
 
+ITEM_FONT_SIZE = 9
+ITEM_ROW_HEIGHT = 27
+
 MONEY_FORMAT = "#,##0"
 YEN_FORMAT = '"¥"#,##0'
 
@@ -313,18 +316,12 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     ws.sheet_view.showGridLines = False
 
     # 列幅（A4縦想定）
-    widths = {"A": 5, "B": 26, "C": 19, "D": 7, "E": 6, "F": 12, "G": 14, "H": 15}
+    widths = {"A": 4.5, "B": 31, "C": 17, "D": 6.5, "E": 5, "F": 11.5, "G": 14.5, "H": 11}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
 
-    # タイトル
-    ws.merge_cells(start_row=TITLE_ROW, start_column=1, end_row=TITLE_ROW, end_column=LAST_COL)
-    tcell = ws.cell(TITLE_ROW, 1, "御 見 積 書")
-    tcell.font = title_font
-    tcell.alignment = center
-    ws.row_dimensions[TITLE_ROW].height = 34
-
     navy_font = Font(name=FONT_NAME, size=10, bold=True, color=BRAND_NAVY)
+    item_font = Font(name=FONT_NAME, size=ITEM_FONT_SIZE)
     rule = Side(style="thin", color=BRAND_RULE)
     under = Border(bottom=Side(style="medium", color=BRAND_NAVY))
     box = Border(left=Side(style="medium", color=BRAND_NAVY), right=Side(style="medium", color=BRAND_NAVY),
@@ -342,9 +339,9 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     t.font = Font(name=FONT_NAME, size=22, bold=True, color="FFFFFF")
     t.fill = navy_fill
     t.alignment = center
-    ws.row_dimensions[TITLE_ROW].height = 40
-    ws.row_dimensions[1].height = 10
-    ws.row_dimensions[3].height = 8
+    ws.row_dimensions[TITLE_ROW].height = 32
+    ws.row_dimensions[1].height = 6
+    ws.row_dimensions[3].height = 4
 
     # --- ロゴ（右上） ---
     if LOGO_PATH.exists():
@@ -360,7 +357,7 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     cust.font = Font(name=FONT_NAME, size=15)
     cust.alignment = Alignment(horizontal="left", vertical="center")
     cust.border = under
-    ws.row_dimensions[CUSTOMER_ROW].height = 26
+    ws.row_dimensions[CUSTOMER_ROW].height = 24
     hon = ws.cell(CUSTOMER_ROW, COL_QTY, "御中")
     hon.font = Font(name=FONT_NAME, size=12)
     hon.alignment = Alignment(horizontal="left", vertical="center")
@@ -389,11 +386,11 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     al.alignment = center
     av = merge(AMOUNT_LABEL_ROW, COL_SPEC, AMOUNT_END_ROW, COL_UNIT)
     av.font = Font(name=FONT_NAME, size=20, bold=True, color=BRAND_NAVY)
-    av.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+    av.alignment = Alignment(horizontal="right", vertical="center", indent=1, shrink_to_fit=True)
     av.number_format = YEN_FORMAT
     av.border = box
-    ws.row_dimensions[AMOUNT_LABEL_ROW].height = 20
-    ws.row_dimensions[AMOUNT_END_ROW].height = 20
+    ws.row_dimensions[AMOUNT_LABEL_ROW].height = 17
+    ws.row_dimensions[AMOUNT_END_ROW].height = 17
     tx = merge(AMOUNT_END_ROW + 1, COL_SPEC, AMOUNT_END_ROW + 1, COL_UNIT)
     tx.value = "（消費税込）"
     tx.font = Font(name=FONT_NAME, size=8, color="666666")
@@ -434,7 +431,7 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     band.font = Font(name=FONT_NAME, size=11, bold=True, color="FFFFFF")
     band.fill = navy_fill
     band.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-    ws.row_dimensions[WORK_BAND_ROW].height = 22
+    ws.row_dimensions[WORK_BAND_ROW].height = 20
 
     # --- 明細テーブル ヘッダー ---
     headers = ["No.", "工事品目", "仕様", "数量", "単位", "単価", "金額", "備考"]
@@ -446,7 +443,7 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
         c.border = Border(left=rule, right=rule,
                           top=Side(style="medium", color=BRAND_NAVY),
                           bottom=Side(style="medium", color=BRAND_NAVY))
-    ws.row_dimensions[ITEM_HEADER_ROW].height = 22
+    ws.row_dimensions[ITEM_HEADER_ROW].height = 20
 
     # --- 明細テーブル 本体（枠線のみ・値は空） ---
     for row in range(ITEM_START_ROW, ITEM_END_ROW + 1):
@@ -465,7 +462,9 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
                 c.number_format = MONEY_FORMAT
             else:
                 c.alignment = left
-        # 行高は固定しない（品目名が折り返したときに自動で伸びて見切れないようにする）
+            c.font = item_font
+        # 行高を固定して改ページ位置を安定させる（自動伸長だと毎回変わり体裁が崩れる）
+        ws.row_dimensions[row].height = ITEM_ROW_HEIGHT
 
     # --- 集計ブロック ---
     summary_rows = [
@@ -480,21 +479,22 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
         lc.value = text
         lc.alignment = Alignment(horizontal="center", vertical="center")
         vc = ws.cell(row, COL_AMOUNT)
-        vc.alignment = Alignment(horizontal="right", vertical="center")
+        # 桁が大きくても ### にならないよう、はみ出す場合は縮めて収める
+        vc.alignment = Alignment(horizontal="right", vertical="center", shrink_to_fit=True)
         vc.number_format = YEN_FORMAT if emphasize else MONEY_FORMAT
         if emphasize:
             lc.font = Font(name=FONT_NAME, size=12, bold=True, color="FFFFFF")
             lc.fill = navy_fill
-            vc.font = Font(name=FONT_NAME, size=14, bold=True, color=BRAND_NAVY)
+            vc.font = Font(name=FONT_NAME, size=12, bold=True, color=BRAND_NAVY)
             vc.border = box
-            ws.row_dimensions[row].height = 26
+            ws.row_dimensions[row].height = 23
         else:
             lc.font = navy_font
             lc.fill = tint_fill
             lc.border = Border(left=rule, right=rule, top=rule, bottom=rule)
             vc.font = base_font
             vc.border = Border(left=rule, right=rule, top=rule, bottom=rule)
-            ws.row_dimensions[row].height = 19
+            ws.row_dimensions[row].height = 17
 
     # --- 備考欄 ---
     rl = ws.cell(REMARK_LABEL_ROW, COL_NO, "備考")
@@ -605,13 +605,19 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
     _set(ws, SUMMARY_TAX_ROW, COL_AMOUNT, estimate.tax, number_format=MONEY_FORMAT)
     _set(ws, SUMMARY_TOTAL_ROW, COL_AMOUNT, estimate.grand_total, number_format=YEN_FORMAT)
 
-    # 明細が少ない通常の見積はA4 1枚に収める。行数が多い場合のみ複数ページを許し、
-    # そのときは明細ヘッダーを各ページの先頭に繰り返す。
-    if used_rows <= 45:
-        ws.page_setup.fitToHeight = 1
-    else:
-        ws.page_setup.fitToHeight = 0
-        ws.print_title_rows = f"{ITEM_HEADER_ROW}:{ITEM_HEADER_ROW}"
+    # 複数ページになっても体裁が崩れないようにする。
+    # ・明細ヘッダー行は毎ページの先頭で繰り返す（2枚目以降が見出しなしの表にならない）
+    # ・フッターに工事名とページ番号を入れて、続きものだと分かるようにする
+    ws.print_title_rows = f"{ITEM_HEADER_ROW}:{ITEM_HEADER_ROW}"
+    ws.oddFooter.left.text = f"{COMPANY['name']}　{estimate.project_name}"
+    ws.oddFooter.left.size = 8
+    ws.oddFooter.left.color = "808080"
+    ws.oddFooter.right.text = "Page &P / &N"
+    ws.oddFooter.right.size = 8
+    ws.oddFooter.right.color = "808080"
+
+    # 収まりきる小さな見積だけ1ページに強制し、長い見積は自然改ページに任せる。
+    ws.page_setup.fitToHeight = 1 if used_rows <= 18 else 0
 
     return used_rows
 
