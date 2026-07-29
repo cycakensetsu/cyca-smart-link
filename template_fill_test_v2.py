@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import re
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
@@ -28,6 +28,7 @@ from openpyxl.cell.cell import MergedCell
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.page import PageMargins
+from openpyxl.worksheet.pagebreak import Break
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -94,6 +95,11 @@ REMARK_LABEL_ROW = SUMMARY_TOTAL_ROW + 2  # 179 備考
 
 ITEM_FONT_SIZE = 9
 ITEM_ROW_HEIGHT = 27
+
+# 1ページに載せる明細行数。ヘッダーがある1枚目は少なめ。
+# 実際に載る行数より控えめにして、アプリ側が勝手に改ページを挟まないようにする。
+FIRST_PAGE_ITEM_ROWS = 16
+NEXT_PAGE_ITEM_ROWS = 22
 
 MONEY_FORMAT = "#,##0"
 YEN_FORMAT = '"¥"#,##0'
@@ -500,24 +506,33 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     rl = ws.cell(REMARK_LABEL_ROW, COL_NO, "備考")
     rl.font = navy_font
     rl.alignment = Alignment(horizontal="left", vertical="center")
-    rv = merge(REMARK_LABEL_ROW, COL_ITEM, REMARK_LABEL_ROW + 2, COL_REMARK)
+    rv = merge(REMARK_LABEL_ROW, COL_ITEM, REMARK_LABEL_ROW + 1, COL_REMARK)
     rv.font = base_font
     rv.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
     rv.border = Border(left=rule, right=rule, top=rule, bottom=rule)
 
-    note = merge(REMARK_LABEL_ROW + 4, COL_NO, REMARK_LABEL_ROW + 4, LAST_COL)
+    note = merge(REMARK_LABEL_ROW + 3, COL_NO, REMARK_LABEL_ROW + 3, LAST_COL)
     note.value = "※本見積書の有効期限を過ぎた場合は、再度お見積りいたします。"
     note.font = Font(name=FONT_NAME, size=8, color="666666")
     note.alignment = Alignment(horizontal="left", vertical="center")
+
+    # 余白行を詰める（A4 1枚に収まる見積を1枚のまま保つため）
+    for spacer_row, spacer_height in (
+        (5, 8), (9, 8), (AMOUNT_END_ROW + 1, 12), (WORK_BAND_ROW - 1, 8),
+        (SUMMARY_SUBTOTAL_ROW - 1, 6), (SUMMARY_TOTAL_ROW + 1, 6),
+        (REMARK_LABEL_ROW + 2, 6), (REMARK_LABEL_ROW + 3, 12),
+    ):
+        ws.row_dimensions[spacer_row].height = spacer_height
 
     # 印刷設定：A4縦・横1ページに収める
     ws.page_setup.orientation = "portrait"
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.fitToWidth = 1
+    # 改ページを入れなかった＝1枚で収まる設計なので、縦も1ページに寄せる
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_margins = PageMargins(left=0.5, right=0.5, top=0.6, bottom=0.5)
-    ws.print_area = f"A1:H{REMARK_LABEL_ROW + 4}"
+    ws.print_area = f"A1:H{REMARK_LABEL_ROW + 3}"
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
@@ -533,6 +548,23 @@ def ensure_template(path: Path = TEMPLATE_PATH) -> Path:
 # ---------------------------------------------------------------------------
 # 流し込み
 # ---------------------------------------------------------------------------
+
+def _copy_item_header(ws, row: int) -> None:
+    """明細ヘッダー行をそのままの体裁で指定行に複製する（2枚目以降の見出し用）。"""
+    for col in range(1, LAST_COL + 1):
+        src = ws.cell(ITEM_HEADER_ROW, col)
+        dst = ws.cell(row, col)
+        if isinstance(dst, MergedCell):
+            continue
+        dst.value = src.value
+        dst.font = copy(src.font)
+        dst.fill = copy(src.fill)
+        dst.border = copy(src.border)
+        dst.alignment = copy(src.alignment)
+    header_height = ws.row_dimensions[ITEM_HEADER_ROW].height
+    if header_height:
+        ws.row_dimensions[row].height = header_height
+
 
 def _write_quote_sheet(ws, estimate: Estimate) -> int:
     """見積書シートへ値だけを書き込む。書き込んだ明細行数（テーブル使用行数）を返す。"""
@@ -550,39 +582,59 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
     cat_fill = PatternFill("solid", fgColor=BRAND_TINT)
     sub_font = Font(name=FONT_NAME, size=10, bold=True)
 
-    row = ITEM_START_ROW
+    # 明細を書き出す。ページが変わる位置では見出し行を「実データとして」書き込み、
+    # 明示的な改ページを入れる。Numbers は Excel の印刷タイトル行設定を無視するため、
+    # 印刷設定に頼らずセルの中身として見出しを持たせないと2枚目が見出し無しになる。
+    state = {"row": ITEM_START_ROW, "on_page": 0, "limit": FIRST_PAGE_ITEM_ROWS}
+
+    def emit(fill_row) -> None:
+        if state["on_page"] >= state["limit"]:
+            _copy_item_header(ws, state["row"])
+            ws.row_breaks.append(Break(id=state["row"] - 1))
+            state["row"] += 1
+            state["on_page"] = 0
+            state["limit"] = NEXT_PAGE_ITEM_ROWS
+        fill_row(state["row"])
+        state["row"] += 1
+        state["on_page"] += 1
+
     no = 0
     multi = len(estimate.categories) > 1
     for idx, cat in enumerate(estimate.categories, start=1):
         if multi:
-            # 分類見出し行（複数業者・複数工種のときだけ出す）
-            _set(ws, row, COL_ITEM, f"{idx}. {cat.name}")
-            for col in range(1, LAST_COL + 1):
-                c = ws.cell(row, col)
-                if not isinstance(c, MergedCell):
-                    c.fill = cat_fill
-            ws.cell(row, COL_ITEM).font = cat_font
-            row += 1
+            def write_category(r, idx=idx, cat=cat):
+                # 分類見出し行（複数業者・複数工種のときだけ出す）
+                _set(ws, r, COL_ITEM, f"{idx}. {cat.name}")
+                for col in range(1, LAST_COL + 1):
+                    c = ws.cell(r, col)
+                    if not isinstance(c, MergedCell):
+                        c.fill = cat_fill
+                ws.cell(r, COL_ITEM).font = cat_font
+            emit(write_category)
         for item in cat.items:
             no += 1
-            _set(ws, row, COL_NO, no)
-            _set(ws, row, COL_ITEM, item.name)
-            _set(ws, row, COL_SPEC, item.spec)
-            _set(ws, row, COL_QTY, item.qty)
-            _set(ws, row, COL_UNIT, item.unit)
-            _set(ws, row, COL_PRICE, int(round(item.unit_price)), number_format=MONEY_FORMAT)
-            _set(ws, row, COL_AMOUNT, int(round(item.amount)), number_format=MONEY_FORMAT)
-            _set(ws, row, COL_REMARK, item.remark)
-            row += 1
-        if multi:
-            # 分類小計行
-            _set(ws, row, COL_PRICE, "小計")
-            ws.cell(row, COL_PRICE).alignment = Alignment(horizontal="right", vertical="center")
-            ws.cell(row, COL_PRICE).font = sub_font
-            _set(ws, row, COL_AMOUNT, cat.subtotal, number_format=MONEY_FORMAT)
-            ws.cell(row, COL_AMOUNT).font = sub_font
-            row += 1
 
+            def write_item(r, item=item, no=no):
+                _set(ws, r, COL_NO, no)
+                _set(ws, r, COL_ITEM, item.name)
+                _set(ws, r, COL_SPEC, item.spec)
+                _set(ws, r, COL_QTY, item.qty)
+                _set(ws, r, COL_UNIT, item.unit)
+                _set(ws, r, COL_PRICE, int(round(item.unit_price)), number_format=MONEY_FORMAT)
+                _set(ws, r, COL_AMOUNT, int(round(item.amount)), number_format=MONEY_FORMAT)
+                _set(ws, r, COL_REMARK, item.remark)
+            emit(write_item)
+        if multi:
+            def write_subtotal(r, cat=cat):
+                # 分類小計行
+                _set(ws, r, COL_PRICE, "小計")
+                ws.cell(r, COL_PRICE).alignment = Alignment(horizontal="right", vertical="center")
+                ws.cell(r, COL_PRICE).font = sub_font
+                _set(ws, r, COL_AMOUNT, cat.subtotal, number_format=MONEY_FORMAT)
+                ws.cell(r, COL_AMOUNT).font = sub_font
+            emit(write_subtotal)
+
+    row = state["row"]
     used_rows = row - ITEM_START_ROW
 
     # 使わなかった明細行は隠して、A4 1枚に収まるようにする。
@@ -608,7 +660,6 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
     # 複数ページになっても体裁が崩れないようにする。
     # ・明細ヘッダー行は毎ページの先頭で繰り返す（2枚目以降が見出しなしの表にならない）
     # ・フッターに工事名とページ番号を入れて、続きものだと分かるようにする
-    ws.print_title_rows = f"{ITEM_HEADER_ROW}:{ITEM_HEADER_ROW}"
     ws.oddFooter.left.text = f"{COMPANY['name']}　{estimate.project_name}"
     ws.oddFooter.left.size = 8
     ws.oddFooter.left.color = "808080"
@@ -617,7 +668,8 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
     ws.oddFooter.right.color = "808080"
 
     # 収まりきる小さな見積だけ1ページに強制し、長い見積は自然改ページに任せる。
-    ws.page_setup.fitToHeight = 1 if used_rows <= 18 else 0
+    # 改ページを入れていない＝1枚で収まる設計なので、縦も1ページに寄せる
+    ws.page_setup.fitToHeight = 0 if ws.row_breaks.count else 1
 
     return used_rows
 
