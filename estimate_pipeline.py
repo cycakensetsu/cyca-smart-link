@@ -1173,7 +1173,25 @@ def _markup_unit_cap(unit_price: float) -> Optional[float]:
     return None
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    """NaN / 欠損 / 数値でない値を安全な既定値に落とす。
+
+    数量や金額が未取得の明細（pd.NA）がそのまま計算に入ると、
+    `NaN or 1` が NaN のままになり int(math.ceil(NaN)) で ValueError になる。
+    """
+    if value is None or value is pd.NA:
+        return default
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(num) or math.isinf(num):
+        return default
+    return num
+
+
 def _round_unit_naturally(value: float) -> int:
+    value = _safe_float(value, 0.0)
     if value <= 0:
         return 0
     unit = 1000 if value >= 50000 else 100
@@ -1184,14 +1202,14 @@ def _best_adjustment_index(group: pd.DataFrame) -> Optional[int]:
     candidates = []
     for idx, row in group.iterrows():
         name = normalize_text(row.get("品名", ""))
-        unit_price = float(row.get("原価単価") or 0)
-        amount = float(row.get("原価金額") or 0)
+        unit_price = _safe_float(row.get("原価単価"), 0.0)
+        amount = _safe_float(row.get("原価金額"), 0.0)
         if any(keyword in name for keyword in EXPENSE_MARKUP_KEYWORDS):
             continue
         candidates.append((unit_price, amount, idx))
     if not candidates:
         for idx, row in group.iterrows():
-            candidates.append((float(row.get("原価単価") or 0), float(row.get("原価金額") or 0), idx))
+            candidates.append((_safe_float(row.get("原価単価"), 0.0), _safe_float(row.get("原価金額"), 0.0), idx))
     if not candidates:
         return None
     return sorted(candidates, reverse=True)[0][2]
@@ -1212,9 +1230,9 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int) -> pd.Dat
     weights: Dict[int, float] = {}
     caps: Dict[int, Optional[int]] = {}
     for idx, row in out.iterrows():
-        amount = float(row.get("原価金額") or 0)
-        unit_price = float(row.get("原価単価") or 0)
-        qty = float(row.get("数量") or 1)
+        amount = _safe_float(row.get("原価金額"), 0.0)
+        unit_price = _safe_float(row.get("原価単価"), 0.0)
+        qty = _safe_float(row.get("数量"), 1.0)
         if amount <= 0 or qty <= 0 or unit_price <= 0:
             weights[idx] = 0.0
             caps[idx] = 0
@@ -1253,9 +1271,9 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int) -> pd.Dat
         allocations[adjustment_idx] += remaining
 
     for idx, row in out.iterrows():
-        qty = float(row.get("数量") or 1)
+        qty = _safe_float(row.get("数量"), 1.0)
         qty = qty if qty != 0 else 1
-        original_amount = float(row.get("原価金額") or 0)
+        original_amount = _safe_float(row.get("原価金額"), 0.0)
         estimate_amount = original_amount + allocations.get(idx, 0)
         estimate_unit = _round_unit_naturally(estimate_amount / qty)
         estimate_amount = int(round(estimate_unit * qty))
@@ -1271,14 +1289,14 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int) -> pd.Dat
     diff = int(round(target_total - rounded_total))
     adjustment_idx = _best_adjustment_index(out)
     if diff != 0 and adjustment_idx is not None:
-        qty = float(out.at[adjustment_idx, "数量"] or 1)
+        qty = _safe_float(out.at[adjustment_idx, "数量"], 1.0)
         qty = qty if qty != 0 else 1
-        current_amount = float(out.at[adjustment_idx, "見積金額"] or 0)
+        current_amount = _safe_float(out.at[adjustment_idx, "見積金額"], 0.0)
         new_amount = int(round(current_amount + diff))
         new_unit = max(0, int(round(new_amount / qty)))
         out.at[adjustment_idx, "見積単価"] = new_unit
         out.at[adjustment_idx, "見積金額"] = int(round(new_unit * qty))
-        out.at[adjustment_idx, "上乗せ額"] = int(round(out.at[adjustment_idx, "見積金額"] - float(out.at[adjustment_idx, "原価金額"] or 0)))
+        out.at[adjustment_idx, "上乗せ額"] = int(round(out.at[adjustment_idx, "見積金額"] - _safe_float(out.at[adjustment_idx, "原価金額"], 0.0)))
     return out
 
 
@@ -1295,7 +1313,7 @@ def apply_company_profit_to_details(detail_df: pd.DataFrame, cost_df: pd.DataFra
 
     for company, cost_group in cost_out.groupby("見積元", sort=False):
         company_name = normalize_text(company)
-        add = int(round(float(company_profits.get(company_name, 0) or 0)))
+        add = int(round(_safe_float(company_profits.get(company_name, 0), 0.0)))
         base_total = int(round(pd.to_numeric(cost_group["原価金額"], errors="coerce").fillna(0).sum()))
         target_total = base_total + add
         mask = detail_out["見積元"].astype(str) == str(company_name)
@@ -1393,7 +1411,7 @@ def build_vendor_copy_sheets(vendor_summaries: List[Dict], detail_df: pd.DataFra
         summary_diff = subtotal - int(round(pd.to_numeric(summary_table["金額（円）"], errors="coerce").fillna(0).sum()))
         if summary_diff and not summary_table.empty:
             idx = summary_table["金額（円）"].astype(float).idxmax()
-            qty = float(summary_table.at[idx, "数量"] or 1)
+            qty = _safe_float(summary_table.at[idx, "数量"], 1.0) or 1.0
             summary_table.at[idx, "金額（円）"] = int(summary_table.at[idx, "金額（円）"] + summary_diff)
             summary_table.at[idx, "単価（円）"] = int(round(summary_table.at[idx, "金額（円）"] / (qty or 1)))
         summary_out = pd.concat([summary_table, pd.DataFrame([{}]), _totals_table(subtotal, tax_rate)], ignore_index=True)
@@ -1405,7 +1423,7 @@ def build_vendor_copy_sheets(vendor_summaries: List[Dict], detail_df: pd.DataFra
         if detail_subtotal != subtotal and not detail_table.empty:
             idx = detail_table["金額（円）"].astype(float).idxmax()
             diff = subtotal - detail_subtotal
-            qty = float(detail_table.at[idx, "数量"] or 1)
+            qty = _safe_float(detail_table.at[idx, "数量"], 1.0) or 1.0
             detail_table.at[idx, "金額（円）"] = int(detail_table.at[idx, "金額（円）"] + diff)
             detail_table.at[idx, "単価（円）"] = int(round(detail_table.at[idx, "金額（円）"] / (qty or 1)))
         detail_out = pd.concat([detail_table, pd.DataFrame([{}]), _totals_table(subtotal, tax_rate)], ignore_index=True)
