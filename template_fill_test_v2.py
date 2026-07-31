@@ -96,10 +96,16 @@ REMARK_LABEL_ROW = SUMMARY_TOTAL_ROW + 2  # 179 備考
 ITEM_FONT_SIZE = 9
 ITEM_ROW_HEIGHT = 27
 
-# 1ページに載せる明細行数。ヘッダーがある1枚目は少なめ。
-# 実際に載る行数より控えめにして、アプリ側が勝手に改ページを挟まないようにする。
-FIRST_PAGE_ITEM_ROWS = 16
-NEXT_PAGE_ITEM_ROWS = 22
+# 1ページに載る明細行数（PRINT_SCALE=85% で実測した値）。
+# 「集計込み」は末尾の集計＋備考ブロックも同じページに載せる場合の上限。
+FIRST_PAGE_ITEMS = 21
+FIRST_PAGE_ITEMS_WITH_TAIL = 15
+NEXT_PAGE_ITEMS = 23            # 24行 − 見出し行1行
+NEXT_PAGE_ITEMS_WITH_TAIL = 17  # 24行 − 見出し行1行 − 集計ブロック6行ぶん
+
+# 拡大率を固定する。自動調整のままだとアプリごとに倍率が変わり、
+# 1ページに載る行数がズレて見出し行が page 境界から外れてしまう。
+PRINT_SCALE = 85
 
 MONEY_FORMAT = "#,##0"
 YEN_FORMAT = '"¥"#,##0'
@@ -524,13 +530,12 @@ def build_single_sheet_template(path: Path = TEMPLATE_PATH) -> Path:
     ):
         ws.row_dimensions[spacer_row].height = spacer_height
 
-    # 印刷設定：A4縦・横1ページに収める
+    # 印刷設定：A4縦・拡大率は固定（自動調整だとアプリごとに倍率が変わり、
+    # 1ページに載る行数がズレて見出し行が改ページ位置から外れるため）
     ws.page_setup.orientation = "portrait"
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
-    ws.page_setup.fitToWidth = 1
-    # 改ページを入れなかった＝1枚で収まる設計なので、縦も1ページに寄せる
-    ws.page_setup.fitToHeight = 0
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.scale = PRINT_SCALE
+    ws.sheet_properties.pageSetUpPr.fitToPage = False
     ws.page_margins = PageMargins(left=0.5, right=0.5, top=0.6, bottom=0.5)
     ws.print_area = f"A1:H{REMARK_LABEL_ROW + 3}"
 
@@ -548,6 +553,34 @@ def ensure_template(path: Path = TEMPLATE_PATH) -> Path:
 # ---------------------------------------------------------------------------
 # 流し込み
 # ---------------------------------------------------------------------------
+
+def _plan_pages(total_rows: int) -> List[int]:
+    """各ページに載せる明細行数を決める。
+
+    末尾の集計＋備考ブロックが単独ページに取り残されないよう、
+    最終ページには集計ぶんの余白を残して行数を配分する。
+    """
+    if total_rows <= FIRST_PAGE_ITEMS_WITH_TAIL:
+        return [total_rows]
+    pages: List[int] = []
+    remaining = total_rows
+    first = True
+    while remaining > 0:
+        with_tail = FIRST_PAGE_ITEMS_WITH_TAIL if first else NEXT_PAGE_ITEMS_WITH_TAIL
+        full = FIRST_PAGE_ITEMS if first else NEXT_PAGE_ITEMS
+        if remaining <= with_tail:
+            pages.append(remaining)
+            remaining = 0
+        else:
+            take = min(remaining, full)
+            if take == remaining:
+                # 全部載るが集計が入らない → 数行を次ページへ送って一緒に載せる
+                take = with_tail
+            pages.append(take)
+            remaining -= take
+        first = False
+    return pages
+
 
 def _copy_item_header(ws, row: int) -> None:
     """明細ヘッダー行をそのままの体裁で指定行に複製する（2枚目以降の見出し用）。"""
@@ -585,15 +618,18 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
     # 明細を書き出す。ページが変わる位置では見出し行を「実データとして」書き込み、
     # 明示的な改ページを入れる。Numbers は Excel の印刷タイトル行設定を無視するため、
     # 印刷設定に頼らずセルの中身として見出しを持たせないと2枚目が見出し無しになる。
-    state = {"row": ITEM_START_ROW, "on_page": 0, "limit": FIRST_PAGE_ITEM_ROWS}
+    total_rows = sum((2 if len(estimate.categories) > 1 else 0) + len(c.items)
+                     for c in estimate.categories)
+    plan = _plan_pages(total_rows)
+    state = {"row": ITEM_START_ROW, "on_page": 0, "page": 0}
 
     def emit(fill_row) -> None:
-        if state["on_page"] >= state["limit"]:
+        if state["on_page"] >= plan[state["page"]] and state["page"] + 1 < len(plan):
+            state["page"] += 1
+            state["on_page"] = 0
             _copy_item_header(ws, state["row"])
             ws.row_breaks.append(Break(id=state["row"] - 1))
             state["row"] += 1
-            state["on_page"] = 0
-            state["limit"] = NEXT_PAGE_ITEM_ROWS
         fill_row(state["row"])
         state["row"] += 1
         state["on_page"] += 1
@@ -669,7 +705,8 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
 
     # 収まりきる小さな見積だけ1ページに強制し、長い見積は自然改ページに任せる。
     # 改ページを入れていない＝1枚で収まる設計なので、縦も1ページに寄せる
-    ws.page_setup.fitToHeight = 0 if ws.row_breaks.count else 1
+    ws.page_setup.scale = PRINT_SCALE
+    ws.sheet_properties.pageSetUpPr.fitToPage = False
 
     return used_rows
 
