@@ -14,8 +14,15 @@ from google.genai import types
 LOGGER = logging.getLogger("saika_smart_link.gemini")
 AI_RETRY_MESSAGE = "AI解析サーバーが混み合っています。30秒後に再試行してください。"
 TRANSIENT_ERROR_CODES = {429, 500, 503, 504}
-DEFAULT_PRIMARY_MODEL = "gemini-2.5-flash"
-DEFAULT_FALLBACK_MODELS = "gemini-2.0-flash,gemini-1.5-flash,gemini-1.5-pro"
+MODEL_UNAVAILABLE_ERROR_CODES = {404}
+DEFAULT_PRIMARY_MODEL = "gemini-3.6-flash"
+DEFAULT_FALLBACK_MODELS = "gemini-3.5-flash,gemini-3.5-flash-lite"
+RETIRED_MODEL_REPLACEMENTS = {
+    "gemini-2.0-flash": DEFAULT_PRIMARY_MODEL,
+    "gemini-2.0-flash-001": DEFAULT_PRIMARY_MODEL,
+    "gemini-1.5-flash": "gemini-3.5-flash-lite",
+    "gemini-1.5-pro": "gemini-3.5-flash",
+}
 
 
 @dataclass
@@ -63,10 +70,17 @@ def _setting(name: str, default: str, secrets=None) -> str:
 
 
 def get_configured_gemini_models(secrets=None) -> Tuple[str, List[str]]:
-    primary = _setting("GEMINI_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL, secrets)
+    def supported_model(model_name: str) -> str:
+        normalized = model_name.strip().removeprefix("models/")
+        replacement = RETIRED_MODEL_REPLACEMENTS.get(normalized, normalized)
+        if replacement != normalized:
+            LOGGER.warning("gemini_retired_model_replaced configured=%s replacement=%s", normalized, replacement)
+        return replacement
+
+    primary = supported_model(_setting("GEMINI_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL, secrets))
     fallback_raw = _setting("GEMINI_FALLBACK_MODELS", DEFAULT_FALLBACK_MODELS, secrets)
-    fallback_models = [m.strip() for m in fallback_raw.split(",") if m.strip()]
-    fallback_models = [m for m in fallback_models if m != primary]
+    fallback_models = [supported_model(m) for m in fallback_raw.split(",") if m.strip()]
+    fallback_models = list(dict.fromkeys(m for m in fallback_models if m != primary))
     return primary, fallback_models
 
 
@@ -94,7 +108,7 @@ def _extract_error_code(exc: Exception) -> Optional[int]:
         if isinstance(value, int):
             return value
     text = str(exc)
-    match = re.search(r"\b(429|500|503|504)\b", text)
+    match = re.search(r"\b(404|429|500|503|504)\b", text)
     if match:
         return int(match.group(1))
     if "RESOURCE_EXHAUSTED" in text:
@@ -110,6 +124,14 @@ def _is_retryable(exc: Exception) -> bool:
         return True
     lowered = str(exc).lower()
     return any(keyword in lowered for keyword in ("high demand", "temporarily unavailable", "rate limit"))
+
+
+def _is_model_unavailable(exc: Exception) -> bool:
+    code = _extract_error_code(exc)
+    if code in MODEL_UNAVAILABLE_ERROR_CODES:
+        return True
+    lowered = str(exc).lower()
+    return any(keyword in lowered for keyword in ("no longer available", "model not found"))
 
 
 def is_gemini_temporary_error(exc: Exception) -> bool:
@@ -134,6 +156,7 @@ def call_gemini_with_retry(
     models = [primary] + [m for m in (fallback_models or []) if m and m != primary]
     last_error: Optional[Exception] = None
     last_code: Optional[int] = None
+    last_error_was_model_unavailable = False
 
     for model_name in models:
         if on_model_start:
@@ -154,6 +177,7 @@ def call_gemini_with_retry(
             except Exception as exc:
                 last_error = exc
                 last_code = _extract_error_code(exc)
+                last_error_was_model_unavailable = _is_model_unavailable(exc)
                 LOGGER.warning(
                     "gemini_call_error model=%s attempt=%s/%s error_code=%s page=%s source=%s error=%s",
                     model_name,
@@ -164,6 +188,15 @@ def call_gemini_with_retry(
                     source_name,
                     exc,
                 )
+                if last_error_was_model_unavailable:
+                    LOGGER.warning(
+                        "gemini_model_unavailable model=%s error_code=%s page=%s source=%s",
+                        model_name,
+                        last_code,
+                        page_number,
+                        source_name,
+                    )
+                    break
                 if not _is_retryable(exc):
                     raise
                 if attempt >= max_attempts_per_model:
@@ -197,6 +230,8 @@ def call_gemini_with_retry(
         source_name,
         last_error,
     )
+    if last_error_was_model_unavailable and last_error is not None:
+        raise last_error
     raise GeminiTemporaryUnavailable(AI_RETRY_MESSAGE, page_number=page_number, error_code=last_code)
 
 
