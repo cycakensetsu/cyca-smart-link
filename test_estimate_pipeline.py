@@ -463,15 +463,30 @@ class EstimatePipelineTest(unittest.TestCase):
                 },
             ),
             (
+                4,
+                {
+                    # 内訳ページをAIが summary_page と誤分類したケース。
+                    "page_role": "summary_page",
+                    "summary_data": {
+                        "見積元": "NOKフガクエンジニアリング様 シリコン塗料御見積書.pdf",
+                        "工事項目": [
+                            {"工事項目": "ショット室外部塗装工事", "金額": 405000},
+                        ],
+                        "小計": 405000,
+                    },
+                },
+            ),
+            (
                 7,
                 {
-                    "page_role": "detail_page",
+                    # 6ページ分の内訳合計を、別の見積まとめと誤認したケース。
+                    "page_role": "summary_page",
                     "summary_data": {
-                        "見積元": "NOKフガクエンジニアリング",
+                        "見積元": "不明",
                         "工事項目": [
-                            {"工事項目": "1棟建屋・2棟建屋渡り廊下屋根鉄骨塗装工事", "金額": 1613700},
+                            {"工事項目": "内訳6工区合計", "金額": 5687100},
                         ],
-                        "小計": 1613700,
+                        "小計": 5687100,
                     },
                     "detail_data": [
                         {
@@ -502,7 +517,7 @@ class EstimatePipelineTest(unittest.TestCase):
 
         self.assertEqual(
             [source["ページ種別"] for source in summary_data["summary_sources"]],
-            ["cover_summary_page", "detail_page"],
+            ["cover_summary_page", "summary_page", "summary_page"],
         )
         self.assertTrue(assign_debug[0]["assigned_from_same_pdf"])
         self.assertNotIn("不明", detail_df["見積元"].tolist())

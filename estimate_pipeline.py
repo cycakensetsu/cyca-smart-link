@@ -433,6 +433,7 @@ def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: L
     """同一PDF内に会社名付き見積がある場合、不明明細をその業者の明細として扱う。"""
     named_by_pdf: Dict[str, List[str]] = {}
     summary_named_by_pdf: Dict[str, List[str]] = {}
+    final_summary_named_by_pdf: Dict[str, List[str]] = {}
 
     for source in summary_sources or []:
         if not isinstance(source, dict):
@@ -449,6 +450,20 @@ def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: L
                 summary_named_by_pdf.setdefault(source_pdf, [])
                 if vendor not in summary_named_by_pdf[source_pdf]:
                     summary_named_by_pdf[source_pdf].append(vendor)
+            subtotal = parse_money(_first_present(source, ["改小計", "税抜合計", "小計", "subtotal"]))
+            explicit_tax = parse_money(_first_present(source, ["消費税", "税額", "tax"]))
+            explicit_total = parse_money(_first_present(source, ["工事費計", "税込合計", "総合計", "total"]))
+            explicit_rounding = parse_money(_first_present(source, ["端数調整", "端末調整", "調整額", "rounding_adjustment"]))
+            has_final_evidence = (
+                role == "cover_summary_page"
+                or explicit_tax is not None
+                or explicit_rounding is not None
+                or (explicit_total is not None and subtotal is not None and int(round(explicit_total)) != int(round(subtotal)))
+            )
+            if has_final_evidence:
+                final_summary_named_by_pdf.setdefault(source_pdf, [])
+                if vendor not in final_summary_named_by_pdf[source_pdf]:
+                    final_summary_named_by_pdf[source_pdf].append(vendor)
 
     for record in records or []:
         if not isinstance(record, dict):
@@ -470,8 +485,13 @@ def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: L
         original_vendor = _record_vendor(out)
         candidates = named_by_pdf.get(source_pdf, [])
         summary_candidates = summary_named_by_pdf.get(source_pdf, [])
+        final_summary_candidates = final_summary_named_by_pdf.get(source_pdf, [])
         assigned_vendor = original_vendor
-        if _is_unknown_vendor(original_vendor) and len(summary_candidates) == 1:
+        if _is_unknown_vendor(original_vendor) and len(final_summary_candidates) == 1:
+            assigned_vendor = final_summary_candidates[0]
+            out["見積元"] = assigned_vendor
+            out["__assigned_vendor_from_pdf"] = True
+        elif _is_unknown_vendor(original_vendor) and len(summary_candidates) == 1:
             assigned_vendor = summary_candidates[0]
             out["見積元"] = assigned_vendor
             out["__assigned_vendor_from_pdf"] = True
@@ -584,6 +604,33 @@ def _dedupe_vendor_summaries(candidates: List[Dict], detail_totals: Dict[Tuple[s
     return kept
 
 
+def _prefer_final_summaries_per_pdf(candidates: List[Dict]) -> List[Dict]:
+    """PDF全体の最終合計がある場合、内訳ページの部分小計を別見積として扱わない。"""
+    grouped: Dict[str, List[Dict]] = {}
+    order: List[str] = []
+    without_source: List[Dict] = []
+    for candidate in candidates:
+        source_pdf = normalize_text(candidate.get("元ファイル", ""))
+        if not source_pdf:
+            without_source.append(candidate)
+            continue
+        if source_pdf not in grouped:
+            grouped[source_pdf] = []
+            order.append(source_pdf)
+        grouped[source_pdf].append(candidate)
+
+    kept = list(without_source)
+    for source_pdf in order:
+        group = grouped[source_pdf]
+        final_candidates = [candidate for candidate in group if candidate.get("__has_final_total_evidence")]
+        chosen = final_candidates or group
+        if final_candidates and len(final_candidates) < len(group):
+            for candidate in chosen:
+                candidate["集計根拠"] = f"{candidate.get('集計根拠', 'summary')}/pdf_final"
+        kept.extend(chosen)
+    return kept
+
+
 def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_rate: float = 0.10) -> Tuple[pd.DataFrame, List[Dict]]:
     """集計対象を業者ごとの最終税抜小計だけに限定した原価DFを作る。"""
     summary_data = summary_data or {}
@@ -623,6 +670,15 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
         rounding = int(round(source.get("端数調整") or 0))
         tax = int(round(source.get("消費税") if source.get("消費税") is not None else subtotal * tax_rate))
         total = int(round(source.get("工事費計") if source.get("工事費計") is not None else subtotal + tax))
+        explicit_tax = source.get("消費税") is not None
+        explicit_total = source.get("工事費計") is not None
+        explicit_rounding = source.get("端数調整") is not None
+        has_final_total_evidence = (
+            page_role == "cover_summary_page"
+            or explicit_tax
+            or explicit_rounding
+            or (explicit_total and total != subtotal)
+        )
         if not items:
             items = _detail_items_for_vendor(detail_df, source_pdf, vendor)
         summary_candidates.append({
@@ -637,10 +693,12 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
             "工事費計": total,
             "明細合計": detail_totals.get((source_pdf, vendor), 0),
             "集計根拠": "summary",
+            "__has_final_total_evidence": has_final_total_evidence,
         })
 
     # 表紙ページと見積本体ページが二重に拾われた場合をここで1件に整理する。
-    for summary in _dedupe_vendor_summaries(summary_candidates, detail_totals):
+    final_summary_candidates = _prefer_final_summaries_per_pdf(summary_candidates)
+    for summary in _dedupe_vendor_summaries(final_summary_candidates, detail_totals):
         vendor_summaries.append(summary)
         represented_pdf = normalize_text(summary.get("元ファイル", ""))
         represented_keys.add((represented_pdf, normalize_text(summary.get("見積元", ""))))
