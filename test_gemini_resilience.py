@@ -1,7 +1,16 @@
+import os
+import tempfile
+import types as standard_types
 import unittest
 from unittest.mock import patch
 
-from gemini_resilience import GeminiTemporaryUnavailable, call_gemini_with_retry
+from gemini_resilience import (
+    GeminiTemporaryUnavailable,
+    build_page_prompt,
+    call_gemini_with_retry,
+    get_configured_gemini_models,
+    prepare_upload_for_gemini_pages,
+)
 
 
 class _FakeResponse:
@@ -62,6 +71,90 @@ class GeminiRetryTest(unittest.TestCase):
                     fallback_models=["gemini-2.0-flash"],
                     max_attempts_per_model=1,
                 )
+
+    def test_retired_model_404_skips_immediately_to_fallback(self):
+        client = _FakeClient({})
+        original_generate = client.models.generate_content
+
+        def generate_content(*, model, contents):
+            if model == "gemini-2.0-flash":
+                client.models.calls.append(model)
+                raise RuntimeError(
+                    "404 NOT_FOUND: This model models/gemini-2.0-flash is no longer available."
+                )
+            return original_generate(model=model, contents=contents)
+
+        client.models.generate_content = generate_content
+        result = call_gemini_with_retry(
+            client,
+            ["dummy"],
+            primary_model="gemini-2.0-flash",
+            fallback_models=["gemini-3.6-flash"],
+        )
+
+        self.assertEqual(result.model_name, "gemini-3.6-flash")
+        self.assertEqual(client.models.calls, ["gemini-2.0-flash", "gemini-3.6-flash"])
+
+    def test_retired_config_is_replaced_and_deduplicated(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "GEMINI_PRIMARY_MODEL": "models/gemini-2.0-flash",
+                "GEMINI_FALLBACK_MODELS": "gemini-2.0-flash,gemini-1.5-flash,gemini-3.5-flash-lite",
+            },
+            clear=False,
+        ):
+            primary, fallbacks = get_configured_gemini_models()
+
+        self.assertEqual(primary, "gemini-3.5-flash-lite")
+        self.assertEqual(fallbacks, [])
+
+    def test_pdf_is_sent_as_one_whole_document_request(self):
+        class _FakePdfDocument:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def __len__(self):
+                return 3
+
+        fake_fitz = standard_types.SimpleNamespace(open=lambda _: _FakePdfDocument())
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = os.path.join(temp_dir, "sample.pdf")
+            with open(pdf_path, "wb") as pdf_file:
+                pdf_file.write(b"%PDF-1.4 test")
+
+            with patch.dict("sys.modules", {"fitz": fake_fitz}):
+                jobs = prepare_upload_for_gemini_pages(pdf_path, "sample.pdf")
+
+        self.assertEqual(len(jobs), 1)
+        self.assertTrue(jobs[0].whole_document)
+        self.assertEqual(jobs[0].total_pages, 3)
+        self.assertEqual(len(jobs[0].parts), 1)
+
+        prompt = build_page_prompt(jobs[0], 1)
+        self.assertIn("全3ページ", prompt)
+        self.assertIn("内訳合計", prompt)
+
+    def test_default_retry_budget_is_two_attempts_per_model(self):
+        client = _FakeClient({"gemini-3.5-flash-lite": 2, "gemini-3.6-flash": 0})
+
+        with patch("gemini_resilience.time.sleep", lambda _: None):
+            result = call_gemini_with_retry(
+                client,
+                ["dummy"],
+                primary_model="gemini-3.5-flash-lite",
+                fallback_models=["gemini-3.6-flash"],
+            )
+
+        self.assertEqual(result.model_name, "gemini-3.6-flash")
+        self.assertEqual(
+            client.models.calls,
+            ["gemini-3.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.6-flash"],
+        )
 
 
 if __name__ == "__main__":

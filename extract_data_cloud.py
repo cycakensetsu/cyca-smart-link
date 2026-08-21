@@ -622,7 +622,7 @@ if uploaded_files:
 
                         page_jobs.extend(prepare_upload_for_gemini_pages(temp_file_path, uploaded_file.name))
 
-                    progress_bar.progress(30, text=f"🔍 AI が{len(page_jobs)}ページを順番に解析中...")
+                    progress_bar.progress(30, text=f"🔍 AI が{len(page_jobs)}件を解析中...")
 
                     status_area.markdown(f"""
                     <div style="
@@ -634,7 +634,7 @@ if uploaded_files:
                         position: relative; overflow: hidden;
                     ">
                         <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
-                            🔍 AI が {len(page_jobs)}ページを順番に読み取り中...
+                            🔍 AI が {len(page_jobs)}件のファイルを読み取り中...
                         </div>
                         <div style="color: #a8c8f0; font-size: 0.95rem;">
                             🧮 各見積書の全ページを解析し、工事種別を自動判別しています
@@ -677,10 +677,16 @@ if uploaded_files:
 
                     total_pages = max(len(page_jobs), 1)
                     for page_idx, page in enumerate(page_jobs, start=1):
+                        analysis_label = (
+                            f"{page.source_name} 全{page.total_pages}ページを一括解析中..."
+                            if page.whole_document
+                            else f"{page.source_name} {page.page_number}/{page.total_pages}ページを解析中..."
+                        )
+                        analysis_page_number = None if page.whole_document else page.page_number
                         progress = 30 + int((page_idx - 1) / total_pages * 50)
                         progress_bar.progress(
                             progress,
-                            text=f"🔍 {page.source_name} {page.page_number}/{page.total_pages}ページを解析中..."
+                            text=f"🔍 {analysis_label}"
                         )
                         status_area.markdown(f"""
                         <div style="
@@ -692,7 +698,7 @@ if uploaded_files:
                             position: relative; overflow: hidden;
                         ">
                             <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
-                                🧮 {page.source_name} {page.page_number}/{page.total_pages}ページを解析中...
+                                🧮 {analysis_label}
                             </div>
                             <div style="color: #a8c8f0; font-size: 0.95rem;">
                                 使用モデル: {primary_model} / フォールバック: {", ".join(fallback_models) or "なし"}
@@ -716,7 +722,7 @@ if uploaded_files:
                             page.parts + [build_page_prompt(page, n_files)],
                             primary_model=primary_model,
                             fallback_models=fallback_models,
-                            page_number=page.page_number,
+                            page_number=analysis_page_number,
                             source_name=page.source_name,
                             on_retry=_on_gemini_retry,
                             on_model_start=_on_gemini_model_start,
@@ -729,12 +735,12 @@ if uploaded_files:
                             page_summaries, page_records = split_extraction_payload(
                                 payload,
                                 source_name=page.source_name,
-                                page_number=page.page_number,
+                                page_number=analysis_page_number,
                             )
                             summary_sources.extend(page_summaries)
                             all_extracted_data.extend(page_records)
                         except json.JSONDecodeError:
-                            st.warning(f"{page.source_name} {page.page_number}ページ目のAI応答をJSONとして読み取れませんでした。このページをスキップして続行します。")
+                            st.warning(f"{page.source_name} のAI応答をJSONとして読み取れませんでした。このファイルをスキップして続行します。")
 
                     if successful_models:
                         log_gemini_analysis_complete(successful_models, len(page_jobs))

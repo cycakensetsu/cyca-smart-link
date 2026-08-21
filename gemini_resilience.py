@@ -15,8 +15,8 @@ LOGGER = logging.getLogger("saika_smart_link.gemini")
 AI_RETRY_MESSAGE = "AI解析サーバーが混み合っています。30秒後に再試行してください。"
 TRANSIENT_ERROR_CODES = {429, 500, 503, 504}
 MODEL_UNAVAILABLE_ERROR_CODES = {404}
-DEFAULT_PRIMARY_MODEL = "gemini-3.6-flash"
-DEFAULT_FALLBACK_MODELS = "gemini-3.5-flash,gemini-3.5-flash-lite"
+DEFAULT_PRIMARY_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_FALLBACK_MODELS = "gemini-3.6-flash,gemini-3.5-flash"
 RETIRED_MODEL_REPLACEMENTS = {
     "gemini-2.0-flash": DEFAULT_PRIMARY_MODEL,
     "gemini-2.0-flash-001": DEFAULT_PRIMARY_MODEL,
@@ -31,6 +31,7 @@ class GeminiPage:
     page_number: int
     total_pages: int
     parts: List[types.Part]
+    whole_document: bool = False
 
 
 @dataclass
@@ -145,8 +146,8 @@ def call_gemini_with_retry(
     *,
     primary_model: Optional[str] = None,
     fallback_models: Optional[Sequence[str]] = None,
-    max_attempts_per_model: int = 4,
-    backoff_seconds: Sequence[float] = (3, 8, 15, 30),
+    max_attempts_per_model: int = 2,
+    backoff_seconds: Sequence[float] = (2, 5),
     page_number: Optional[int] = None,
     source_name: Optional[str] = None,
     on_retry: Optional[Callable[[str, int, float, Optional[int], Optional[int]], None]] = None,
@@ -274,7 +275,21 @@ def prepare_upload_for_gemini_pages(path: str, source_name: str) -> List[GeminiP
     ext = os.path.splitext(source_name or path)[1].lower()
     if ext == ".pdf":
         try:
-            return _render_pdf_pages_as_images(path, source_name)
+            import fitz
+
+            with fitz.open(path) as doc:
+                total_pages = len(doc)
+            with open(path, "rb") as pdf_file:
+                pdf_part = types.Part.from_bytes(data=pdf_file.read(), mime_type="application/pdf")
+            return [
+                GeminiPage(
+                    source_name=source_name,
+                    page_number=1,
+                    total_pages=total_pages,
+                    parts=[pdf_part],
+                    whole_document=True,
+                )
+            ]
         except Exception as exc:
             LOGGER.error("pdf_preprocess_failed source=%s error=%s", source_name, exc)
             raise
@@ -293,6 +308,58 @@ def prepare_upload_for_gemini_pages(path: str, source_name: str) -> List[GeminiP
 
 
 def build_page_prompt(page: GeminiPage, n_files: int) -> str:
+    if page.whole_document:
+        return f"""
+        あなたは建設見積書のOCR兼明細抽出AIです。
+        添付PDFは、アップロードされた{n_files}件のファイルのうち「{page.source_name}」です。
+        全{page.total_pages}ページを最初から最後まで一括で読み取り、この見積書1件分を1つのJSONオブジェクトにまとめてください。
+
+        ページは横向き・縦向き・90度回転・傾きがある可能性があります。文字の向きを自動判断してください。
+
+        【最重要ルール】
+        1. summary_data には、この見積書全体の最終的な税抜合計・値引後合計・消費税・税込合計だけを入れてください。
+        2. 各ページの「内訳合計」「ページ計」「小計」や、工種別・区分別の途中集計を見積書全体の合計として扱わないでください。
+        3. 表紙・総括ページに最終合計がある場合は、その金額を最優先してください。最終合計がない場合だけ、全明細から計算してください。
+        4. detail_data には全ページの具体的な明細行を漏れなく入れてください。ただし、小計・消費税・税込合計・総合計・内訳合計などの計算行は入れないでください。
+        5. 「諸経費」「法定福利費」「運搬費」「処分費」「荷揚げ費」「養生費」「安全対策費」などの経費項目は具体的な明細なら抽出してください。
+        6. 「値引き」「出精値引き」「端数調整」「調整値引き」は抽出し、単価と金額をマイナス表記にしてください。
+        7. 見積元は宛先ではなく、見積書を発行・作成した会社名です。「〇〇様」「〇〇御中」は見積元にしないでください。会社印、住所、TEL、登録番号が並ぶ発行者欄を優先し、特定できなければ null にしてください。
+        8. 同じ明細が表紙と内訳ページに重複していても、detail_data には1回だけ入れてください。
+        9. summary_data と detail_data の各行に、根拠となる「抽出元テキスト範囲」を短い文字列で入れてください。
+        10. ```json などのマークダウン記号を付けず、純粋なJSONオブジェクトだけを返してください。
+
+        【明細の列分け】
+        - 品名が複数行なら1つの「品名」に結合してください。
+        - 「665架㎡」「10基」「1式」のように数量と単位が連結していれば分けてください。
+        - 工事種別は、防水工事、塗装工事、仮設足場工事などを明細ごとに判別してください。
+
+        【出力形式（キーを変えないこと）】
+        {{
+          "page_role": "summary_page",
+          "summary_data": {{
+            "見積元": "発行会社名",
+            "宛名": "提出先",
+            "工事名称": "工事名",
+            "工事場所": "",
+            "支払条件": "",
+            "有効期限": "",
+            "見積担当": "",
+            "工事項目": [
+              {{"工事項目": "防水工事", "金額": 1000000, "抽出元テキスト範囲": "防水工事 1,000,000"}}
+            ],
+            "小計": 1000000,
+            "端数調整": 0,
+            "改小計": 1000000,
+            "消費税": 100000,
+            "工事費計": 1100000,
+            "抽出元テキスト範囲": "改小計 1,000,000 / 消費税 100,000 / 工事費計 1,100,000"
+          }},
+          "detail_data": [
+            {{"No": 1, "見積元": "発行会社名", "工事種別": "防水工事", "品名": "平場 ウレタン塗膜防水", "仕様": "X-1工法", "数量": 76.1, "単位": "㎡", "単価": 6400, "金額": 487040, "抽出元テキスト範囲": "平場 ウレタン塗膜防水 X-1工法 76.1㎡ 6,400 487,040"}}
+          ]
+        }}
+        """
+
     simple_quote_rule = (
         "このファイルは1ページだけです。具体的な内訳がない簡易見積もりの場合のみ、"
         "「〇〇工事一式」の行を明細として抽出してください。"
