@@ -438,6 +438,78 @@ class EstimatePipelineTest(unittest.TestCase):
         self.assertIn("【株式会社 山田製作所 明細】", detail_values)
         self.assertIn("【アキヨシ塗装 明細】", detail_values)
 
+    def test_final_pdf_summary_suppresses_detail_page_subtotals_and_unknown_fallback(self):
+        source_name = "NOKフガクエンジニアリング様 シリコン塗料御見積書.pdf"
+        summary_sources = []
+        records = []
+        payloads = [
+            (
+                1,
+                {
+                    "page_role": "cover_summary_page",
+                    "summary_data": {
+                        "見積元": "彩架建設株式会社",
+                        "宛名": "彩架建設株式会社",
+                        "工事項目": [
+                            {"工事項目": "外部塗装工事", "金額": 6068100},
+                            {"工事項目": "調整値引き", "金額": -68100},
+                        ],
+                        "小計": 6068100,
+                        "端数調整": -68100,
+                        "改小計": 6000000,
+                        "消費税": 600000,
+                        "工事費計": 6600000,
+                    },
+                },
+            ),
+            (
+                7,
+                {
+                    "page_role": "detail_page",
+                    "summary_data": {
+                        "見積元": "NOKフガクエンジニアリング",
+                        "工事項目": [
+                            {"工事項目": "1棟建屋・2棟建屋渡り廊下屋根鉄骨塗装工事", "金額": 1613700},
+                        ],
+                        "小計": 1613700,
+                    },
+                    "detail_data": [
+                        {
+                            "見積元": "不明",
+                            "品名": "6工区の内訳明細合計",
+                            "数量": 1,
+                            "単位": "式",
+                            "単価": 5687100,
+                            "金額": 5687100,
+                        },
+                    ],
+                },
+            ),
+        ]
+        for page_number, payload in payloads:
+            page_summaries, page_records = split_extraction_payload(
+                payload,
+                source_name=source_name,
+                page_number=page_number,
+            )
+            summary_sources.extend(page_summaries)
+            records.extend(page_records)
+
+        assigned_records, assign_debug = assign_unknown_vendors_to_pdf_vendor(records, summary_sources)
+        summary_data = normalize_summary_data(summary_sources)
+        detail_df, _ = build_intermediate_dataframe(assigned_records)
+        cost_df, vendor_summaries = build_cost_basis_dataframe(summary_data, detail_df)
+
+        self.assertEqual(
+            [source["ページ種別"] for source in summary_data["summary_sources"]],
+            ["cover_summary_page", "detail_page"],
+        )
+        self.assertTrue(assign_debug[0]["assigned_from_same_pdf"])
+        self.assertNotIn("不明", detail_df["見積元"].tolist())
+        self.assertEqual(len(vendor_summaries), 1)
+        self.assertEqual(cost_df["見積元"].tolist(), ["彩架建設株式会社"])
+        self.assertEqual(int(cost_df["原価金額"].sum()), 6000000)
+
     def test_unknown_same_pdf_near_named_amount_can_still_be_removed_for_legacy_cost_flow(self):
         from estimate_pipeline import deduplicate_estimate_records
         records = [

@@ -305,6 +305,8 @@ def split_extraction_payload(payload, source_name: str = "", page_number: Option
     summary_data = _first_present(payload, ["summary_data", "summary", "見積表紙", "一式表", "工事費内訳"], None)
     if isinstance(summary_data, dict):
         summary_data = dict(summary_data)
+        if page_role:
+            summary_data.setdefault("__page_role", page_role)
         if source_name:
             summary_data.setdefault("__source_name", source_name)
         if page_number is not None:
@@ -376,7 +378,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
         source_vendor = _source_vendor(source)
         source_name = normalize_text(source.get("__source_name", ""))
         page_number = source.get("__page_number")
-        role = normalize_text(_first_present(source, ["page_role", "role", "ページ種別"]))
+        role = normalize_text(_first_present(source, ["__page_role", "page_role", "role", "ページ種別"]))
         if role:
             page_roles.append(role)
         source_items: List[Dict] = []
@@ -398,6 +400,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                 "見積元": source_vendor,
                 "元ファイル": source_name,
                 "ページ": page_number,
+                "ページ種別": role,
                 "工事名称": normalize_text(_first_present(source, ["工事名称", "工事名", "件名", "project_name"], "")),
                 "工事項目": source_items,
                 "小計": parse_money(_first_present(source, ["小計", "subtotal"])),
@@ -429,16 +432,23 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
 def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
     """同一PDF内に会社名付き見積がある場合、不明明細をその業者の明細として扱う。"""
     named_by_pdf: Dict[str, List[str]] = {}
+    summary_named_by_pdf: Dict[str, List[str]] = {}
 
     for source in summary_sources or []:
         if not isinstance(source, dict):
             continue
         source_pdf = normalize_text(source.get("__source_name", ""))
         vendor = _source_vendor(source)
+        role = normalize_text(_first_present(source, ["__page_role", "page_role", "role", "ページ種別"]))
         if source_pdf and vendor and not _is_unknown_vendor(vendor):
             named_by_pdf.setdefault(source_pdf, [])
             if vendor not in named_by_pdf[source_pdf]:
                 named_by_pdf[source_pdf].append(vendor)
+            # 内訳ページの見出しを会社名と誤読した候補は、PDF全体の見積元決定に使わない。
+            if role != "detail_page":
+                summary_named_by_pdf.setdefault(source_pdf, [])
+                if vendor not in summary_named_by_pdf[source_pdf]:
+                    summary_named_by_pdf[source_pdf].append(vendor)
 
     for record in records or []:
         if not isinstance(record, dict):
@@ -459,8 +469,13 @@ def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: L
         source_pdf = _record_source_pdf(out)
         original_vendor = _record_vendor(out)
         candidates = named_by_pdf.get(source_pdf, [])
+        summary_candidates = summary_named_by_pdf.get(source_pdf, [])
         assigned_vendor = original_vendor
-        if _is_unknown_vendor(original_vendor) and len(candidates) == 1:
+        if _is_unknown_vendor(original_vendor) and len(summary_candidates) == 1:
+            assigned_vendor = summary_candidates[0]
+            out["見積元"] = assigned_vendor
+            out["__assigned_vendor_from_pdf"] = True
+        elif _is_unknown_vendor(original_vendor) and len(candidates) == 1:
             assigned_vendor = candidates[0]
             out["見積元"] = assigned_vendor
             out["__assigned_vendor_from_pdf"] = True
@@ -575,6 +590,7 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
     summary_sources = summary_data.get("summary_sources", []) or []
     detail_totals = _detail_vendor_totals(detail_df)
     represented_keys = set()
+    represented_pdfs = set()
     vendor_summaries: List[Dict] = []
     summary_candidates: List[Dict] = []
 
@@ -582,6 +598,11 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
         if not isinstance(source, dict):
             continue
         source_pdf = normalize_text(source.get("元ファイル", ""))
+        page_role = normalize_text(source.get("ページ種別", ""))
+        # 内訳ページ末尾の「内訳合計」はPDF全体の見積小計ではない。
+        # 表紙・まとめページがないPDFだけ、後段の明細合計フォールバックで扱う。
+        if page_role == "detail_page":
+            continue
         vendor = normalize_text(source.get("見積元", "")) or "不明"
         if _is_unknown_vendor(vendor):
             candidates = [key_vendor for (key_pdf, key_vendor) in detail_totals if key_pdf == source_pdf and not _is_unknown_vendor(key_vendor)]
@@ -621,10 +642,17 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
     # 表紙ページと見積本体ページが二重に拾われた場合をここで1件に整理する。
     for summary in _dedupe_vendor_summaries(summary_candidates, detail_totals):
         vendor_summaries.append(summary)
-        represented_keys.add((normalize_text(summary.get("元ファイル", "")), normalize_text(summary.get("見積元", ""))))
+        represented_pdf = normalize_text(summary.get("元ファイル", ""))
+        represented_keys.add((represented_pdf, normalize_text(summary.get("見積元", ""))))
+        if represented_pdf:
+            represented_pdfs.add(represented_pdf)
 
     for (source_pdf, vendor), detail_total in detail_totals.items():
         if (source_pdf, vendor) in represented_keys:
+            continue
+        # 同一PDFに最終小計がある場合、会社名を誤読した内訳や「不明」の明細合計を
+        # 別の業者見積として追加しない。
+        if source_pdf and source_pdf in represented_pdfs:
             continue
         if detail_total == 0:
             continue
