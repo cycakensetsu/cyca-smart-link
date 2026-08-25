@@ -459,15 +459,14 @@ uploaded_files = st.file_uploader(
 )
 
 # ==========================================
-# テスト版：Excel互換テンプレート流し込み v2（既存本番処理から独立）
+# 横型：Numbers / Excel互換テンプレート流し込み
 # ==========================================
 def render_template_fill_test_v2():
     st.markdown("---")
-    with st.expander(f"🧪 {tfv2.TEMPLATE_FILL_TEST_V2_NAME}", expanded=False):
+    with st.expander(f"📐 {tfv2.TEMPLATE_FILL_TEST_V2_NAME}", expanded=False):
         st.caption(
-            "Numbers由来テンプレートは使いません。openpyxlで新規作成したExcel互換の"
-            "1シート見積書テンプレートに『値だけ』を流し込むテストです。"
-            "既存テンプレート・本番出力には一切影響しません。"
+            "現在の彩架建設デザインを基調にしたA4横型の見積書です。"
+            "表紙・明細・集計を横向きで揃え、NumbersとExcelのどちらでも崩れにくい形式で出力します。"
         )
         default = tfv2.default_test_estimate()
         m1, m2, m3 = st.columns(3)
@@ -510,7 +509,7 @@ def render_template_fill_test_v2():
         c4.metric("消費税", f"{estimate.tax:,}")
         c5.metric("税込合計", f"{estimate.grand_total:,}")
 
-        if st.button("🧪 テンプレートへ流し込んで出力する（v2）", key="tfv2_run"):
+        if st.button("📐 横型見積書を作成する", key="tfv2_run"):
             try:
                 result = tfv2.fill_estimate_v2(estimate)
             except Exception as e:  # noqa: BLE001
@@ -523,7 +522,7 @@ def render_template_fill_test_v2():
                 return
             st.success(f"検証OK！ シート構成: {result.sheet_names}")
             st.download_button(
-                label="✅ 出力xlsx（v2）をダウンロード",
+                label="✅ 横型見積書xlsxをダウンロード",
                 data=result.data,
                 file_name=result.file_name,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -531,7 +530,8 @@ def render_template_fill_test_v2():
             )
 
 
-render_template_fill_test_v2()
+# 上記は開発時の手入力確認用。固定のテストデータを本番画面へ表示しない。
+# 本番の横型見積書は、解析・利益計算後の実データから下段で生成する。
 
 if uploaded_files:
     file_names = ", ".join([f.name for f in uploaded_files]).replace("<", "&lt;").replace(">", "&gt;")
@@ -1050,9 +1050,9 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                 st.markdown("---")
                 st.markdown(f"### {tfv2.TEMPLATE_FILL_TEST_V2_NAME}")
                 st.caption(
-                    "※Numbers由来テンプレートは使いません。openpyxlで新規作成したExcel互換の"
-                    "1シートテンプレートに『値だけ』を流し込み、常に2シート（見積書／明細データ）で出力します。"
-                    "既存テンプレート・本番出力には影響しません。"
+                    "現在の彩架建設デザインを基調にしたA4横型です。"
+                    "表紙・一式まとめ・明細を1枚の見積書シートへ下方向に並べ、"
+                    "A4横1ページ単位で出力します。"
                 )
                 try:
                     _est = tfv2.estimate_from_production(
@@ -1072,14 +1072,14 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                     else:
                         st.success(f"検証OK！ シート構成: {_res.sheet_names}")
                         st.download_button(
-                            label="✅ Excel互換テンプレート流し込み（v2）xlsx をダウンロード",
+                            label="✅ Numbers / Excel用 横型見積書xlsxをダウンロード",
                             data=_res.data,
                             file_name=_res.file_name,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="download_template_fill_test_v2_xlsx",
                         )
                 except Exception as e:
-                    st.error(f"Excel互換テンプレート流し込み（v2）の生成に失敗しました: {e}")
+                    st.error(f"横型見積書の生成に失敗しました: {e}")
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
