@@ -1,6 +1,7 @@
 import streamlit as st
 from google import genai
 import json
+import hashlib
 import pandas as pd
 import os
 import math
@@ -42,6 +43,9 @@ from estimate_pipeline import (
 )
 from template_fill_test import TEMPLATE_FILL_TEST_NAME, build_template_fill_test_workbook
 import template_fill_test_v2 as tfv2
+from horizontal_estimate_flow import build_horizontal_estimate
+
+HORIZONTAL_FORMAT = "彩架建設 横型見積書（Numbers対応・A4横）"
 
 try:
     from estimate_pipeline import WORK_SUMMARY_SHEET_NAME, build_work_summary_dataframe
@@ -436,12 +440,15 @@ with col2:
     format_choice = st.radio(
         "出力フォーマットを選んでください",
         (
+            HORIZONTAL_FORMAT,
             "彩架建設 企業用見積（2シート：一式表＋明細）",
             "彩架建設 簡易工事見積（1シート：明細のみ）",
             "汎用フォーマット（Excel）",
         )
     )
-    if format_choice == "彩架建設 企業用見積（2シート：一式表＋明細）":
+    if format_choice == HORIZONTAL_FORMAT:
+        st.caption("新しい見積書をアップロードして解析すると、表紙・一式まとめ・明細を下方向に並べたA4横型のNumbers対応ファイルを作成します。テストデータは使用しません。")
+    elif format_choice == "彩架建設 企業用見積（2シート：一式表＋明細）":
         st.caption("Numbers の「工事内容」と「工事内容明細」にそのままコピペできる形式です。列順: No. / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考")
     elif format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）":
         st.caption("1枚ペラの簡易見積用。Numbers にそのままコピペできます。列順: 商品名・工事名 / 数量 / 単 / 単価（円）/ 金額（円）")
@@ -457,6 +464,34 @@ uploaded_files = st.file_uploader(
     type=["pdf", "jpg", "jpeg", "png"],
     accept_multiple_files=True
 )
+
+# 新しいアップロードへ切り替わったら、前回の会社別入力と完成ファイルを破棄する。
+upload_signature = tuple(
+    (f.name, f.size, hashlib.sha256(f.getbuffer()).hexdigest()) for f in (uploaded_files or [])
+)
+if st.session_state.get("_upload_signature") != upload_signature:
+    for key in list(st.session_state):
+        if key.startswith("_extracted_") or key.startswith("cat_profit_") or key in (
+            "_detail_df", "_vendor_summaries", "_summary_data", "_categories_summary",
+            "_horizontal_result", "_horizontal_signature",
+        ):
+            del st.session_state[key]
+    st.session_state["_upload_signature"] = upload_signature
+
+
+def horizontal_signature(company_profits=()):
+    return (upload_signature, profit_mode, float(profit_val), tuple(company_profits))
+
+
+def save_horizontal_result(detail, base_cost, quoted_cost, metadata, signature):
+    try:
+        with st.spinner("新しい見積書を横型テンプレートへ流し込み中..."):
+            result = build_horizontal_estimate(detail, base_cost, quoted_cost, metadata)
+        st.session_state["_horizontal_result"] = result
+        st.session_state["_horizontal_signature"] = signature
+    except Exception as exc:
+        st.session_state.pop("_horizontal_result", None)
+        st.error(f"横型見積書の生成に失敗しました: {exc}")
 
 # ==========================================
 # 横型：Numbers / Excel互換テンプレート流し込み
@@ -542,10 +577,15 @@ if uploaded_files:
         <div style="margin-top:8px; color:#2e7d32; font-size:0.95rem;">{file_names}</div>
     </div>
     """, unsafe_allow_html=True)
-    analyze_clicked = st.button("✨ AIでデータを解析 ＆ 利益計算を実行する ✨")
+    analyze_label = (
+        "✨ 新しい見積書を解析してNumbers用に流し込む ✨"
+        if format_choice == HORIZONTAL_FORMAT else "✨ AIでデータを解析 ＆ 利益計算を実行する ✨"
+    )
+    analyze_clicked = st.button(analyze_label)
     if st.session_state.pop("_force_analyze", False):
         analyze_clicked = True
     if analyze_clicked:
+        st.session_state.pop("_horizontal_result", None)
         if not MY_API_KEY:
             st.error("APIキーが設定されていません。環境変数 GOOGLE_API_KEY または .streamlit/secrets.toml に GOOGLE_API_KEY を設定してください。")
         else:
@@ -844,6 +884,10 @@ if uploaded_files:
                             vendor_sheet_pairs = build_vendor_copy_sheets(vendor_summaries, detail_df, df)
                         if detail_issues:
                             issues.extend(detail_issues)
+                        if format_choice == HORIZONTAL_FORMAT and not has_blocking_issue and not detail_issues:
+                            save_horizontal_result(
+                                detail_df, cost_df, df, summary_data, horizontal_signature()
+                            )
                         st.toast("計算完了！データ準備OK", icon="✅")
                         st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
                         st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
@@ -1009,7 +1053,12 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
         if total_profit > 0:
             st.markdown(f"<div class='highlight-red'>💰 上乗せ合計: {total_profit:,} 円 → 出力合計（税抜）: {grand_total + total_profit:,} 円</div>", unsafe_allow_html=True)
 
-        if st.button("✨ 上乗せを適用して出力する ✨", key="apply_cat_profit"):
+        apply_label = (
+            "✨ 上乗せを適用してNumbers用に流し込む ✨"
+            if format_choice == HORIZONTAL_FORMAT else "✨ 上乗せを適用して出力する ✨"
+        )
+        if st.button(apply_label, key="apply_cat_profit"):
+            st.session_state.pop("_horizontal_result", None)
             df = st.session_state["_extracted_df"].copy()
             detail_df = st.session_state.get("_detail_df", pd.DataFrame())
             vendor_summaries = st.session_state.get("_vendor_summaries", [])
@@ -1020,7 +1069,6 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             quote_summary_data = summary_data_from_cost_dataframe(summary_data, df_profit)
             df_quote_summary, quote_totals = build_quote_summary_dataframe(quote_summary_data, df_profit)
             df_work_summary, work_totals = build_vendor_work_summary_dataframe(vendor_summaries, df_profit)
-            format_choice = st.session_state.get("_extracted_format_choice", "")
             is_simple_format = format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）"
             if is_simple_format:
                 df_numbers_detail, detail_issues = simple_detail_dataframe(detail_profit_df)
@@ -1030,6 +1078,11 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                 vendor_sheet_pairs = build_vendor_copy_sheets(vendor_summaries, detail_profit_df, df_profit)
             if detail_issues:
                 has_blocking_issue = True
+            if format_choice == HORIZONTAL_FORMAT and not has_blocking_issue:
+                save_horizontal_result(
+                    detail_df, df, df_profit, summary_data,
+                    horizontal_signature(sorted(cat_profits.items())),
+                )
             st.toast("計算完了！", icon="✅")
             st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
             st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
@@ -1046,40 +1099,6 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                 st.metric("工事別まとめ 合計金額", f"{work_totals.get('工事費計', 0):,} 円")
                 st.write("▼ 3枚目用：明細（Numbers「工事内容明細」にコピペ）")
                 st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
-
-                st.markdown("---")
-                st.markdown(f"### {tfv2.TEMPLATE_FILL_TEST_V2_NAME}")
-                st.caption(
-                    "現在の彩架建設デザインを基調にしたA4横型です。"
-                    "表紙・一式まとめ・明細を1枚の見積書シートへ下方向に並べ、"
-                    "A4横1ページ単位で出力します。"
-                )
-                try:
-                    _est = tfv2.estimate_from_production(
-                        detail_profit_df,
-                        df_profit,
-                        metadata=summary_data,
-                    )
-                    _res = tfv2.fill_estimate_v2(_est)
-                    if _res.warnings:
-                        with st.expander("流し込みの確認事項（出力は可能）", expanded=False):
-                            for _w in _res.warnings:
-                                st.write(f"- {_w}")
-                    if not _res.ok:
-                        st.error("出力検証に失敗したため、ダウンロードは表示しません。")
-                        for _e in _res.errors:
-                            st.write(f"- {_e}")
-                    else:
-                        st.success(f"検証OK！ シート構成: {_res.sheet_names}")
-                        st.download_button(
-                            label="✅ Numbers / Excel用 横型見積書xlsxをダウンロード",
-                            data=_res.data,
-                            file_name=_res.file_name,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="download_template_fill_test_v2_xlsx",
-                        )
-                except Exception as e:
-                    st.error(f"横型見積書の生成に失敗しました: {e}")
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -1123,3 +1142,32 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                     )
                 if excel_clicked or csv_clicked:
                     st.toast("ダウンロード完了！Numbers にコピペして仕上げましょう 🚀", icon="🎉")
+
+if uploaded_files and format_choice == HORIZONTAL_FORMAT:
+    current_profits = ()
+    if profit_mode == "見積元（会社）ごとに金額を指定する":
+        current_profits = sorted(
+            (c["name"], st.session_state.get(f"cat_profit_{c['name']}", 0))
+            for c in st.session_state.get("_categories_summary", [])
+        )
+    result = st.session_state.get("_horizontal_result")
+    if result is not None and st.session_state.get("_horizontal_signature") == horizontal_signature(current_profits):
+        st.markdown("---")
+        st.markdown("### 📐 新しい見積書から作成した横型見積書")
+        st.caption("表紙・一式まとめ・明細を下方向に配置。Numbersで編集でき、A4横のページ単位で印刷できます。")
+        if result.warnings:
+            with st.expander("流し込みの確認事項", expanded=False):
+                for warning in result.warnings:
+                    st.write(f"- {warning}")
+        if not result.ok:
+            st.error("出力検証に失敗しました。ダウンロードは停止しています。")
+            for error in result.errors:
+                st.write(f"- {error}")
+        else:
+            st.download_button(
+                "📥 新規見積書をNumbers用にダウンロード（A4横）",
+                data=result.data,
+                file_name=result.file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_new_horizontal_estimate",
+            )
