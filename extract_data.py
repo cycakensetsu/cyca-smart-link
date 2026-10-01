@@ -582,6 +582,7 @@ if uploaded_files:
         if format_choice == HORIZONTAL_FORMAT else "✨ AIでデータを解析 ＆ 利益計算を実行する ✨"
     )
     analyze_clicked = st.button(analyze_label)
+    horizontal_output_slot = st.empty()
     if st.session_state.pop("_force_analyze", False):
         analyze_clicked = True
     if analyze_clicked:
@@ -889,9 +890,11 @@ if uploaded_files:
                                 detail_df, cost_df, df, summary_data, horizontal_signature()
                             )
                         st.toast("計算完了！データ準備OK", icon="✅")
-                        st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
+                        result_heading = "解析結果の確認" if format_choice == HORIZONTAL_FORMAT else "計算完了！Numbers / Excel / CSV 向けデータ"
+                        st.markdown(f'<div class="sub-header">{result_heading}</div>', unsafe_allow_html=True)
                         st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
-                        st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。")
+                        if format_choice != HORIZONTAL_FORMAT:
+                            st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。数式は含まれません。")
                         if is_simple_format:
                             st.write("▼ 簡易工事見積：明細のみ（Numbers貼り付け用）")
                             st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
@@ -922,7 +925,10 @@ if uploaded_files:
                         excel_data = output.getvalue()
                         csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
 
-                        st.markdown("""
+                        if format_choice == HORIZONTAL_FORMAT:
+                            st.info("数式付きの横型ファイルは、アップロード欄の下にある専用ボタンからダウンロードしてください。画面の表をコピーすると数式は移りません。")
+                        else:
+                            st.markdown("""
                         <div class="download-done-box" style="position: relative; overflow: hidden;">
                             <div class="msg">📥 ダウンロード → Numbers を開いて → データ部分をコピペ！</div>
                             <div class="sparkle-bar"></div>
@@ -940,21 +946,23 @@ if uploaded_files:
                             100% { background-position: 200% 0; }
                         }
                         </style>
-                        """, unsafe_allow_html=True)
+                            """, unsafe_allow_html=True)
                         if has_blocking_issue:
                             st.error("検算エラーが残っているため、Excel / CSV 出力は停止しています。")
+                        elif format_choice == HORIZONTAL_FORMAT:
+                            pass  # 横型モードでは、数式のない貼り付け用ファイルを表示しない。
                         else:
                             dcol1, dcol2 = st.columns(2)
                             with dcol1:
                                 excel_clicked = st.download_button(
-                                    label="📥 Excel をダウンロードする",
+                                    label="📥 Excel（貼り付け用・数値のみ）",
                                     data=excel_data,
                                     file_name="CYCA_smartLink_見積完成版.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                 )
                             with dcol2:
                                 csv_clicked = st.download_button(
-                                    label="📥 CSV をダウンロードする",
+                                    label="📥 CSV（貼り付け用・数値のみ）",
                                     data=csv_data,
                                     file_name="CYCA_smartLink_見積完成版.csv",
                                     mime="text/csv"
@@ -1085,8 +1093,10 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                 )
             st.toast("計算完了！", icon="✅")
             st.markdown(_gold_sparkle_html(), unsafe_allow_html=True)
-            st.markdown('<div class="sub-header">計算完了！Numbers / Excel / CSV 向けデータ</div>', unsafe_allow_html=True)
-            st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。")
+            result_heading = "解析結果の確認" if format_choice == HORIZONTAL_FORMAT else "計算完了！Numbers / Excel / CSV 向けデータ"
+            st.markdown(f'<div class="sub-header">{result_heading}</div>', unsafe_allow_html=True)
+            if format_choice != HORIZONTAL_FORMAT:
+                st.caption("画面確認用には見出しを表示しています。Excel / CSV / Numbers貼り付け用のダウンロードデータは、テンプレートにそのまま貼れるよう見出し行なしで出力します。数式は含まれません。")
             if is_simple_format:
                 st.write("▼ 簡易工事見積：明細のみ（Numbers貼り付け用）")
                 st.dataframe(df_numbers_detail, use_container_width=True, hide_index=True)
@@ -1114,19 +1124,24 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             excel_data = output.getvalue()
             csv_data = df_numbers_detail.to_csv(index=False, header=False).encode("utf-8-sig")
 
-            st.markdown("""
+            if format_choice == HORIZONTAL_FORMAT:
+                st.info("数式付きの横型ファイルは、アップロード欄の下にある専用ボタンからダウンロードしてください。画面の表をコピーすると数式は移りません。")
+            else:
+                st.markdown("""
             <div class="download-done-box" style="position: relative; overflow: hidden;">
                 <div class="msg">📥 ダウンロード → Numbers を開いて → データ部分をコピペ！</div>
                 <div class="sparkle-bar"></div>
             </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
             if has_blocking_issue:
                 st.error("検算エラーが残っているため、Excel / CSV 出力は停止しています。")
+            elif format_choice == HORIZONTAL_FORMAT:
+                pass  # 横型モードでは、数式のない貼り付け用ファイルを表示しない。
             else:
                 dcol1, dcol2 = st.columns(2)
                 with dcol1:
                     excel_clicked = st.download_button(
-                        label="📥 Excel をダウンロードする",
+                        label="📥 Excel（貼り付け用・数値のみ）",
                         data=excel_data,
                         file_name="CYCA_smartLink_見積完成版.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1134,7 +1149,7 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                     )
                 with dcol2:
                     csv_clicked = st.download_button(
-                        label="📥 CSV をダウンロードする",
+                        label="📥 CSV（貼り付け用・数値のみ）",
                         data=csv_data,
                         file_name="CYCA_smartLink_見積完成版.csv",
                         mime="text/csv",
@@ -1152,22 +1167,22 @@ if uploaded_files and format_choice == HORIZONTAL_FORMAT:
         )
     result = st.session_state.get("_horizontal_result")
     if result is not None and st.session_state.get("_horizontal_signature") == horizontal_signature(current_profits):
-        st.markdown("---")
-        st.markdown("### 📐 新しい見積書から作成した横型見積書")
-        st.caption("表紙・一式まとめ・明細を下方向に配置。Numbersで編集でき、A4横のページ単位で印刷できます。")
-        if result.warnings:
-            with st.expander("流し込みの確認事項", expanded=False):
-                for warning in result.warnings:
-                    st.write(f"- {warning}")
-        if not result.ok:
-            st.error("出力検証に失敗しました。ダウンロードは停止しています。")
-            for error in result.errors:
-                st.write(f"- {error}")
-        else:
-            st.download_button(
-                "📥 新規見積書をNumbers用にダウンロード（A4横）",
-                data=result.data,
-                file_name=result.file_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_new_horizontal_estimate",
-            )
+        with horizontal_output_slot.container():
+            st.markdown("### 📐 数式付き・新規見積書")
+            st.caption("このxlsxをNumbersで直接開き、数量や単価を編集してください。明細金額・一式小計・表題金額が連動します。表やCSVをコピーすると数式は移りません。")
+            if result.warnings:
+                with st.expander("流し込みの確認事項", expanded=False):
+                    for warning in result.warnings:
+                        st.write(f"- {warning}")
+            if not result.ok:
+                st.error("出力検証に失敗しました。ダウンロードは停止しています。")
+                for error in result.errors:
+                    st.write(f"- {error}")
+            else:
+                st.download_button(
+                    "📥 数式付き見積書をNumbersで開く（A4横）",
+                    data=result.data,
+                    file_name=result.file_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_new_horizontal_estimate",
+                )

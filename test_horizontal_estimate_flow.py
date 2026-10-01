@@ -9,6 +9,14 @@ from estimate_pipeline import (
     build_intermediate_dataframe,
 )
 from horizontal_estimate_flow import build_horizontal_estimate
+from template_fill_test_v2 import (
+    AMOUNT_LABEL_ROW,
+    COL_AMOUNT,
+    COL_SPEC,
+    DETAIL_PAGE_START_ROW,
+    SUMMARY_ITEM_START_ROW,
+    SUMMARY_TOTAL_ROW,
+)
 
 
 class HorizontalEstimateFlowTest(unittest.TestCase):
@@ -27,7 +35,14 @@ class HorizontalEstimateFlowTest(unittest.TestCase):
         self.assertEqual(result.summary["小計"], 290000)
         workbook = load_workbook(BytesIO(result.data))
         self.assertEqual(workbook.sheetnames, ["見積書", "明細データ"])
-        values = " ".join(str(cell.value or "") for row in workbook["見積書"] for cell in row)
+        quote = workbook["見積書"]
+        detail_row = DETAIL_PAGE_START_ROW + 3  # category heading precedes the first item
+        amount_formula = quote.cell(detail_row, COL_AMOUNT).value
+        self.assertTrue(amount_formula.startswith("="))
+        self.assertIn(f"D{detail_row}*F{detail_row}", amount_formula)
+        self.assertTrue(quote.cell(SUMMARY_ITEM_START_ROW, COL_AMOUNT).value.startswith("=G"))
+        self.assertEqual(quote.cell(AMOUNT_LABEL_ROW, COL_SPEC).value, f"=G{SUMMARY_TOTAL_ROW}")
+        values = " ".join(str(cell.value or "") for row in quote for cell in row)
         self.assertIn("今回の新規工事", values)
         self.assertIn("新規塗装株式会社", values)
         self.assertIn("新規設備株式会社", values)
