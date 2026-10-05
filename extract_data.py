@@ -74,8 +74,8 @@ def simple_detail_dataframe(detail_df):
             "商品名・工事名": source["品名"],
             "数量": pd.to_numeric(source["数量"], errors="coerce"),
             "単位": source["単位"],
-            "単価（円）": pd.to_numeric(source["原価単価"], errors="coerce"),
-            "金額（円）": pd.to_numeric(source["原価金額"], errors="coerce"),
+            "単価（円）": pd.to_numeric(source["見積単価"], errors="coerce"),
+            "金額（円）": pd.to_numeric(source["見積金額"], errors="coerce"),
             "備考": source["備考"],
         },
         index=source.index,
@@ -865,6 +865,8 @@ if uploaded_files:
 
                         else:
                             df = apply_profit(cost_df, profit_mode, profit_val, detail_df=detail_df)
+                            profits = df.groupby("見積元", sort=False)["上乗せ額"].sum().to_dict()
+                            detail_df, df = apply_company_profit_to_details(detail_df, cost_df, profits)
 
                         # 「工事種別ごと」モード：ここでは抽出結果のみ表示し、残りは下の入力UIに任せる
                         if profit_mode == "見積元（会社）ごとに金額を指定する":

@@ -2,7 +2,7 @@ import unittest
 from io import BytesIO
 from unittest.mock import patch
 from openpyxl import load_workbook
-from estimate_pipeline import build_intermediate_dataframe, build_cost_basis_dataframe, apply_company_profit_to_details, apply_profit, validate_intermediate
+from estimate_pipeline import build_intermediate_dataframe, build_cost_basis_dataframe, apply_company_profit_to_details, apply_profit, validate_intermediate, vendor_detail_dataframe, simple_detail_dataframe
 from horizontal_estimate_flow import build_horizontal_estimate
 from source_table import reconcile_native_pdf
 from markup_rules import line_amount
@@ -106,6 +106,27 @@ class MarkupRulesTest(unittest.TestCase):
             extra = records + [dict(品名="別工事", 見積元="テスト工務", 金額=1000)]
             unchanged, _ = reconcile_native_pdf("test.pdf", extra, [])
             self.assertEqual(unchanged, extra)
+
+    def test_numeric_spec_cannot_erase_floor_number(self):
+        record = dict(品名="階天壁 クロス", 仕様="2", 見積元="テスト", 金額=132000)
+        native = [dict(品名="2階天壁 クロス", 仕様="", 数量=60, 単位="m", 単価=2200, 金額=132000)]
+        with patch("source_table.read_native_tables", return_value=(native, [132000], "")):
+            corrected, _ = reconcile_native_pdf("test.pdf", [record], [])
+        self.assertEqual(corrected[0]["品名"], "2階天壁 クロス")
+        self.assertEqual(corrected[0]["仕様"], "")
+
+    def test_visible_detail_preview_matches_allocated_file(self):
+        detail, cost = frame([("工事", 19, "㎡", 4250)])
+        detail['仕様'] = '5.5mm'
+        allocated, _ = apply_company_profit_to_details(detail, cost, {"テスト工務店": 10000})
+        preview, issues = vendor_detail_dataframe(allocated)
+        self.assertEqual(issues, [])
+        self.assertEqual(preview.iloc[1]['単価'], allocated.iloc[0]['見積単価'])
+        self.assertEqual(preview.iloc[1]['金額'], allocated.iloc[0]['見積金額'])
+        self.assertEqual(preview.iloc[1]['仕様'], '5.5mm')
+        simple, _ = simple_detail_dataframe(allocated)
+        self.assertEqual(simple.iloc[0]['単価（円）'], allocated.iloc[0]['見積単価'])
+        self.assertEqual(simple.iloc[0]['金額（円）'], allocated.iloc[0]['見積金額'])
 
 
 if __name__ == "__main__":

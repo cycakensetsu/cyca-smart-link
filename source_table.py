@@ -104,7 +104,10 @@ def reconcile_native_pdf(path, records, summaries):
         matches = [r for r in records if number(r.get("金額", r.get("原価金額"))) == row["金額"]]
         if len(matches) == 1:
             spec = str(matches[0].get("仕様") or "").strip()
-            if spec and spec in row["品名"]:
+            # Do not let an OCR "specification" such as "1" remove the floor
+            # number from "1階". Only an entire, non-numeric cell phrase qualifies.
+            if (spec and not re.fullmatch(r"[\d\s.,・]+", spec)
+                    and re.search(r"(?:^|\s)" + re.escape(spec) + r"(?:$|\s)", row["品名"])):
                 row["品名"] = row["品名"].replace(spec, "").strip()
                 row["仕様"] = spec
         if row["品名"].startswith(("同上", "〃")) and idx > 1:

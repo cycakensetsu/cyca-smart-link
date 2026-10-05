@@ -1046,7 +1046,7 @@ def vendor_detail_dataframe(detail_df: pd.DataFrame) -> Tuple[pd.DataFrame, List
     """3枚目は業者ごとの確認用明細。ここは原価合計には使わない。"""
     if detail_df is None or detail_df.empty:
         return pd.DataFrame(columns=NUMBERS_OUTPUT_COLUMNS), []
-    source = output_dataframe(detail_df)
+    source = detail_df.copy()
     rows: List[Dict] = []
     for vendor, group in source.groupby("見積元", sort=False):
         vendor_name = normalize_text(vendor) or "不明"
@@ -1055,14 +1055,14 @@ def vendor_detail_dataframe(detail_df: pd.DataFrame) -> Tuple[pd.DataFrame, List
             rows.append({
                 "No": item_idx,
                 "工事品目": row.get("品名", ""),
-                "仕様": "",
+                "仕様": row.get("仕様", ""),
                 "数量": row.get("数量", ""),
                 "単位": row.get("単位", ""),
-                "単価": row.get("原価単価", ""),
-                "金額": row.get("原価金額", ""),
+                "単価": row.get("見積単価", row.get("原価単価", "")),
+                "金額": row.get("見積金額", row.get("原価金額", "")),
                 "備考": row.get("備考", ""),
             })
-        detail_total = int(round(pd.to_numeric(group["原価金額"], errors="coerce").fillna(0).sum()))
+        detail_total = int(round(pd.to_numeric(group.get("見積金額", group["原価金額"]), errors="coerce").fillna(0).sum()))
         rows.append({"No": "", "工事品目": f"{vendor_name} 明細合計", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": detail_total, "備考": "確認用"})
         rows.append({"No": "", "工事品目": "", "仕様": "", "数量": "", "単位": "", "単価": "", "金額": "", "備考": ""})
     return pd.DataFrame(rows, columns=NUMBERS_OUTPUT_COLUMNS), []
@@ -1571,8 +1571,8 @@ def simple_detail_dataframe(detail_df: pd.DataFrame) -> Tuple[pd.DataFrame, List
             "商品名・工事名": source["品名"],
             "数量": pd.to_numeric(source["数量"], errors="coerce"),
             "単位": source["単位"],
-            "単価（円）": pd.to_numeric(source["原価単価"], errors="coerce"),
-            "金額（円）": pd.to_numeric(source["原価金額"], errors="coerce"),
+            "単価（円）": pd.to_numeric(source["見積単価"], errors="coerce"),
+            "金額（円）": pd.to_numeric(source["見積金額"], errors="coerce"),
             "備考": source["備考"],
         },
         index=source.index,
