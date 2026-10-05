@@ -144,7 +144,7 @@ class EstimatePipelineTest(unittest.TestCase):
             {"No": 3, "見積元": "吉村板金", "品名": "屋根工事施工費", "数量": "1式", "単価": 463000, "金額": 463000},
         ])
         cost_df, _ = build_cost_basis_dataframe({}, detail_df)
-        detail_profit_df, cost_profit_df = apply_company_profit_to_details(detail_df, cost_df, {"吉村板金": 400000})
+        detail_profit_df, cost_profit_df = apply_company_profit_to_details(detail_df, cost_df, {"吉村板金": 100000})
 
         data, file_name, issues = build_template_fill_test_workbook(
             detail_df=detail_profit_df,
@@ -156,19 +156,19 @@ class EstimatePipelineTest(unittest.TestCase):
             self.assertTrue(file_name.startswith("TEST_彩架建設見積テンプレート流し込み_吉村板金_"))
             self.assertGreater(len(data), 10000)
             self.assertEqual(Path(TEMPLATE_PATH).read_bytes(), before)
-            self.assertEqual(int(cost_profit_df["見積金額"].sum()), 1053000)
-            self.assertEqual(int(detail_profit_df["見積金額"].sum()), 1053000)
+            self.assertEqual(int(cost_profit_df["見積金額"].sum()), 753000)
+            self.assertEqual(int(detail_profit_df["見積金額"].sum()), 753000)
             wb = openpyxl.load_workbook(BytesIO(data), data_only=False)
             self.assertEqual(wb.sheetnames, ["TEST_見積書", "TEST_明細データ"])
             self.assertNotIn("書き出しの概要", wb.sheetnames)
             self.assertFalse(any(name.startswith("シート1 -") for name in wb.sheetnames))
             self.assertEqual(wb["TEST_見積書"]["B6"].value, "吉村板金テスト")
-            self.assertEqual(wb["TEST_見積書"]["G6"].value, 1053000)
-            self.assertEqual(wb["TEST_見積書"]["G7"].value, 105300)
-            self.assertEqual(wb["TEST_見積書"]["G8"].value, 1158300)
+            self.assertEqual(wb["TEST_見積書"]["G6"].value, 753000)
+            self.assertEqual(wb["TEST_見積書"]["G7"].value, 75300)
+            self.assertEqual(wb["TEST_見積書"]["G8"].value, 828300)
             self.assertEqual(wb["TEST_見積書"]["B15"].value, "吉村板金 工事一式")
             self.assertEqual(wb["TEST_明細データ"]["B4"].value, "屋根大波ガルバリウム鋼鈑")
-            self.assertEqual(sum(wb["TEST_明細データ"].cell(row, 7).value for row in range(4, 7)), 1053000)
+            self.assertEqual(sum(wb["TEST_明細データ"].cell(row, 7).value for row in range(4, 7)), 753000)
         finally:
             generated = OUTPUT_DIR / file_name
             if generated.exists():

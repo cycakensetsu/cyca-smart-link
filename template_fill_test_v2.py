@@ -1,7 +1,7 @@
 """横型見積書：Numbers/Excel互換テンプレートへ見積データを流し込む。
 
-このモジュールは既存の本番処理（extract_data.py / estimate_pipeline.py など）とは
-独立した、テスト専用の実装です。既存ファイルや既存テンプレートには一切書き込みません。
+本番フローと検証から共通利用する出力処理です。
+既存ファイルや既存テンプレートには書き込みません。
 
 方針:
 - Numbers由来テンプレートは使わない。
@@ -23,6 +23,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from markup_rules import line_amount
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
@@ -115,6 +116,7 @@ ITEM_FONT_SIZE = 9
 ITEM_ROW_HEIGHT = 21
 
 MONEY_FORMAT = "#,##0"
+RATE_FORMAT = "#,##0.00"
 YEN_FORMAT = '"¥"#,##0'
 
 DISALLOWED_SHEET_NAMES = {"書き出しの概要"}
@@ -131,7 +133,7 @@ class LineItem:
     spec: str = ""
     qty: float = 0
     unit: str = ""
-    unit_price: int = 0
+    unit_price: float = 0
     amount: int = 0
     remark: str = ""
 
@@ -225,7 +227,7 @@ def estimate_to_rows(estimate: Estimate) -> List[Dict]:
                 "仕様": item.spec,
                 "数量": item.qty,
                 "単位": item.unit,
-                "単価": int(round(item.unit_price or 0)),
+                "単価": item.unit_price or 0,
                 "金額": int(round(item.amount or 0)),
                 "備考": item.remark,
             })
@@ -649,7 +651,7 @@ def _write_quote_sheet_legacy(ws, estimate: Estimate) -> int:
                 _set(ws, r, COL_SPEC, item.spec)
                 _set(ws, r, COL_QTY, item.qty)
                 _set(ws, r, COL_UNIT, item.unit)
-                _set(ws, r, COL_PRICE, int(round(item.unit_price)), number_format=MONEY_FORMAT)
+                _set(ws, r, COL_PRICE, item.unit_price, number_format=MONEY_FORMAT if float(item.unit_price).is_integer() else RATE_FORMAT)
                 _set(ws, r, COL_AMOUNT, int(round(item.amount)), number_format=MONEY_FORMAT)
                 _set(ws, r, COL_REMARK, item.remark)
             emit(write_item)
@@ -771,7 +773,7 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
                 _set(ws, row, COL_SPEC, item.spec)
                 _set(ws, row, COL_QTY, item.qty)
                 _set(ws, row, COL_UNIT, item.unit)
-                _set(ws, row, COL_PRICE, int(round(item.unit_price)), number_format=MONEY_FORMAT)
+                _set(ws, row, COL_PRICE, item.unit_price, number_format=MONEY_FORMAT if float(item.unit_price).is_integer() else RATE_FORMAT)
                 _set(ws, row, COL_AMOUNT, int(round(item.amount)), number_format=MONEY_FORMAT)
                 _set(ws, row, COL_REMARK, item.remark)
                 page_amount += int(round(item.amount))
@@ -872,7 +874,7 @@ def _write_detail_sheet(wb: Workbook, estimate: Estimate):
         for item in cat.items:
             no += 1
             values = [no, cat.name, item.name, item.spec, item.qty, item.unit,
-                      int(round(item.unit_price)), int(round(item.amount)), item.remark]
+                      item.unit_price, int(round(item.amount)), item.remark]
             for col, value in enumerate(values, start=1):
                 c = ws.cell(row, col, value)
                 c.font = base_font
@@ -884,7 +886,7 @@ def _write_detail_sheet(wb: Workbook, estimate: Estimate):
                 else:
                     c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
                 if col in (7, 8):
-                    c.number_format = MONEY_FORMAT
+                    c.number_format = RATE_FORMAT if col == 7 and not float(item.unit_price).is_integer() else MONEY_FORMAT
             ws.row_dimensions[row].height = 20
             row += 1
 
@@ -938,6 +940,7 @@ def _apply_dynamic_formulas(wb: Workbook, estimate: Estimate) -> None:
     ws = wb[QUOTE_SHEET]
     current_category_items: List[int] = []
     category_subtotals: List[int] = []
+    item_rows: List[int] = []
 
     for page_index in range(MAX_DETAIL_PAGES):
         page_start = DETAIL_PAGE_START_ROW + page_index * DETAIL_PAGE_BLOCK_ROWS
@@ -950,13 +953,8 @@ def _apply_dynamic_formulas(wb: Workbook, estimate: Estimate) -> None:
             item_name = ws.cell(row, COL_ITEM).value
             label = ws.cell(row, COL_PRICE).value
             if isinstance(no, (int, float)) and item_name:
-                qty = _formula_number(ws.cell(row, COL_QTY).value)
-                unit_price = _formula_number(ws.cell(row, COL_PRICE).value)
-                initial_amount = _formula_number(ws.cell(row, COL_AMOUNT).value)
-                ws.cell(row, COL_AMOUNT).value = (
-                    f'=IF(AND(D{row}={qty},F{row}={unit_price}),{initial_amount},'
-                    f'IF(OR(D{row}="",F{row}=""),0,D{row}*F{row}))'
-                )
+                ws.cell(row, COL_AMOUNT).value = f'=IF(COUNT(D{row},F{row})=2,ROUND(D{row}*F{row},0),"")'
+                item_rows.append(row)
                 ws.cell(row, COL_AMOUNT).number_format = MONEY_FORMAT
                 current_category_items.append(row)
             elif label == "小計":
@@ -1001,17 +999,14 @@ def _apply_dynamic_formulas(wb: Workbook, estimate: Estimate) -> None:
     # 非表示の明細データにも同じ計算式を残す。
     raw = wb[DETAIL_SHEET]
     item_count = sum(len(category.items) for category in estimate.categories)
-    for row in range(2, item_count + 2):
-        qty = _formula_number(raw.cell(row, 5).value)
-        unit_price = _formula_number(raw.cell(row, 7).value)
-        initial_amount = _formula_number(raw.cell(row, 8).value)
-        raw.cell(row, 8).value = (
-            f'=IF(AND(E{row}={qty},G{row}={unit_price}),{initial_amount},'
-            f'IF(OR(E{row}="",G{row}=""),0,E{row}*G{row}))'
-        )
+    for row, quote_row in enumerate(item_rows, start=2):
+        # 見積書の数量・単価を唯一の編集元にして二つのシートのズレを防ぐ。
+        for raw_col, quote_col in ((3, "B"), (4, "C"), (5, "D"), (6, "E"), (7, "F"), (8, "G"), (9, "H")):
+            ref = f"'{QUOTE_SHEET}'!{quote_col}{quote_row}"
+            raw.cell(row, raw_col).value = f'=IF({ref}="","",{ref})'
     raw_summary_row = item_count + 3
     raw.cell(raw_summary_row, 8).value = f"=SUM(H2:H{item_count + 1})"
-    raw.cell(raw_summary_row + 1, 8).value = int(round(estimate.discount))
+    raw.cell(raw_summary_row + 1, 8).value = f"='{QUOTE_SHEET}'!G{SUMMARY_DISCOUNT_ROW}"
     raw.cell(raw_summary_row + 2, 8).value = f"=H{raw_summary_row}+H{raw_summary_row + 1}"
     raw.cell(raw_summary_row + 3, 8).value = (
         f"=ROUNDDOWN(H{raw_summary_row + 2}*{_formula_number(estimate.tax_rate)},0)"
@@ -1042,7 +1037,7 @@ def _validate_estimate(estimate: Estimate) -> Tuple[List[str], List[str]]:
     """データそのものの整合性を検証。(errors, warnings) を返す。
 
     errors はダウンロードをブロックする致命的不整合。
-    warnings は出力は許すが確認を促す軽微な差異（一式行の数量×単価≠金額など）。
+    数量×単価と金額の不一致は出力をブロックする。
     """
     errors: List[str] = []
     warnings: List[str] = []
@@ -1058,9 +1053,10 @@ def _validate_estimate(estimate: Estimate) -> Tuple[List[str], List[str]]:
         (i for c in estimate.categories for i in c.items), start=1
     ):
         qty = _to_number(item.qty)
-        # 一式・端数配分などで 数量×単価≠金額 は正常に起こりうるため警告に留める。
-        if qty and item.unit_price and int(round(qty * item.unit_price)) != int(round(item.amount)):
-            warnings.append(f"No.{idx}「{item.name}」の 数量×単価 と 金額 が一致していません（金額を優先して出力します）。")
+        if not item.name or not item.unit or qty <= 0:
+            errors.append(f"No.{idx} の品名・数量・単位を確認してください。")
+        if line_amount(qty, item.unit_price) != int(round(item.amount)):
+            errors.append(f"No.{idx}「{item.name}」の数量×単価と金額が一致しません。")
     used = 0
     for cat in estimate.categories:
         used += 1 + len(cat.items) + 1  # 見出し + 明細 + 小計
@@ -1212,8 +1208,7 @@ def estimate_from_production(
     """本番フロー（extract_data.py）の detail_df / cost_df から Estimate を組み立てる。
 
     - 見積元（会社）ごとに 1 カテゴリにまとめる。
-    - 金額は各行の「見積金額」を優先採用（数量×単価の再計算はしない）。
-      -> 小計 = 明細金額の合計 になるので検証（明細合計＝小計）を必ず満たす。
+    - 金額と数量×単価の一致を出力前に検証し、不一致は出力を止める。
     - 値引きは本番フローに概念が無いため 0。消費税は税抜合計×tax_rate（切り捨て）。
     """
     metadata = metadata or {}
@@ -1235,7 +1230,7 @@ def estimate_from_production(
             if not name and not amount:
                 continue
             qty_raw = _to_number(_first(row, ["数量"], 0))
-            unit_price = int(round(_to_number(_first(row, ["見積単価", "単価", "原価単価"], 0))))
+            unit_price = _to_number(_first(row, ["見積単価", "単価", "原価単価"], 0))
             items.append(LineItem(
                 name=name or "（項目名なし）",
                 spec=str(_first(row, ["仕様"], "") or ""),
@@ -1246,12 +1241,14 @@ def estimate_from_production(
                 remark=str(_first(row, ["備考"], "") or ""),
             ))
         if items:
-            categories.append(Category(vendor, items))
+            project_label = str(_first(metadata, ["工事名称", "工事名", "件名", "案件名"], "") or "")
+            label = project_label if len(target_vendors) == 1 and project_label else vendor
+            categories.append(Category(label, items))
 
     if not categories:
         raise ValueError("対象の見積元に明細がありません。")
 
-    vendor_label = "／".join(c.name for c in categories)
+    vendor_label = "／".join(target_vendors)
     customer = str(_first(metadata, ["宛名", "顧客名", "取引先", "得意先"], "") or "")
     project = str(_first(metadata, ["工事名称", "工事名", "件名", "案件名"], "") or "")
     issue = str(_first(metadata, ["見積日", "発行日", "作成日"], datetime.now().strftime("%Y/%m/%d")) or "")

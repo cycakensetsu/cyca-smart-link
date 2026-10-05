@@ -169,7 +169,7 @@ class TemplateFillV2LayoutTest(unittest.TestCase):
         quote = workbook[QUOTE_SHEET]
         self.assertEqual(quote.cell(CUSTOMER_ROW, 1).value, "九州テスト工場")
         self.assertEqual(quote.cell(INFO_START_ROW, 3).value, "外壁改修工事")
-        self.assertEqual(quote.cell(SUMMARY_ITEM_START_ROW, 2).value, "NOKフガクエンジニアリング株式会社")
+        self.assertEqual(quote.cell(SUMMARY_ITEM_START_ROW, 2).value, "外壁改修工事")
         self.assertNotIn("貞清工務店", " ".join(str(cell.value or "") for row in quote.iter_rows() for cell in row))
 
 

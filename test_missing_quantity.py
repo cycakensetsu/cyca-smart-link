@@ -45,12 +45,10 @@ class MissingQuantityTest(unittest.TestCase):
              "小計": 1250000},
         ]}
         cost_df, vendor_summaries = build_cost_basis_dataframe(summary, detail_df)
-        # ここで以前は ValueError: cannot convert float NaN to integer が出ていた
-        detail_p, cost_p = apply_company_profit_to_details(detail_df, cost_df, {VENDOR: 550000})
-        self.assertEqual(int(cost_p["見積金額"].sum()), 1800000)
-        _, totals = build_vendor_work_summary_dataframe(vendor_summaries, cost_p)
-        self.assertEqual(totals["改小計"], 1800000)
-        self.assertEqual(totals["工事費計"], 1800000 + 180000)
+        # Missing values must produce a readable blocked result, not a NaN crash
+        # or a guessed quantity that silently changes the source estimate.
+        with self.assertRaisesRegex(ValueError, "数量.*未取得"):
+            apply_company_profit_to_details(detail_df, cost_df, {VENDOR: 550000})
 
     def test_all_quantities_missing(self):
         records = [
@@ -60,8 +58,8 @@ class MissingQuantityTest(unittest.TestCase):
         detail_df, _ = build_intermediate_dataframe(records)
         detail_df["元ファイル"] = SRC
         cost_df, _ = build_cost_basis_dataframe({"summary_sources": []}, detail_df)
-        detail_p, cost_p = apply_company_profit_to_details(detail_df, cost_df, {VENDOR: 200000})
-        self.assertEqual(int(cost_p["見積金額"].sum()), 1200000)
+        with self.assertRaisesRegex(ValueError, "数量.*未取得"):
+            apply_company_profit_to_details(detail_df, cost_df, {VENDOR: 200000})
 
 
 if __name__ == "__main__":

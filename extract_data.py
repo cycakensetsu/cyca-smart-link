@@ -7,6 +7,7 @@ import os
 import math
 import sys
 import time
+import tempfile
 from io import BytesIO
 import openpyxl  # ExcelWriter engine 用
 from gemini_resilience import (
@@ -378,6 +379,10 @@ if not st.session_state.logged_in:
 if "username" not in st.session_state:
     st.session_state.username = ""
 with st.sidebar:
+    from markup_rules import RULE_DESCRIPTION, RULE_VERSION
+    with st.expander(f"配分ルール（{RULE_VERSION}）"):
+        st.write(RULE_DESCRIPTION)
+        st.caption("数量・単価・金額に欠損や不一致がある見積書は出力を止めます。")
     if st.session_state.username:
         st.caption(f"ログイン中: **{st.session_state.username}**")
     if st.button("🚪 ログアウト"):
@@ -650,18 +655,23 @@ if uploaded_files:
 
                     page_jobs = []
                     temp_paths = []
+                    source_paths = {}
                     for i, uploaded_file in enumerate(uploaded_files):
                         progress_bar.progress(int((i / n_files) * 30), text=f"📄 PDF/画像をページ単位に準備中... ({i+1}/{n_files})")
                         file_extension = os.path.splitext(uploaded_file.name)[1].lower() or ".pdf"
                         if not file_extension.startswith("."):
                             file_extension = "." + file_extension
-                        temp_file_path = os.path.join(APP_DIR, f"temp_upload_{i}{file_extension}")
+                        with tempfile.NamedTemporaryFile(prefix="cyca_upload_", suffix=file_extension, delete=False) as temp_upload:
+                            temp_file_path = temp_upload.name
                         temp_paths.append(temp_file_path)
 
                         with open(temp_file_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
 
-                        page_jobs.extend(prepare_upload_for_gemini_pages(temp_file_path, uploaded_file.name))
+                        jobs = prepare_upload_for_gemini_pages(temp_file_path, uploaded_file.name)
+                        for job in jobs:
+                            source_paths[id(job)] = temp_file_path
+                        page_jobs.extend(jobs)
 
                     progress_bar.progress(30, text=f"🔍 AI が{len(page_jobs)}件を解析中...")
 
@@ -778,6 +788,9 @@ if uploaded_files:
                                 source_name=page.source_name,
                                 page_number=analysis_page_number,
                             )
+                            if page.whole_document:
+                                from source_table import reconcile_native_pdf
+                                page_records, page_summaries = reconcile_native_pdf(source_paths[id(page)], page_records, page_summaries)
                             summary_sources.extend(page_summaries)
                             all_extracted_data.extend(page_records)
                         except json.JSONDecodeError:
@@ -802,7 +815,7 @@ if uploaded_files:
                         detail_df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
                         cost_df, vendor_summaries = build_cost_basis_dataframe(summary_data, detail_df)
                         df = cost_df
-                        issues = validate_intermediate(cost_df, {})
+                        issues = validate_intermediate(cost_df, {}) + validate_intermediate(detail_df, {})
                         has_blocking_issue = any(i.get("レベル") == "停止" for i in issues)
 
                         st.markdown('<div class="sub-header">PDFから抽出した集計対象プレビュー</div>', unsafe_allow_html=True)
@@ -851,7 +864,7 @@ if uploaded_files:
                             st.session_state["_categories_summary"] = categories_summary
 
                         else:
-                            df = apply_profit(cost_df, profit_mode, profit_val)
+                            df = apply_profit(cost_df, profit_mode, profit_val, detail_df=detail_df)
 
                         # 「工事種別ごと」モード：ここでは抽出結果のみ表示し、残りは下の入力UIに任せる
                         if profit_mode == "見積元（会社）ごとに金額を指定する":
@@ -1061,6 +1074,8 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
         if total_profit > 0:
             st.markdown(f"<div class='highlight-red'>💰 上乗せ合計: {total_profit:,} 円 → 出力合計（税抜）: {grand_total + total_profit:,} 円</div>", unsafe_allow_html=True)
 
+        from markup_rules import RULE_DESCRIPTION
+        st.caption(RULE_DESCRIPTION)
         apply_label = (
             "✨ 上乗せを適用してNumbers用に流し込む ✨"
             if format_choice == HORIZONTAL_FORMAT else "✨ 上乗せを適用して出力する ✨"
@@ -1072,7 +1087,14 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             vendor_summaries = st.session_state.get("_vendor_summaries", [])
             summary_data = st.session_state.get("_summary_data", {})
             has_blocking_issue = bool(st.session_state.get("_extracted_blocking", False))
-            detail_profit_df, df_profit = apply_company_profit_to_details(detail_df, df, cat_profits)
+            if has_blocking_issue:
+                st.error("読み取り明細の不一致を解消してから出力してください。")
+                st.stop()
+            try:
+                detail_profit_df, df_profit = apply_company_profit_to_details(detail_df, df, cat_profits)
+            except ValueError as exc:
+                st.error(str(exc))
+                st.stop()
             df_output = output_dataframe(df_profit)
             quote_summary_data = summary_data_from_cost_dataframe(summary_data, df_profit)
             df_quote_summary, quote_totals = build_quote_summary_dataframe(quote_summary_data, df_profit)

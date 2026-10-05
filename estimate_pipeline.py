@@ -1,5 +1,6 @@
 import logging
 import math
+from markup_rules import line_amount
 import re
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -63,7 +64,7 @@ COPY_TABLE_COLUMNS = ["工事項目", "数量", "単位", "単価（円）", "�
 SUMMARY_ITEM_KEYS = ["工事費内訳", "工事内容のまとめ", "工事項目単位の集計", "summary_items", "work_items", "items", "工事項目"]
 EXPENSE_KEYWORDS = ["諸経費", "福利", "厚生", "法定福利", "運搬", "処分", "荷揚げ", "現場管理"]
 PREFERRED_MARKUP_KEYWORDS = ["工事", "施工", "補修", "取付", "取り付け", "塗装", "防水", "板金", "屋根", "外壁"]
-EXPENSE_MARKUP_KEYWORDS = ["諸経費", "廃材", "処分", "運搬", "クレーン", "高所作業車", "法定福利", "福利", "安全", "養生", "交通費", "雑費"]
+EXPENSE_MARKUP_KEYWORDS = ["産廃", "経費", "諸経費", "廃材", "処分", "運搬", "クレーン", "高所作業車", "法定福利", "福利", "安全", "養生", "交通費", "雑費"]
 LIGHT_WORK_KEYWORDS = ["養生", "清掃", "軽作業"]
 MATERIAL_KEYWORDS = ["材料", "材", "鋼鈑", "板", "シート", "面戸", "副資材"]
 
@@ -128,7 +129,7 @@ def split_quantity_unit(quantity_value, unit_value: str = "") -> Tuple[Optional[
 
     qty = float(match.group(1).replace(",", ""))
     attached_unit = normalize_text(match.group(2))
-    unit = raw_unit or attached_unit
+    unit = attached_unit or raw_unit
     return qty, unit
 
 
@@ -1082,8 +1083,6 @@ def build_intermediate_dataframe(records: List[Dict]) -> Tuple[pd.DataFrame, Dic
 
         name = normalize_text(_first_present(record, ["品名", "項目名", "工事品目", "名称・内容", "名称", "商品名・工事名"]))
         spec = normalize_text(_first_present(record, ["仕様", "規格", "摘要", "内容"]))
-        if spec and spec not in name:
-            name = f"{name} {spec}".strip()
 
         amount = parse_money(_first_present(record, ["原価金額", "金額", "amount"]))
         unit_price = parse_money(_first_present(record, ["原価単価", "単価", "unit_price"]))
@@ -1105,7 +1104,7 @@ def build_intermediate_dataframe(records: List[Dict]) -> Tuple[pd.DataFrame, Dic
         if name and _is_summary_name(name):
             continue
 
-        note_parts = []
+        note_parts = [normalize_text(record.get("備考", ""))] if normalize_text(record.get("備考", "")) else []
         if not name:
             note_parts.append("品名要確認")
         if quantity is None:
@@ -1118,7 +1117,7 @@ def build_intermediate_dataframe(records: List[Dict]) -> Tuple[pd.DataFrame, Dic
             note_parts.append("金額要確認")
 
         if quantity not in (None, 0) and unit_price is not None and amount is not None:
-            expected = int(round(quantity * unit_price))
+            expected = line_amount(quantity, unit_price)
             actual = int(round(amount))
             if expected != actual:
                 note_parts.append(f"単価×数量={expected:,}円")
@@ -1128,6 +1127,9 @@ def build_intermediate_dataframe(records: List[Dict]) -> Tuple[pd.DataFrame, Dic
                 "No": _first_present(record, ["No", "No.", "番号"], idx) or idx,
                 "見積元": normalize_text(_first_present(record, ["見積元", "会社名", "vendor"], "不明")),
                 "品名": name,
+                "仕様": spec,
+                "工事種別": normalize_text(record.get("工事種別", "")),
+                "抽出元テキスト範囲": normalize_text(record.get("抽出元テキスト範囲", "")),
                 "数量": quantity if quantity is not None else pd.NA,
                 "単位": unit,
                 "原価単価": unit_price if unit_price is not None else pd.NA,
@@ -1141,7 +1143,7 @@ def build_intermediate_dataframe(records: List[Dict]) -> Tuple[pd.DataFrame, Dic
             }
         )
 
-    df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS + ["元ファイル", "ページ"])
+    df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS + ["仕様", "工事種別", "抽出元テキスト範囲", "元ファイル", "ページ"])
     for col in ["数量", "原価単価", "原価金額", "上乗せ額", "見積単価", "見積金額"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df, totals
@@ -1159,16 +1161,19 @@ def validate_intermediate(df: pd.DataFrame, totals: Optional[Dict[str, int]] = N
             if pd.isna(value) or normalize_text(value) == "":
                 missing.append(col)
         if missing:
-            issues.append({"レベル": "確認", "内容": f"No {row.get('No', idx + 1)}: {', '.join(missing)} が未取得です。"})
+            issues.append({"レベル": "停止", "内容": f"No {row.get('No', idx + 1)}: {', '.join(missing)} が未取得です。"})
+
+        if pd.notna(row.get("数量")) and _safe_float(row.get("数量")) <= 0:
+            issues.append({"レベル": "停止", "内容": f"No {row.get('No', idx + 1)}: 数量は正の値で指定してください。"})
 
         qty = row.get("数量")
         price = row.get("原価単価")
         amount = row.get("原価金額")
         if pd.notna(qty) and pd.notna(price) and pd.notna(amount):
-            expected = int(round(float(qty) * float(price)))
+            expected = line_amount(qty, price)
             actual = int(round(float(amount)))
             if expected != actual:
-                issues.append({"レベル": "確認", "内容": f"No {row.get('No', idx + 1)}: 単価×数量({expected:,}円)と原価金額({actual:,}円)が一致しません。"})
+                issues.append({"レベル": "停止", "内容": f"No {row.get('No', idx + 1)}: 単価×数量({expected:,}円)と原価金額({actual:,}円)が一致しません。"})
 
     subtotal = int(round(pd.to_numeric(df["原価金額"], errors="coerce").fillna(0).sum())) if not df.empty else 0
     pdf_subtotal = int(totals.get("小計") or 0)
@@ -1183,41 +1188,21 @@ def validate_intermediate(df: pd.DataFrame, totals: Optional[Dict[str, int]] = N
     return issues
 
 
-def apply_profit(df: pd.DataFrame, profit_mode: str, profit_val: float = 0, company_profits: Optional[Dict[str, float]] = None) -> pd.DataFrame:
-    out = df.copy()
-    out["上乗せ額"] = 0.0
-    out["見積単価"] = out["原価単価"]
-    out["見積金額"] = out["原価金額"]
-
-    def apply_to_mask(mask, amount_to_add):
-        base = pd.to_numeric(out.loc[mask, "原価金額"], errors="coerce").fillna(0)
-        positive_mask = mask & (pd.to_numeric(out["原価金額"], errors="coerce").fillna(0) > 0)
-        base_total = pd.to_numeric(out.loc[positive_mask, "原価金額"], errors="coerce").fillna(0).sum()
-        if base_total <= 0 or amount_to_add <= 0:
-            return
-        for idx in out[positive_mask].index:
-            orig_amount = float(out.at[idx, "原価金額"])
-            qty = float(out.at[idx, "数量"]) if pd.notna(out.at[idx, "数量"]) and float(out.at[idx, "数量"]) != 0 else 1.0
-            add = amount_to_add * (orig_amount / base_total)
-            estimate_amount = orig_amount + add
-            estimate_unit = math.ceil((estimate_amount / qty) / 10.0) * 10
-            estimate_amount = int(round(estimate_unit * qty))
-            out.at[idx, "上乗せ額"] = int(round(estimate_amount - orig_amount))
-            out.at[idx, "見積単価"] = int(estimate_unit)
-            out.at[idx, "見積金額"] = estimate_amount
-
-    all_mask = pd.Series(True, index=out.index)
+def apply_profit(df: pd.DataFrame, profit_mode: str, profit_val: float = 0, company_profits: Optional[Dict[str, float]] = None, detail_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """固定・率指定も明細で配分し、会社別集計の丸めによる上乗せ増減を防ぐ。"""
+    if profit_mode == "見積元（会社）ごとに金額を指定する":
+        return apply_company_profit_to_details(detail_df if detail_df is not None else df, df, company_profits)[1][OUTPUT_COLUMNS]
+    detail = detail_df if detail_df is not None else df
+    base = int(round(pd.to_numeric(detail["原価金額"], errors="coerce").fillna(0).sum()))
+    add = 0
     if profit_mode == "固定金額（円）を全体に割り振る":
-        apply_to_mask(all_mask, float(profit_val or 0))
+        add = int(round(float(profit_val or 0)))
     elif profit_mode == "パーセンテージ（%）で全体に乗せる":
-        positive_total = pd.to_numeric(out.loc[pd.to_numeric(out["原価金額"], errors="coerce").fillna(0) > 0, "原価金額"], errors="coerce").fillna(0).sum()
-        apply_to_mask(all_mask, positive_total * float(profit_val or 0) / 100.0)
-    elif profit_mode == "見積元（会社）ごとに金額を指定する" and company_profits:
-        for company, add in company_profits.items():
-            mask = out["見積元"].astype(str) == str(company)
-            apply_to_mask(mask, float(add or 0))
-
-    return out[OUTPUT_COLUMNS]
+        positive = pd.to_numeric(detail["原価金額"], errors="coerce").clip(lower=0).sum()
+        add = int(round(positive * float(profit_val or 0) / 100))
+    allocated = _allocate_group_markup(detail, base + add)
+    profits = allocated.groupby("見積元", sort=False)["上乗せ額"].sum().to_dict()
+    return apply_company_profit_to_details(detail, df, profits)[1][OUTPUT_COLUMNS]
 
 
 def _unit_price_factor(unit_price: float) -> float:
@@ -1301,88 +1286,110 @@ def _best_adjustment_index(group: pd.DataFrame) -> Optional[int]:
     return sorted(candidates, reverse=True)[0][2]
 
 
-def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int) -> pd.DataFrame:
+def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_similar: bool = True) -> pd.DataFrame:
+    from markup_rules import LUMP_MAX_ADD, LUMP_MAX_RATIO, quantity_steps, exact_remainder
     out = detail_df.copy()
-    if out.empty:
-        return out
-    original_total = int(round(pd.to_numeric(out["原価金額"], errors="coerce").fillna(0).sum()))
+    issues = validate_intermediate(out)
+    if issues:
+        raise ValueError("読み取り明細を確認してください。" + " / ".join(i["内容"] for i in issues))
+    if pool_similar:
+        # The same work on different floors should retain the same unit price.
+        groups = {}
+        for idx, row in out.iterrows():
+            if normalize_text(row["単位"]) in ("式", "一式") or float(row["原価金額"]) <= 0:
+                key = (idx,)
+            else:
+                name = re.sub(r"\d+階", "", normalize_text(row["品名"]))
+                key = (re.sub(r"\s+", "", name), normalize_text(row.get("仕様", "")), row["単位"], float(row["原価単価"]))
+            groups.setdefault(key, []).append(idx)
+        if any(len(indices) > 1 for indices in groups.values()):
+            pooled = out.loc[[indices[0] for indices in groups.values()]].copy()
+            for indices in groups.values():
+                pooled.at[indices[0], "数量"] = out.loc[indices, "数量"].sum()
+                pooled.at[indices[0], "原価金額"] = out.loc[indices, "原価金額"].sum()
+            try:
+                allocated = _allocate_group_markup(pooled, target_total, pool_similar=False)
+                for indices in groups.values():
+                    rate = allocated.at[indices[0], "見積単価"]
+                    for idx in indices:
+                        amount = line_amount(out.at[idx, "数量"], rate)
+                        out.at[idx, "見積単価"] = rate
+                        out.at[idx, "見積金額"] = amount
+                        out.at[idx, "上乗せ額"] = amount - out.at[idx, "原価金額"]
+                if int(round(out["見積金額"].sum())) == target_total:
+                    return out
+            except ValueError:
+                pass  # Fractional quantities may need individual yen rounding.
+    original_total = int(round(pd.to_numeric(out["原価金額"]).sum()))
     increment = int(round(target_total - original_total))
+    if increment < 0:
+        raise ValueError("原価小計と会社別小計が一致しません。値引き・明細の欠落を確認してください。")
     out["上乗せ額"] = 0
-    out["見積単価"] = pd.to_numeric(out["原価単価"], errors="coerce")
-    out["見積金額"] = pd.to_numeric(out["原価金額"], errors="coerce")
-    if increment <= 0:
+    out["見積単価"] = pd.to_numeric(out["原価単価"])
+    out["見積金額"] = pd.to_numeric(out["原価金額"])
+    if not increment:
         return out
-
-    weights: Dict[int, float] = {}
-    caps: Dict[int, Optional[int]] = {}
+    weights, caps, steps, natural_steps = {}, {}, {}, {}
     for idx, row in out.iterrows():
-        amount = _safe_float(row.get("原価金額"), 0.0)
-        unit_price = _safe_float(row.get("原価単価"), 0.0)
-        qty = _safe_float(row.get("数量"), 1.0)
-        if amount <= 0 or qty <= 0 or unit_price <= 0:
-            weights[idx] = 0.0
-            caps[idx] = 0
+        amount, rate, qty = (float(row[col]) for col in ("原価金額", "原価単価", "数量"))
+        if amount <= 0 or rate <= 0 or qty <= 0:
             continue
-        weight = amount * _unit_price_factor(unit_price) * _item_class_factor(row.get("品名", ""))
-        weights[idx] = max(weight, 0.0)
-        cap_unit = _markup_unit_cap(unit_price)
-        caps[idx] = None if cap_unit is None else max(0, int(round(cap_unit * qty - amount)))
-
-    remaining = increment
-    active = {idx for idx, weight in weights.items() if weight > 0}
-    allocations = {idx: 0 for idx in out.index}
-    while remaining > 0 and active:
-        total_weight = sum(weights[idx] for idx in active)
-        if total_weight <= 0:
+        lump = normalize_text(row["単位"]) in ("式", "一式")
+        steps[idx], natural_steps[idx] = quantity_steps(qty, lump)
+        cap_rate = _markup_unit_cap(rate)
+        cap = increment if cap_rate is None else max(0, int(math.floor(cap_rate * qty - amount)))
+        if lump:
+            cap = min(cap, int(amount * LUMP_MAX_RATIO), LUMP_MAX_ADD)
+        caps[idx] = cap // steps[idx] * steps[idx]
+        weights[idx] = amount * _unit_price_factor(rate) * _item_class_factor(row["品名"]) * (2.0 if lump else 3.0)
+    if sum(caps.values()) < increment:
+        raise ValueError(f"指定の上乗せ {increment:,}円は配分上限を超えています。一式は5,000円刻み・原価50％以内・最大5万円です。上乗せ額を減らしてください。")
+    desired = dict.fromkeys(weights, 0.0)
+    active = {i for i in weights if caps[i] > 0}
+    remaining = float(increment)
+    while active and remaining > 1e-7:
+        total_weight = sum(weights[i] for i in active)
+        limited = {i for i in active if remaining * weights[i] / total_weight >= caps[i]}
+        if not limited:
+            for i in active:
+                desired[i] = remaining * weights[i] / total_weight
             break
-        used_this_round = 0
-        next_active = set()
-        for idx in active:
-            raw_add = remaining * (weights[idx] / total_weight)
-            cap = caps.get(idx)
-            available = remaining if cap is None else max(0, cap - allocations[idx])
-            add = min(int(round(raw_add)), available)
-            if add > 0:
-                allocations[idx] += add
-                used_this_round += add
-            if cap is None or allocations[idx] < cap:
-                next_active.add(idx)
-        if used_this_round <= 0:
+        for i in limited:
+            desired[i] = float(caps[i])
+            remaining -= caps[i]
+        active -= limited
+    allocations = {i: int(desired[i] // natural_steps[i]) * natural_steps[i] for i in weights}
+    residual = increment - sum(allocations.values())
+    preferred = sorted(weights, key=lambda i: (desired[i] - allocations[i]) / natural_steps[i])
+    extra = None
+    rounding_room = {}
+    for i in weights:
+        room = natural_steps[i]
+        if float(out.at[i, "数量"]) == 1 and normalize_text(out.at[i, "単位"]) not in ("式", "一式"):
+            room = max(room, int(min(float(out.at[i, "原価金額"]) * 0.2, 5000)))
+        rounding_room[i] = min(caps[i] - allocations[i], room)
+    for quantum in (natural_steps, steps):
+        # Each row absorbs at most one rounding step before trying a smaller
+        # rate quantum. This prevents the residual concentrating on one row.
+        extra = exact_remainder(residual, [(i, quantum[i], rounding_room[i]) for i in preferred])
+        if extra is not None:
             break
-        remaining -= used_this_round
-        active = next_active
-
-    adjustment_idx = _best_adjustment_index(out)
-    if remaining > 0 and adjustment_idx is not None:
-        allocations[adjustment_idx] += remaining
-
-    for idx, row in out.iterrows():
-        qty = _safe_float(row.get("数量"), 1.0)
-        qty = qty if qty != 0 else 1
-        original_amount = _safe_float(row.get("原価金額"), 0.0)
-        estimate_amount = original_amount + allocations.get(idx, 0)
-        estimate_unit = _round_unit_naturally(estimate_amount / qty)
-        estimate_amount = int(round(estimate_unit * qty))
-        cap = caps.get(idx)
-        if cap is not None and estimate_amount - original_amount > cap:
-            estimate_amount = int(round(original_amount + cap))
-            estimate_unit = int(round(estimate_amount / qty))
-        out.at[idx, "見積単価"] = estimate_unit
-        out.at[idx, "見積金額"] = estimate_amount
-        out.at[idx, "上乗せ額"] = int(round(estimate_amount - original_amount))
-
-    rounded_total = int(round(pd.to_numeric(out["見積金額"], errors="coerce").fillna(0).sum()))
-    diff = int(round(target_total - rounded_total))
-    adjustment_idx = _best_adjustment_index(out)
-    if diff != 0 and adjustment_idx is not None:
-        qty = _safe_float(out.at[adjustment_idx, "数量"], 1.0)
-        qty = qty if qty != 0 else 1
-        current_amount = _safe_float(out.at[adjustment_idx, "見積金額"], 0.0)
-        new_amount = int(round(current_amount + diff))
-        new_unit = max(0, int(round(new_amount / qty)))
-        out.at[adjustment_idx, "見積単価"] = new_unit
-        out.at[adjustment_idx, "見積金額"] = int(round(new_unit * qty))
-        out.at[adjustment_idx, "上乗せ額"] = int(round(out.at[adjustment_idx, "見積金額"] - _safe_float(out.at[adjustment_idx, "原価金額"], 0.0)))
+    if extra is None:
+        # A feasible allocation may require moving an earlier rounded allocation.
+        extra = exact_remainder(increment, [(i, steps[i], caps[i]) for i in preferred])
+        allocations = dict.fromkeys(weights, 0)
+    if extra is None:
+        raise ValueError("指定額を単価×数量と一式5,000円刻みで正確に配分できません。上乗せ額を変更してください。端数を一式へ寄せる処理は行いません。")
+    for i in weights:
+        add = allocations[i] + extra.get(i, 0)
+        qty = float(out.at[i, "数量"])
+        rate = round(float(out.at[i, "原価単価"]) + add / qty, 2)
+        amount = line_amount(qty, rate)
+        out.at[i, "見積単価"] = rate
+        out.at[i, "見積金額"] = amount
+        out.at[i, "上乗せ額"] = amount - float(out.at[i, "原価金額"])
+    if int(round(out["見積金額"].sum())) != target_total:
+        raise ValueError("配分後の明細合計と指定額が一致しません。")
     return out
 
 
@@ -1404,7 +1411,10 @@ def apply_company_profit_to_details(detail_df: pd.DataFrame, cost_df: pd.DataFra
         target_total = base_total + add
         mask = detail_out["見積元"].astype(str) == str(company_name)
         if not mask.any():
-            continue
+            raise ValueError(f"{company_name} の明細が見つかりません。")
+        detail_base = int(round(pd.to_numeric(detail_out.loc[mask, "原価金額"]).sum()))
+        if detail_base != base_total:
+            raise ValueError(f"{company_name}: 原価小計 {base_total:,}円と明細合計 {detail_base:,}円が一致しません。明細・値引きを確認してください。")
         allocated = _allocate_group_markup(detail_out.loc[mask], target_total)
         for col in ["上乗せ額", "見積単価", "見積金額"]:
             detail_out.loc[allocated.index, col] = allocated[col]
