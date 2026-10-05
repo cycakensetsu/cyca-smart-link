@@ -479,9 +479,12 @@ if st.session_state.get("_upload_signature") != upload_signature:
     for key in list(st.session_state):
         if key.startswith("_extracted_") or key.startswith("cat_profit_") or key in (
             "_detail_df", "_vendor_summaries", "_summary_data", "_categories_summary",
-            "_horizontal_result", "_horizontal_signature", "output_customer", "output_project",
+            "_horizontal_result", "_horizontal_signature",
         ):
             del st.session_state[key]
+    # 明示的に空文字を設定する。キー削除だけではブラウザーの旧widget値が復活する。
+    st.session_state["output_customer"] = ""
+    st.session_state["output_project"] = ""
     st.session_state["_upload_signature"] = upload_signature
 
 
