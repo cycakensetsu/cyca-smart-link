@@ -4,3 +4,4 @@ openpyxl
 google-genai
 PyMuPDF
 Pillow
+reportlab

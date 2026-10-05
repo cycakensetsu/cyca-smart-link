@@ -5,10 +5,10 @@
 
 方針:
 - Numbers由来テンプレートは使わない。
-- 表紙・一式まとめ・明細を、1枚の「見積書」シートへ縦に連続配置する。
+- 表紙・工事品目集計・明細を、印刷ページごとのシートへ分ける。
 - 各区画はA4横1ページに収まり、印刷順は上から下へ進む。
 - pandas.to_excel によるテンプレート全体の再生成はしない。
-- 出力は表示用の「見積書」と、非表示の「明細データ」。
+- 印刷対象のページだけを出力し、空の明細ページや確認用データは含めない。
 - 明細金額から表紙金額まで数式で連動し、Numbers/Excelで編集後も再計算できる。
 - 「書き出しの概要」「シート1 - 表◯」系の分解シートは作らない・許さない。
 - 元テンプレートには絶対に上書きしない（別名保存＋バイト比較で検証）。
@@ -41,7 +41,7 @@ TEMPLATE_PATH = BASE_DIR / "templates" / "test_cyca_estimate_single_sheet_templa
 OUTPUT_DIR = BASE_DIR / "output" / "template_fill_test_v2"
 
 QUOTE_SHEET = "見積書"
-SUMMARY_SHEET = "一式まとめ"
+SUMMARY_SHEET = "工事品目集計"
 DETAIL_PAGE_SHEET_PREFIX = "明細"
 DETAIL_SHEET = "明細データ"
 
@@ -104,7 +104,7 @@ DETAIL_PAGE_START_ROW = 62
 DETAIL_PAGE_DATA_ROWS = 20
 DETAIL_PAGE_BLOCK_ROWS = 24  # バンド1 + 見出し1 + 明細20 + 注記1 + ページ合計1
 MAX_DETAIL_PAGES = 8
-MIN_DETAIL_PAGES = 4
+MIN_DETAIL_PAGES = 1
 ITEM_MAX_ROWS = DETAIL_PAGE_DATA_ROWS * MAX_DETAIL_PAGES
 WORK_BAND_ROW = DETAIL_PAGE_START_ROW
 ITEM_HEADER_ROW = DETAIL_PAGE_START_ROW + 1
@@ -599,6 +599,8 @@ def _write_quote_sheet_legacy(ws, estimate: Estimate) -> int:
     # テンプレート側に「御中」があるので、宛名末尾の敬称は取り除いて二重表記を防ぐ。
     customer = re.sub(r"[\s　]*(御中|様|殿)[\s　]*$", "", estimate.customer or "")
     _set(ws, CUSTOMER_ROW, COL_NO, customer)
+    honorific = re.search(r"(御中|様|殿)[\s　]*$", estimate.customer or "")
+    _set(ws, CUSTOMER_ROW, COL_QTY, honorific.group(1) if honorific else "御中")
     _set(ws, ISSUE_DATE_ROW, COL_AMOUNT, estimate.issue_date)
     _set(ws, AMOUNT_LABEL_ROW, COL_SPEC, estimate.grand_total, number_format=YEN_FORMAT)
 
@@ -710,6 +712,8 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
     """表紙・工事品目まとめ・明細を固定ページへ流し込む。"""
     customer = re.sub(r"[\s　]*(御中|様|殿)[\s　]*$", "", estimate.customer or "")
     _set(ws, CUSTOMER_ROW, COL_NO, customer)
+    honorific = re.search(r"(御中|様|殿)[\s　]*$", estimate.customer or "")
+    _set(ws, CUSTOMER_ROW, COL_QTY, honorific.group(1) if honorific else "御中")
     _set(ws, ISSUE_DATE_ROW, COL_AMOUNT, estimate.issue_date)
     _set(ws, AMOUNT_LABEL_ROW, COL_SPEC, estimate.grand_total, number_format=YEN_FORMAT)
     _set(ws, INFO_START_ROW, COL_SPEC, estimate.project_name)
@@ -936,7 +940,7 @@ def _formula_number(value) -> str:
 
 
 def _apply_dynamic_formulas(wb: Workbook, estimate: Estimate) -> None:
-    """明細の編集が一式まとめ・表紙まで連動する数式を設定する。"""
+    """明細の編集が工事品目集計・表紙まで連動する数式を設定する。"""
     ws = wb[QUOTE_SHEET]
     current_category_items: List[int] = []
     category_subtotals: List[int] = []
@@ -1031,6 +1035,7 @@ class FillResult:
     file_name: str
     sheet_names: List[str]
     summary: Dict
+    pdf_data: Optional[bytes] = None
 
 
 def _validate_estimate(estimate: Estimate) -> Tuple[List[str], List[str]]:
@@ -1121,6 +1126,7 @@ def fill_estimate_v2(
     *,
     template_path: Path = TEMPLATE_PATH,
     save_to_disk: bool = True,
+    print_ready: bool = True,
 ) -> FillResult:
     ensure_template(template_path)
 
@@ -1172,6 +1178,12 @@ def fill_estimate_v2(
     if errors:
         return FillResult(False, errors, warnings, None, file_name, list(wb.sheetnames), summary)
 
+    pdf_data = None
+    if print_ready:
+        from print_layout import split_print_pages, render_estimate_pdf
+        split_print_pages(wb, estimate)
+        pdf_data = render_estimate_pdf(estimate)
+
     # 5) 別名保存 ＆ バイト取得
     output = BytesIO()
     wb.save(output)
@@ -1182,7 +1194,7 @@ def fill_estimate_v2(
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         (OUTPUT_DIR / file_name).write_bytes(data)
 
-    return FillResult(True, [], warnings, data, file_name, sheet_names, summary)
+    return FillResult(True, [], warnings, data, file_name, sheet_names, summary, pdf_data)
 
 
 # ---------------------------------------------------------------------------

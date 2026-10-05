@@ -61,11 +61,11 @@ class MarkupRulesTest(unittest.TestCase):
             result = build_horizontal_estimate(detail, cost, quoted, {"工事名称": "今回の工事"})
             self.assertTrue(result.ok, result.errors)
             wb = load_workbook(BytesIO(result.data))
-            quote, raw = wb["見積書"], wb["明細データ"]
-            row = 65
+            quote = wb["明細1"]
+            row = 4
             self.assertEqual(quote[f"G{row}"].value, f'=IF(COUNT(D{row},F{row})=2,ROUND(D{row}*F{row},0),"")')
-            self.assertIn("'見積書'!F65", raw["G2"].value)
-            self.assertIn("'見積書'!G65", raw["H2"].value)
+            self.assertNotIn("明細データ", wb.sheetnames)
+            self.assertEqual(wb["見積書"]["C13"].value, "='工事品目集計'!G26")
             self.assertNotIn("AND(", quote[f"G{row}"].value)
             rate = quote[f"F{row}"].value
             self.assertEqual(quote[f"F{row}"].number_format, "#,##0" if float(rate).is_integer() else "#,##0.00")

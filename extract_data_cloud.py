@@ -452,7 +452,8 @@ with col2:
         )
     )
     if format_choice == HORIZONTAL_FORMAT:
-        st.caption("新しい見積書をアップロードして解析すると、表紙・一式まとめ・明細を下方向に並べたA4横型のNumbers対応ファイルを作成します。テストデータは使用しません。")
+        st.caption("新しい見積書をアップロードして解析すると、表紙・一式まとめ・明細を印刷ページごとに分けたA4横型のNumbers対応ファイルを作成します。テストデータは使用しません。")
+
     elif format_choice == "彩架建設 企業用見積（2シート：一式表＋明細）":
         st.caption("Numbers の「工事内容」と「工事内容明細」にそのままコピペできる形式です。列順: No. / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考")
     elif format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）":
@@ -478,19 +479,31 @@ if st.session_state.get("_upload_signature") != upload_signature:
     for key in list(st.session_state):
         if key.startswith("_extracted_") or key.startswith("cat_profit_") or key in (
             "_detail_df", "_vendor_summaries", "_summary_data", "_categories_summary",
-            "_horizontal_result", "_horizontal_signature",
+            "_horizontal_result", "_horizontal_signature", "output_customer", "output_project",
         ):
             del st.session_state[key]
     st.session_state["_upload_signature"] = upload_signature
 
 
+if format_choice == HORIZONTAL_FORMAT:
+    st.text_input("宛名（出力用・敬称まで入力）", key="output_customer", placeholder="例：塚本 様")
+    st.text_input("工事名称（出力用）", key="output_project", placeholder="空欄なら元見積書の工事名を使用")
+    st.caption("空欄は読み取り結果を使います。変更後は上乗せを適用して作り直してください。印刷にはA4横PDFをご利用ください。")
+
+
 def horizontal_signature(company_profits=()):
-    return (upload_signature, profit_mode, float(profit_val), tuple(company_profits))
+    return (upload_signature, profit_mode, float(profit_val), tuple(company_profits),
+            st.session_state.get("output_customer", ""), st.session_state.get("output_project", ""))
 
 
 def save_horizontal_result(detail, base_cost, quoted_cost, metadata, signature):
     try:
         with st.spinner("新しい見積書を横型テンプレートへ流し込み中..."):
+            metadata = dict(metadata or {})
+            if st.session_state.get("output_customer", "").strip():
+                metadata["宛名"] = st.session_state["output_customer"].strip()
+            if st.session_state.get("output_project", "").strip():
+                metadata["工事名称"] = st.session_state["output_project"].strip()
             result = build_horizontal_estimate(detail, base_cost, quoted_cost, metadata)
         st.session_state["_horizontal_result"] = result
         st.session_state["_horizontal_signature"] = signature
@@ -1210,3 +1223,11 @@ if uploaded_files and format_choice == HORIZONTAL_FORMAT:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_new_horizontal_estimate",
                 )
+                if result.pdf_data:
+                    st.download_button(
+                        "📄 印刷用PDFをダウンロード（A4横・ページ固定）",
+                        data=result.pdf_data,
+                        file_name=result.file_name.removesuffix(".xlsx") + ".pdf",
+                        mime="application/pdf",
+                        key="download_new_horizontal_pdf",
+                    )

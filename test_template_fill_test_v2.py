@@ -69,7 +69,7 @@ class TemplateFillV2LayoutTest(unittest.TestCase):
             result = fill_estimate_v2(
                 default_test_estimate(),
                 template_path=template_path,
-                save_to_disk=False,
+                save_to_disk=False, print_ready=False,
             )
 
         self.assertTrue(result.ok, result.errors)
@@ -118,7 +118,7 @@ class TemplateFillV2LayoutTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             template_path = Path(temp_dir) / "template.xlsx"
             build_single_sheet_template(template_path)
-            result = fill_estimate_v2(estimate, template_path=template_path, save_to_disk=False)
+            result = fill_estimate_v2(estimate, template_path=template_path, save_to_disk=False, print_ready=False)
 
         self.assertTrue(result.ok, result.errors)
         workbook = load_workbook(BytesIO(result.data))
@@ -162,7 +162,7 @@ class TemplateFillV2LayoutTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             template_path = Path(temp_dir) / "template.xlsx"
             build_single_sheet_template(template_path)
-            result = fill_estimate_v2(estimate, template_path=template_path, save_to_disk=False)
+            result = fill_estimate_v2(estimate, template_path=template_path, save_to_disk=False, print_ready=False)
 
         self.assertTrue(result.ok, result.errors)
         workbook = load_workbook(BytesIO(result.data))
