@@ -100,16 +100,8 @@ def reconcile_native_pdf(path, records, summaries):
     source = records[0].get("__source_name", "")
     for idx, row in enumerate(native, 1):
         row.update({"No": idx, "見積元": vendor, "__source_name": source})
-        # Keep an OCR specification only when it occurs verbatim in the native cell.
-        matches = [r for r in records if number(r.get("金額", r.get("原価金額"))) == row["金額"]]
-        if len(matches) == 1:
-            spec = str(matches[0].get("仕様") or "").strip()
-            # Do not let an OCR "specification" such as "1" remove the floor
-            # number from "1階". Only an entire, non-numeric cell phrase qualifies.
-            if (spec and not re.fullmatch(r"[\d\s.,・]+", spec)
-                    and re.search(r"(?:^|\s)" + re.escape(spec) + r"(?:$|\s)", row["品名"])):
-                row["品名"] = row["品名"].replace(spec, "").strip()
-                row["仕様"] = spec
+        # Native table cells are authoritative. Re-splitting them using OCR
+        # specifications can erase floor numbers or vary equal-work grouping.
         if row["品名"].startswith(("同上", "〃")) and idx > 1:
             row["仕様"] = f"対象：{native[idx - 2]['品名']}"
     summaries = [dict(s, 見積元=vendor, **({"工事名称": project} if project else {})) for s in summaries]

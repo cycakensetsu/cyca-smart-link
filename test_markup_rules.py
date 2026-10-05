@@ -115,6 +115,19 @@ class MarkupRulesTest(unittest.TestCase):
         self.assertEqual(corrected[0]["品名"], "2階天壁 クロス")
         self.assertEqual(corrected[0]["仕様"], "")
 
+    def test_ocr_spec_cannot_repartition_native_item_or_break_shared_rates(self):
+        records = [dict(品名="クロス", 仕様=f"{floor}階天壁", 見積元="テスト", 金額=qty*2200)
+                   for floor, qty in ((2, 60), (3, 30))]
+        native = [dict(品名=f"{floor}階天壁 クロス", 仕様="", 数量=qty, 単位="m", 単価=2200, 金額=qty*2200)
+                  for floor, qty in ((2, 60), (3, 30))]
+        with patch("source_table.read_native_tables", return_value=(native, [198000], "")):
+            corrected, _ = reconcile_native_pdf("test.pdf", records, [])
+        detail, _ = build_intermediate_dataframe(corrected)
+        cost, _ = build_cost_basis_dataframe({}, detail)
+        allocated, _ = apply_company_profit_to_details(detail, cost, {"テスト": 27000})
+        self.assertEqual(allocated['品名'].tolist(), ['2階天壁 クロス', '3階天壁 クロス'])
+        self.assertEqual(allocated['見積単価'].tolist(), [2500, 2500])
+
     def test_visible_detail_preview_matches_allocated_file(self):
         detail, cost = frame([("工事", 19, "㎡", 4250)])
         detail['仕様'] = '5.5mm'
