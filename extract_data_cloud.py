@@ -481,6 +481,7 @@ with col2:
 st.markdown("---")
 st.markdown('<div class="sub-header">📄 ファイルアップロード</div>', unsafe_allow_html=True)
 st.caption("目安：1ファイル20MBまで・複数は5ファイル程度まで。それ以上はタイムアウトやエラーになる場合があります。")
+st.caption("見積を読み込んだ後は、マイクで今回の要望を伝えて相談できます。")
 
 if '_upload_epoch' not in st.session_state:
     st.session_state['_upload_epoch'] = uuid.uuid4().hex
@@ -1273,7 +1274,7 @@ if uploaded_files and format_choice == HORIZONTAL_FORMAT:
 
 
 if profit_mode == REVIEW_MODE:
-    render_review(st)
+    render_review(st, api_key=MY_API_KEY)
 
 if profit_mode != REVIEW_MODE:
     render_draft_exports(st, legacy_export_signature())

@@ -1324,9 +1324,9 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_simi
     increment = int(round(target_total - original_total))
     if increment < 0:
         raise ValueError("原価小計と会社別小計が一致しません。値引き・明細の欠落を確認してください。")
-    out["上乗せ額"] = 0
-    out["見積単価"] = pd.to_numeric(out["原価単価"])
-    out["見積金額"] = pd.to_numeric(out["原価金額"])
+    out["上乗せ額"] = 0.0
+    out["見積単価"] = pd.to_numeric(out["原価単価"]).astype(float)
+    out["見積金額"] = pd.to_numeric(out["原価金額"]).astype(float)
     if not increment:
         return out
     weights, caps, steps, natural_steps = {}, {}, {}, {}
