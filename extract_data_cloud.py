@@ -366,7 +366,7 @@ if not st.session_state.logged_in:
     else:
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
     st.markdown("---")
-    st.caption("ブラッシュアップ版 2026.10.20 / 承認付き統合・原本保全")
+    st.caption("ブラッシュアップ版 2026.10.20 / 音声相談・原本保全")
     st.subheader("🔐 ログイン")
     if not load_users():
         st.info("管理者によるログイン設定が必要です。設定完了後にご利用いただけます。")
@@ -387,7 +387,7 @@ if not st.session_state.logged_in:
 if "username" not in st.session_state:
     st.session_state.username = ""
 with st.sidebar:
-    st.caption("ブラッシュアップ版 2026.10.20 / 承認付き統合・原本保全")
+    st.caption("ブラッシュアップ版 2026.10.20 / 音声相談・原本保全")
     from markup_rules import RULE_DESCRIPTION, RULE_VERSION
     with st.expander(f"配分ルール（{RULE_VERSION}）"):
         st.write(RULE_DESCRIPTION)
@@ -427,56 +427,57 @@ if os.path.isfile(LOGO_PATH):
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
 else:
     st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
-st.info("💡 職人さんからの見積もり（PDF・写真）をポンと入れるだけ。AIが仕分けの候補を作成します。原本・工種・税・利益を確認して承認できます。")
+st.info("① 他社見積を入れる → ② 読み取りを確認 → ③ 声で上乗せを相談 → ④ 彩架建設の見積書を出力")
 st.caption("本サービスはベータ版です。計算結果は目安であり、正式な見積には必ずご自身で内容をご確認ください。重要な意思決定の唯一の根拠としてご利用にならないでください。")
 
 # ==========================================
 # 画面レイアウト（2カラムで見やすく）
 # ==========================================
-col1, col2 = st.columns(2)
+with st.expander("従来の利益設定・出力形式を使う", expanded=False):
+    col1, col2 = st.columns(2)
 
-with col1:
-    st.markdown('<div class="sub-header">💰 利益シミュレーション</div>', unsafe_allow_html=True)
-    profit_mode = st.radio(
-        "利益の上乗せ方法を選択してください",
-        (REVIEW_MODE, "上乗せしない（原価そのまま）", "固定金額（円）を全体に割り振る", "パーセンテージ（%）で全体に乗せる", "見積元（会社）ごとに金額を指定する")
-    )
+    with col1:
+        st.markdown('<div class="sub-header">💰 利益シミュレーション</div>', unsafe_allow_html=True)
+        profit_mode = st.radio(
+            "利益の上乗せ方法を選択してください",
+            (REVIEW_MODE, "上乗せしない（原価そのまま）", "固定金額（円）を全体に割り振る", "パーセンテージ（%）で全体に乗せる", "見積元（会社）ごとに金額を指定する")
+        )
 
-    profit_val = 0.0
-    if profit_mode == "パーセンテージ（%）で全体に乗せる":
-        profit_val = st.number_input("上乗せする割合（%）を入力", min_value=0.0, value=10.0, step=1.0)
-        st.markdown(f"<div class='highlight-red'>🚀 {profit_val} ％ 上乗せ</div>", unsafe_allow_html=True)
-    elif profit_mode == "固定金額（円）を全体に割り振る":
-        profit_val = st.number_input("上乗せする金額を入力（数字のみ）", min_value=0, value=3000000, step=100000)
-        st.markdown(f"<div class='highlight-red'>💰 上乗せ額: {int(profit_val):,} 円</div>", unsafe_allow_html=True)
-    elif profit_mode == "見積元（会社）ごとに金額を指定する":
-        st.caption("PDFを解析した後、見積元（会社）ごとの原価が表示されます。各社に上乗せ額を入力してください。")
+        profit_val = 0.0
+        if profit_mode == "パーセンテージ（%）で全体に乗せる":
+            profit_val = st.number_input("上乗せする割合（%）を入力", min_value=0.0, value=10.0, step=1.0)
+            st.markdown(f"<div class='highlight-red'>🚀 {profit_val} ％ 上乗せ</div>", unsafe_allow_html=True)
+        elif profit_mode == "固定金額（円）を全体に割り振る":
+            profit_val = st.number_input("上乗せする金額を入力（数字のみ）", min_value=0, value=3000000, step=100000)
+            st.markdown(f"<div class='highlight-red'>💰 上乗せ額: {int(profit_val):,} 円</div>", unsafe_allow_html=True)
+        elif profit_mode == "見積元（会社）ごとに金額を指定する":
+            st.caption("PDFを解析した後、見積元（会社）ごとの原価が表示されます。各社に上乗せ額を入力してください。")
 
-with col2:
-    st.markdown('<div class="sub-header">📋 出力フォーマット設定</div>', unsafe_allow_html=True)
-    current_username = st.session_state.get("username", "")
+    with col2:
+        st.markdown('<div class="sub-header">📋 出力フォーマット設定</div>', unsafe_allow_html=True)
+        current_username = st.session_state.get("username", "")
 
-    format_choice = st.radio(
-        "出力フォーマットを選んでください",
-        (
-            HORIZONTAL_FORMAT,
-            "彩架建設 企業用見積（2シート：一式表＋明細）",
-            "彩架建設 簡易工事見積（1シート：明細のみ）",
-            "汎用フォーマット（Excel）",
-        ),
-        disabled=profit_mode == REVIEW_MODE,
-    )
-    if profit_mode == REVIEW_MODE:
-        st.caption("承認付き統合では、企業用ひな形の表紙・工事内容・詳細明細に合わせたNumbers用ファイルとPDFを作成します。既存形式の検算は、上乗せ方法を切り替えて利用できます。")
-    if format_choice == HORIZONTAL_FORMAT:
-        st.caption("新しい見積書をアップロードして解析すると、表紙・一式まとめ・明細を印刷ページごとに分けたA4横型のNumbers対応ファイルを作成します。テストデータは使用しません。")
+        format_choice = st.radio(
+            "出力フォーマットを選んでください",
+            (
+                HORIZONTAL_FORMAT,
+                "彩架建設 企業用見積（2シート：一式表＋明細）",
+                "彩架建設 簡易工事見積（1シート：明細のみ）",
+                "汎用フォーマット（Excel）",
+            ),
+            disabled=profit_mode == REVIEW_MODE,
+        )
+        if profit_mode == REVIEW_MODE:
+            st.caption("承認付き統合では、企業用ひな形の表紙・工事内容・詳細明細に合わせたNumbers用ファイルとPDFを作成します。既存形式の検算は、上乗せ方法を切り替えて利用できます。")
+        if format_choice == HORIZONTAL_FORMAT:
+            st.caption("新しい見積書をアップロードして解析すると、表紙・一式まとめ・明細を印刷ページごとに分けたA4横型のNumbers対応ファイルを作成します。テストデータは使用しません。")
 
-    elif format_choice == "彩架建設 企業用見積（2シート：一式表＋明細）":
-        st.caption("Numbers の「工事内容」と「工事内容明細」にそのままコピペできる形式です。列順: No. / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考")
-    elif format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）":
-        st.caption("1枚ペラの簡易見積用。Numbers にそのままコピペできます。列順: 商品名・工事名 / 数量 / 単 / 単価（円）/ 金額（円）")
-    else:
-        st.caption("工事品目・仕様・数量・単位・単価・金額・備考の汎用 Excel を出力します。")
+        elif format_choice == "彩架建設 企業用見積（2シート：一式表＋明細）":
+            st.caption("Numbers の「工事内容」と「工事内容明細」にそのままコピペできる形式です。列順: No. / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考")
+        elif format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）":
+            st.caption("1枚ペラの簡易見積用。Numbers にそのままコピペできます。列順: 商品名・工事名 / 数量 / 単 / 単価（円）/ 金額（円）")
+        else:
+            st.caption("工事品目・仕様・数量・単位・単価・金額・備考の汎用 Excel を出力します。")
 
 st.markdown("---")
 st.markdown('<div class="sub-header">📄 ファイルアップロード</div>', unsafe_allow_html=True)
@@ -509,7 +510,7 @@ if st.session_state.get("_upload_signature") != upload_signature:
     st.session_state["_upload_signature"] = upload_signature
 
 
-if format_choice == HORIZONTAL_FORMAT:
+if format_choice == HORIZONTAL_FORMAT and profit_mode != REVIEW_MODE:
     st.text_input("宛名（出力用・敬称まで入力）", key="output_customer", placeholder="例：塚本 様")
     st.text_input("工事名称（出力用）", key="output_project", placeholder="空欄なら元見積書の工事名を使用")
     st.caption("空欄は読み取り結果を使います。変更後は上乗せを適用して作り直してください。印刷にはA4横PDFをご利用ください。")
