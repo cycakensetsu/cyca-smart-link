@@ -468,7 +468,7 @@ with st.expander("従来の利益設定・出力形式を使う", expanded=False
             disabled=profit_mode == REVIEW_MODE,
         )
         if profit_mode == REVIEW_MODE:
-            st.caption("承認付き統合では、企業用ひな形の表紙・工事内容・詳細明細に合わせたNumbers用ファイルとPDFを作成します。既存形式の検算は、上乗せ方法を切り替えて利用できます。")
+            st.caption("承認付き統合では、アプリ既存の横型流し込みテンプレートを使います。表紙・工事品目集計・明細を分け、明細は20行ごとに改ページします。")
         if format_choice == HORIZONTAL_FORMAT:
             st.caption("新しい見積書をアップロードして解析すると、表紙・一式まとめ・明細を印刷ページごとに分けたA4横型のNumbers対応ファイルを作成します。テストデータは使用しません。")
 
@@ -630,6 +630,7 @@ if uploaded_files:
     </div>
     """, unsafe_allow_html=True)
     analyze_label = (
+        "✨ 他社見積を読み取り、確認用に整理する ✨" if profit_mode == REVIEW_MODE else
         "✨ 新しい見積書を解析してNumbers用に流し込む ✨"
         if format_choice == HORIZONTAL_FORMAT else "✨ AIでデータを解析 ＆ 利益計算を実行する ✨"
     )

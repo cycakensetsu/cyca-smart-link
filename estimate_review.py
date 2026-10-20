@@ -236,6 +236,7 @@ def allocate(rows, targets):
 def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, metadata=None, resolutions=None):
     """Return a complete reviewable snapshot. Corrections never change raw data."""
     metadata = dict(metadata or {})
+    metadata['出力デザイン'] = '既存横型流し込み（20行・版2026-10-20）'
     resolutions = dict(resolutions or {})
     issues = []
     def issue(code, rows, message, level="確認"):
@@ -397,5 +398,5 @@ def build_approved_estimate(draft, approval):
     if not str(m.get("宛名", "")).strip() or not str(m.get("工事名称", "")).strip():
         raise ValueError("宛名と工事名称を入力してください。")
     estimate = Estimate("", m["宛名"], m["工事名称"], m.get("見積日", ""), m.get("有効期限", "30日"),
-                        categories, p["値引き"], m.get("顧客税率", .10), reference_layout=True)
+                        categories, p["値引き"], m.get("顧客税率", .10), reference_layout=False)
     return fill_estimate_v2(estimate, save_to_disk=False)

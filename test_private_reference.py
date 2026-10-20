@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 
 from cyca_reference import read_reference_quote, reference_estimate
 from reference_layout import build_reference_outputs, SUMMARY_SHEET
+from template_fill_test_v2 import fill_estimate_v2
 
 
 @unittest.skipUnless(os.environ.get('CYCA_REFERENCE_CASES'), 'Private source PDFs are intentionally not stored in Git.')
@@ -39,6 +40,19 @@ class PrivateReferenceRegressionTest(unittest.TestCase):
             for page in doc:
                 self.assertAlmostEqual(page.rect.width,841.89,places=1)
                 self.assertAlmostEqual(page.rect.height,595.28,places=1)
+        # The approved voice flow must also use the original in-app design.
+        estimate.reference_layout=False
+        original_design=fill_estimate_v2(estimate,save_to_disk=False)
+        self.assertTrue(original_design.ok,original_design.errors)
+        original_wb=load_workbook(BytesIO(original_design.data))
+        self.assertEqual(original_wb['見積書']['C13'].value,"='工事品目集計'!G26")
+        original_rows=[]
+        for sheet in list(original_wb)[2:]:
+            for row in range(3,23):
+                if isinstance(sheet.cell(row,1).value,int):
+                    original_rows.append([sheet.cell(row,col).value if sheet.cell(row,col).value is not None else '' for col in (1,2,3,4,5,6,8)])
+        self.assertEqual(original_rows,expected)
+        self.assertEqual(original_design.summary['税込合計'],estimate.grand_total)
 
     def test_private_case_1(self):
         self.check_reference('case_1')
