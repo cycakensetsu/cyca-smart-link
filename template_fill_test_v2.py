@@ -136,12 +136,15 @@ class LineItem:
     unit_price: float = 0
     amount: int = 0
     remark: str = ""
+    section: str = ""
+    source_page: int = 0
 
 
 @dataclass
 class Category:
     name: str
     items: List[LineItem] = field(default_factory=list)
+    summary_only: bool = False
 
     @property
     def subtotal(self) -> int:
@@ -158,6 +161,7 @@ class Estimate:
     categories: List[Category] = field(default_factory=list)
     discount: int = 0      # 値引き（マイナス値で保持）
     tax_rate: float = 0.10
+    reference_layout: bool = False
 
     @property
     def subtotal(self) -> int:
@@ -171,7 +175,8 @@ class Estimate:
     @property
     def tax(self) -> int:
         # 消費税は税抜合計に対して計算（切り捨て）
-        return int(self.net_total * self.tax_rate)
+        from decimal import Decimal
+        return int(Decimal(self.net_total) * Decimal(str(self.tax_rate)))
 
     @property
     def grand_total(self) -> int:
@@ -305,6 +310,8 @@ def _set(ws, row: int, col: int, value, *, number_format: Optional[str] = None):
     if isinstance(cell, MergedCell):
         return
     cell.value = value
+    if isinstance(value, str):
+        cell.data_type = "s"  # Uploaded text must never become an Excel formula.
     if number_format:
         cell.number_format = number_format
 
@@ -1064,6 +1071,10 @@ def _validate_estimate(estimate: Estimate) -> Tuple[List[str], List[str]]:
             errors.append(f"No.{idx}「{item.name}」の数量×単価と金額が一致しません。")
     used = 0
     for cat in estimate.categories:
+        if cat.summary_only and len(cat.items) != 1:
+            errors.append("集計のみの費目は原本の1明細ずつ指定してください。")
+        if cat.summary_only:
+            continue
         used += 1 + len(cat.items) + 1  # 見出し + 明細 + 小計
     if used > ITEM_MAX_ROWS:
         errors.append("明細行がテンプレートの上限（1シート）を超えています。")
@@ -1150,6 +1161,14 @@ def fill_estimate_v2(
 
     if errors:
         return FillResult(False, errors, warnings, None, file_name, [], summary)
+
+    if estimate.reference_layout:
+        from reference_layout import build_reference_outputs
+        try:
+            data, pdf_data, names = build_reference_outputs(estimate)
+        except ValueError as exc:
+            return FillResult(False, [str(exc)], warnings, None, file_name, [], summary)
+        return FillResult(True, [], warnings, data, file_name, names, summary, pdf_data)
 
     # 2) テンプレートを読み込み、値だけ書き込む（元テンプレートには絶対に触らない）
     template_before = template_path.read_bytes()

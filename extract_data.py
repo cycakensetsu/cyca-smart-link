@@ -45,6 +45,9 @@ from estimate_pipeline import (
 from template_fill_test import TEMPLATE_FILL_TEST_NAME, build_template_fill_test_workbook
 import template_fill_test_v2 as tfv2
 from horizontal_estimate_flow import build_horizontal_estimate
+from estimate_review import REVIEW_MODE
+from review_ui import preserve_uploads, capture_extraction, render_review, render_archive
+from legacy_exports import queue_draft_export, render_draft_exports
 
 HORIZONTAL_FORMAT = "彩架建設 横型見積書（Numbers対応・A4横）"
 
@@ -162,23 +165,17 @@ def _cleanup_temp_paths(temp_paths):
                 pass
 
 def load_users():
-    """複数ユーザーを config/users.json から読み込み。無ければ環境変数で1ユーザー。"""
-    if os.path.isfile(USERS_JSON):
-        try:
-            with open(USERS_JSON, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    uname = os.environ.get("STREAMLIT_APP_USER", "cycakensetsu")
-    pwd = os.environ.get("STREAMLIT_APP_PASSWORD", "cycapass")
-    return [{"username": uname, "password": pwd}]
+    from app_auth import load_users as configured_users
+    try:
+        settings = st.secrets.to_dict()
+    except (FileNotFoundError, KeyError):
+        settings = {}
+    return configured_users(USERS_JSON, settings)
+
 
 def check_login(username: str, password: str) -> bool:
-    users = load_users()
-    for u in users:
-        if u.get("username") == username and u.get("password") == password:
-            return True
-    return False
+    from app_auth import check_login as authenticate
+    return authenticate(username, password, load_users())
 
 # ==========================================
 # 🎨 CYCA ブランドデザイン（ロゴに合わせたモダン・高揚感）
@@ -350,7 +347,12 @@ st.markdown("""
 # ==========================================
 # 🔐 ログイン画面
 # ==========================================
-if "logged_in" not in st.session_state:
+from app_auth import configuration_signature, session_valid
+import time as _auth_time
+_login_users = load_users()
+if not session_valid(st.session_state, _login_users):
+    if st.session_state.get("logged_in"):
+        st.session_state.clear()
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
@@ -363,12 +365,17 @@ if not st.session_state.logged_in:
     else:
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
     st.markdown("---")
+    st.caption("ブラッシュアップ版 2026.10.20 / 承認付き統合・原本保全")
     st.subheader("🔐 ログイン")
+    if not load_users():
+        st.info("管理者によるログイン設定が必要です。設定完了後にご利用いただけます。")
     login_user = st.text_input("ユーザー名", placeholder="ユーザー名を入力")
     login_pass = st.text_input("パスワード", type="password", placeholder="パスワードを入力")
     if st.button("ログイン"):
         if check_login(login_user, login_pass):
             st.session_state.logged_in = True
+            st.session_state['_auth_signature'] = configuration_signature(_login_users)
+            st.session_state['_auth_started'] = _auth_time.time()
             st.session_state.username = login_user
             st.rerun()
         else:
@@ -379,6 +386,7 @@ if not st.session_state.logged_in:
 if "username" not in st.session_state:
     st.session_state.username = ""
 with st.sidebar:
+    st.caption("ブラッシュアップ版 2026.10.20 / 承認付き統合・原本保全")
     from markup_rules import RULE_DESCRIPTION, RULE_VERSION
     with st.expander(f"配分ルール（{RULE_VERSION}）"):
         st.write(RULE_DESCRIPTION)
@@ -388,7 +396,12 @@ with st.sidebar:
     if st.button("🚪 ログアウト"):
         st.session_state.logged_in = False
         st.session_state.username = ""
+        for business_key in list(st.session_state):
+            if business_key not in ("logged_in", "username"):
+                del st.session_state[business_key]
         st.rerun()
+
+render_archive(st)
 
 # ==========================================
 # APIキー（環境変数 GOOGLE_API_KEY または .streamlit/secrets.toml）
@@ -413,7 +426,7 @@ if os.path.isfile(LOGO_PATH):
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
 else:
     st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
-st.info("💡 職人さんからの見積もり（PDF・写真）をポンと入れるだけ。AIが自動で仕分けし、完璧な利益計算を行います！")
+st.info("💡 職人さんからの見積もり（PDF・写真）をポンと入れるだけ。AIが仕分けの候補を作成します。原本・工種・税・利益を確認して承認できます。")
 st.caption("本サービスはベータ版です。計算結果は目安であり、正式な見積には必ずご自身で内容をご確認ください。重要な意思決定の唯一の根拠としてご利用にならないでください。")
 
 # ==========================================
@@ -425,7 +438,7 @@ with col1:
     st.markdown('<div class="sub-header">💰 利益シミュレーション</div>', unsafe_allow_html=True)
     profit_mode = st.radio(
         "利益の上乗せ方法を選択してください",
-        ("上乗せしない（原価そのまま）", "固定金額（円）を全体に割り振る", "パーセンテージ（%）で全体に乗せる", "見積元（会社）ごとに金額を指定する")
+        (REVIEW_MODE, "上乗せしない（原価そのまま）", "固定金額（円）を全体に割り振る", "パーセンテージ（%）で全体に乗せる", "見積元（会社）ごとに金額を指定する")
     )
 
     profit_val = 0.0
@@ -449,8 +462,11 @@ with col2:
             "彩架建設 企業用見積（2シート：一式表＋明細）",
             "彩架建設 簡易工事見積（1シート：明細のみ）",
             "汎用フォーマット（Excel）",
-        )
+        ),
+        disabled=profit_mode == REVIEW_MODE,
     )
+    if profit_mode == REVIEW_MODE:
+        st.caption("承認付き統合では、企業用ひな形の表紙・工事内容・詳細明細に合わせたNumbers用ファイルとPDFを作成します。既存形式の検算は、上乗せ方法を切り替えて利用できます。")
     if format_choice == HORIZONTAL_FORMAT:
         st.caption("新しい見積書をアップロードして解析すると、表紙・一式まとめ・明細を印刷ページごとに分けたA4横型のNumbers対応ファイルを作成します。テストデータは使用しません。")
 
@@ -477,7 +493,7 @@ upload_signature = tuple(
 )
 if st.session_state.get("_upload_signature") != upload_signature:
     for key in list(st.session_state):
-        if key.startswith("_extracted_") or key.startswith("cat_profit_") or key in (
+        if key.startswith(("_extracted_", "cat_profit_", "_review_", "review_", "_legacy_")) or key in (
             "_detail_df", "_vendor_summaries", "_summary_data", "_categories_summary",
             "_horizontal_result", "_horizontal_signature",
         ):
@@ -513,6 +529,15 @@ def save_horizontal_result(detail, base_cost, quoted_cost, metadata, signature):
     except Exception as exc:
         st.session_state.pop("_horizontal_result", None)
         st.error(f"横型見積書の生成に失敗しました: {exc}")
+
+def legacy_export_signature():
+    profits = tuple(sorted((str(k), float(v)) for k, v in st.session_state.items() if str(k).startswith("cat_profit_")))
+    return (horizontal_signature(profits), format_choice)
+
+
+def draft_download_button(*args, **kwargs):
+    return queue_draft_export(st, legacy_export_signature(), *args, **kwargs)
+
 
 # ==========================================
 # 横型：Numbers / Excel互換テンプレート流し込み
@@ -577,7 +602,7 @@ def render_template_fill_test_v2():
                     st.write(f"- {msg}")
                 return
             st.success(f"検証OK！ シート構成: {result.sheet_names}")
-            st.download_button(
+            draft_download_button(
                 label="✅ 横型見積書xlsxをダウンロード",
                 data=result.data,
                 file_name=result.file_name,
@@ -607,15 +632,18 @@ if uploaded_files:
     if st.session_state.pop("_force_analyze", False):
         analyze_clicked = True
     if analyze_clicked:
-        st.session_state.pop("_horizontal_result", None)
+        for completed_key in ("_horizontal_result", "_legacy_exports", "_review_result", "_review_approval", "_review_original_rows"):
+            st.session_state.pop(completed_key, None)
         if not MY_API_KEY:
             st.error("APIキーが設定されていません。環境変数 GOOGLE_API_KEY または .streamlit/secrets.toml に GOOGLE_API_KEY を設定してください。")
         else:
                 try:
+                    preserve_uploads(st, uploaded_files)
                     configure_gemini_logging()
                     client = genai.Client(api_key=MY_API_KEY)
                     all_extracted_data = []
                     summary_sources = []
+                    analysis_errors = []
                     n_files = len(uploaded_files)
 
                     progress_bar = st.progress(0, text="🚀 解析を開始します...")
@@ -810,6 +838,7 @@ if uploaded_files:
                             summary_sources.extend(page_summaries)
                             all_extracted_data.extend(page_records)
                         except json.JSONDecodeError:
+                            analysis_errors.append({"source": page.source_name, "page": page.page_number})
                             st.warning(f"{page.source_name} のAI応答をJSONとして読み取れませんでした。このファイルをスキップして続行します。")
 
                     if successful_models:
@@ -830,6 +859,9 @@ if uploaded_files:
                         summary_data = normalize_summary_data(summary_sources)
                         detail_df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
                         cost_df, vendor_summaries = build_cost_basis_dataframe(summary_data, detail_df)
+                        capture_extraction(st, detail_df, summary_data, all_extracted_data, analysis_errors)
+                        if profit_mode == REVIEW_MODE:
+                            raise _CatInputNeeded()
                         df = cost_df
                         issues = validate_intermediate(cost_df, {}) + validate_intermediate(detail_df, {})
                         has_blocking_issue = any(i.get("レベル") == "停止" for i in issues)
@@ -985,14 +1017,14 @@ if uploaded_files:
                         else:
                             dcol1, dcol2 = st.columns(2)
                             with dcol1:
-                                excel_clicked = st.download_button(
+                                excel_clicked = draft_download_button(
                                     label="📥 Excel（貼り付け用・数値のみ）",
                                     data=excel_data,
                                     file_name="CYCA_smartLink_見積完成版.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                 )
                             with dcol2:
-                                csv_clicked = st.download_button(
+                                csv_clicked = draft_download_button(
                                     label="📥 CSV（貼り付け用・数値のみ）",
                                     data=csv_data,
                                     file_name="CYCA_smartLink_見積完成版.csv",
@@ -1180,7 +1212,7 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
             else:
                 dcol1, dcol2 = st.columns(2)
                 with dcol1:
-                    excel_clicked = st.download_button(
+                    excel_clicked = draft_download_button(
                         label="📥 Excel（貼り付け用・数値のみ）",
                         data=excel_data,
                         file_name="CYCA_smartLink_見積完成版.xlsx",
@@ -1188,7 +1220,7 @@ if (profit_mode == "見積元（会社）ごとに金額を指定する"
                         key="download_cat_profit_xlsx"
                     )
                 with dcol2:
-                    csv_clicked = st.download_button(
+                    csv_clicked = draft_download_button(
                         label="📥 CSV（貼り付け用・数値のみ）",
                         data=csv_data,
                         file_name="CYCA_smartLink_見積完成版.csv",
@@ -1219,7 +1251,7 @@ if uploaded_files and format_choice == HORIZONTAL_FORMAT:
                 for error in result.errors:
                     st.write(f"- {error}")
             else:
-                st.download_button(
+                draft_download_button(
                     "📥 数式付き見積書をNumbersで開く（A4横）",
                     data=result.data,
                     file_name=result.file_name,
@@ -1227,10 +1259,17 @@ if uploaded_files and format_choice == HORIZONTAL_FORMAT:
                     key="download_new_horizontal_estimate",
                 )
                 if result.pdf_data:
-                    st.download_button(
+                    draft_download_button(
                         "📄 印刷用PDFをダウンロード（A4横・ページ固定）",
                         data=result.pdf_data,
                         file_name=result.file_name.removesuffix(".xlsx") + ".pdf",
                         mime="application/pdf",
                         key="download_new_horizontal_pdf",
                     )
+
+
+if profit_mode == REVIEW_MODE:
+    render_review(st)
+
+if profit_mode != REVIEW_MODE:
+    render_draft_exports(st, legacy_export_signature())

@@ -1,0 +1,7 @@
+__pycache__/
+.DS_Store
+.private_data/
+.streamlit/secrets.toml
+config/
+output/
+*.log
