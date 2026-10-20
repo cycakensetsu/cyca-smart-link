@@ -11,6 +11,8 @@ import time
 import tempfile
 from io import BytesIO
 import openpyxl  # ExcelWriter engine 用
+from app_release import ensure_current_modules
+ensure_current_modules()
 from gemini_resilience import (
     AI_RETRY_MESSAGE,
     GeminiTemporaryUnavailable,
