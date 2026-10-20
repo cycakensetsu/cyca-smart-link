@@ -131,29 +131,30 @@ def render_review(st, api_key=None):
         rows.append(r)
     conversation_slot = st.container()
     st.markdown('### 3. 決めた上乗せ・値引きと帳票内容を確認')
-    scope = st.radio("目標の指定範囲", ["全体", "業者別", "工種別"], horizontal=True, key="review_scope")
-    mode = st.selectbox("目標の指定方法", ["上乗せ額", "掛け率", "粗利益率"], key="review_target_mode")
-    accepted = [r for r in rows if r["採用"]]
-    group = "見積元" if scope == "業者別" else "工事種別"
-    keys = ["全体"] if scope == "全体" else list(dict.fromkeys(str(r[group]) for r in accepted))
-    targets = []
-    for key in keys:
-        defaults = (0.0, 0.0, 10000.0) if mode == "上乗せ額" else ((1.0, 1.0, .05) if mode == "掛け率" else (0.0, 0.0, 1.0))
-        value = st.number_input(f"{key}：{mode}" + ("（%）" if mode == "粗利益率" else ""),
-                                value=defaults[0], min_value=defaults[1], step=defaults[2],
-                                key="review_target_"+digest([scope,mode,key]))
-        targets.append(Target(scope, key, mode, value))
-    discount = st.number_input("顧客向け値引き（0円以下）", max_value=0, value=0, step=1000, key="review_discount")
-    reason = st.text_input("顧客値引きの理由", key="review_discount_reason")
-    st.caption("仕入側の値引きは原本明細の負数行として保持します。顧客値引きとは別に計算します。")
-    m = st.session_state.get("_review_metadata", {})
-    metadata = {
-        "宛名": st.text_input("確認後の宛名（敬称まで）", value=str(m.get("宛名") or ""), key="review_customer"),
-        "工事名称": st.text_input("確認後の工事名称", value=str(m.get("工事名称") or ""), key="review_project"),
-        "見積日": st.text_input("見積日", value=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y/%m/%d"), key="review_date"),
-        "有効期限": "30日", "値引き理由": reason,
-        "顧客税率": st.selectbox("顧客向け税率", [.10, .08, 0.0], format_func=lambda x:f"{x:.0%}", key="review_customer_tax"),
-    }
+    with st.expander("手入力で上乗せ・値引きを調整／宛名・工事名を確認", expanded=False):
+        scope = st.radio("目標の指定範囲", ["全体", "業者別", "工種別"], horizontal=True, key="review_scope")
+        mode = st.selectbox("目標の指定方法", ["上乗せ額", "掛け率", "粗利益率"], key="review_target_mode")
+        accepted = [r for r in rows if r["採用"]]
+        group = "見積元" if scope == "業者別" else "工事種別"
+        keys = ["全体"] if scope == "全体" else list(dict.fromkeys(str(r[group]) for r in accepted))
+        targets = []
+        for key in keys:
+            defaults = (0.0, 0.0, 10000.0) if mode == "上乗せ額" else ((1.0, 1.0, .05) if mode == "掛け率" else (0.0, 0.0, 1.0))
+            value = st.number_input(f"{key}：{mode}" + ("（%）" if mode == "粗利益率" else ""),
+                                    value=defaults[0], min_value=defaults[1], step=defaults[2],
+                                    key="review_target_"+digest([scope,mode,key]))
+            targets.append(Target(scope, key, mode, value))
+        discount = st.number_input("顧客向け値引き（0円以下）", max_value=0, value=0, step=1000, key="review_discount")
+        reason = st.text_input("顧客値引きの理由", key="review_discount_reason")
+        st.caption("仕入側の値引きは原本明細の負数行として保持します。顧客値引きとは別に計算します。")
+        m = st.session_state.get("_review_metadata", {})
+        metadata = {
+            "宛名": st.text_input("確認後の宛名（敬称まで）", value=str(m.get("宛名") or ""), key="review_customer"),
+            "工事名称": st.text_input("確認後の工事名称", value=str(m.get("工事名称") or ""), key="review_project"),
+            "見積日": st.text_input("見積日", value=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y/%m/%d"), key="review_date"),
+            "有効期限": "30日", "値引き理由": reason,
+            "顧客税率": st.selectbox("顧客向け税率", [.10, .08, 0.0], format_func=lambda x:f"{x:.0%}", key="review_customer_tax"),
+        }
     if st.session_state.get('_review_conversation_record'):
         metadata['相談反映記録'] = st.session_state['_review_conversation_record']
     with conversation_slot:
@@ -172,7 +173,15 @@ def render_review(st, api_key=None):
         st.error(str(exc))
         return
     totals = draft["payload"]["合計"]
-    st.dataframe(pd.DataFrame([totals]), hide_index=True, width="stretch")
+    st.text('宛名：' + metadata['宛名'] + '　／　工事名称：' + metadata['工事名称'])
+    cost_card, markup_card, total_card = st.columns(3)
+    cost_card.metric('確認した仕入原価', f"{totals['仕入原価']:,}円")
+    markup_card.metric('上乗せ額（値引き前）', f"{totals['売価小計'] - totals['仕入原価']:,}円")
+    total_card.metric('お客様への税込見積額', f"{totals['税込売価']:,}円")
+    if discount:
+        st.caption(f"顧客値引き：{discount:,}円 ／ 値引き後の粗利益：{totals['粗利益']:,}円")
+    with st.expander('原価・売価・税・粗利益の内訳を確認'):
+        st.dataframe(pd.DataFrame([totals]), hide_index=True, width="stretch")
     result_rows = pd.DataFrame(draft["payload"]["計算明細"])
     st.dataframe(result_rows[[c for c in ("行ID", "見積元", "工事種別", "品名", "数量", "単位", "原価単価", "原価金額", "見積単価", "見積金額", "上乗せ額") if c in result_rows]], hide_index=True, width="stretch")
     if not result_rows.empty and "見積金額" in result_rows:

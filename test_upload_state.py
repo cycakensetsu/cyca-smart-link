@@ -15,6 +15,8 @@ class UploadStateTest(unittest.TestCase):
                 at.text_input[0].set_value('verification')
                 at.text_input[1].set_value('synthetic-login-only')
                 at.button[0].click().run(timeout=30)
+                self.assertNotIn('output_customer', [w.key for w in at.text_input])
+                next(r for r in at.radio if r.label == '利益の上乗せ方法を選択してください').set_value('上乗せしない（原価そのまま）').run(timeout=30)
                 at.text_input(key='output_customer').set_value('前の宛名 様')
                 at.text_input(key='output_project').set_value('前の工事')
                 at.run(timeout=30)
@@ -31,6 +33,7 @@ class UploadStateTest(unittest.TestCase):
                 previous_upload_id = at.get('file_uploader')[0].proto.id
                 previous_epoch = at.session_state['_upload_epoch']
                 at.session_state['_review_sources'] = ['previous-private-source']
+                at.session_state['_review_chat'] = [{'role': 'user', 'content': 'previous-private-instruction'}]
                 next(b for b in at.button if b.label == '🚪 ログアウト').click().run(timeout=30)
                 at.text_input[0].set_value('verification')
                 at.text_input[1].set_value('synthetic-login-only')
@@ -38,6 +41,8 @@ class UploadStateTest(unittest.TestCase):
                 self.assertNotEqual(at.session_state['_upload_epoch'], previous_epoch)
                 self.assertNotEqual(at.get('file_uploader')[0].proto.id, previous_upload_id)
                 self.assertNotIn('_review_sources', at.session_state)
+                self.assertNotIn('_review_chat', at.session_state)
+                next(r for r in at.radio if r.label == '利益の上乗せ方法を選択してください').set_value('上乗せしない（原価そのまま）').run(timeout=30)
                 self.assertEqual(at.text_input(key='output_customer').value, '')
                 self.assertEqual(list(at.exception), [])
 
