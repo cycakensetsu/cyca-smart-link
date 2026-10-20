@@ -119,10 +119,12 @@ def render_review(st, api_key=None):
                 s["gross_total"] = st.number_input("原本の税込総額", min_value=0, value=0, step=1, key="review_gross_"+s["id"])
             s["confirmed"] = st.checkbox("原本と明細・税区分を照合した", key="review_source_ok_"+s["id"])
     st.caption("行の追加はできません。訂正には理由、除外には施工範囲等の根拠を入力します。「集計のみ」は諸経費などを工事内容に直接載せる原本行です。原本の備考は社内で保持し、顧客へ伝える条件は「顧客備考」に入力します。")
-    columns = ["行ID", "採用", "見積元", "工事種別", "部位", "品名", "仕様", "数量", "単位", "原価単価", "原価金額", "備考", "顧客備考", "元ファイル", "ページ", "集計のみ", "訂正理由", "除外理由"]
+    columns = ["採用", "品名", "仕様", "数量", "単位", "原価単価", "原価金額", "見積元", "工事種別", "部位", "顧客備考", "元ファイル", "ページ", "集計のみ", "訂正理由", "除外理由", "備考", "行ID"]
     view = pd.DataFrame(st.session_state.get('_review_assistant_rows', original))[columns]
     edited = st.data_editor(view, disabled=["行ID", "元ファイル", "備考"], hide_index=True,
-                            num_rows="fixed", key="review_rows_" + str(st.session_state.get('_review_editor_epoch', 0)), width="stretch")
+                            num_rows="fixed", key="review_rows_" + str(st.session_state.get('_review_editor_epoch', 0)), width="stretch",
+                            column_config={'行ID': None, '原価単価': st.column_config.NumberColumn('仕入単価', format='localized'),
+                                           '原価金額': st.column_config.NumberColumn('仕入金額', format='localized')})
     by_id = {r["行ID"]: copy.deepcopy(r) for r in original}
     rows = []
     for changes in edited.to_dict("records"):
@@ -131,6 +133,7 @@ def render_review(st, api_key=None):
         rows.append(r)
     conversation_slot = st.container()
     st.markdown('### 3. 決めた上乗せ・値引きと帳票内容を確認')
+    st.caption('出力先：アプリ既存の横型流し込みデザイン。表紙・工事品目集計・明細を分け、明細は文字を縮めず20行ごとに改ページします。')
     with st.expander("手入力で上乗せ・値引きを調整／宛名・工事名を確認", expanded=False):
         scope = st.radio("目標の指定範囲", ["全体", "業者別", "工種別"], horizontal=True, key="review_scope")
         mode = st.selectbox("目標の指定方法", ["上乗せ額", "掛け率", "粗利益率"], key="review_target_mode")
@@ -175,7 +178,7 @@ def render_review(st, api_key=None):
     totals = draft["payload"]["合計"]
     st.text('宛名：' + metadata['宛名'] + '　／　工事名称：' + metadata['工事名称'])
     cost_card, markup_card, total_card = st.columns(3)
-    cost_card.metric('確認した仕入原価', f"{totals['仕入原価']:,}円")
+    cost_card.metric('仕入原価（税抜）', f"{totals['仕入原価']:,}円")
     markup_card.metric('上乗せ額（値引き前）', f"{totals['売価小計'] - totals['仕入原価']:,}円")
     total_card.metric('お客様への税込見積額', f"{totals['税込売価']:,}円")
     if discount:
@@ -183,7 +186,7 @@ def render_review(st, api_key=None):
     with st.expander('原価・売価・税・粗利益の内訳を確認'):
         st.dataframe(pd.DataFrame([totals]), hide_index=True, width="stretch")
     result_rows = pd.DataFrame(draft["payload"]["計算明細"])
-    st.dataframe(result_rows[[c for c in ("行ID", "見積元", "工事種別", "品名", "数量", "単位", "原価単価", "原価金額", "見積単価", "見積金額", "上乗せ額") if c in result_rows]], hide_index=True, width="stretch")
+    st.dataframe(result_rows[[c for c in ("品名", "数量", "単位", "原価単価", "原価金額", "見積単価", "見積金額", "上乗せ額", "見積元", "工事種別") if c in result_rows]], hide_index=True, width="stretch")
     if not result_rows.empty and "見積金額" in result_rows:
         for col in ("見積元", "工事種別"):
             st.write(col + "ごとの原価・売価")

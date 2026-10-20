@@ -117,7 +117,7 @@ def render_estimate_pdf(estimate):
     c=canvas.Canvas(output,pagesize=(w,h)); c.setTitle(f'{estimate.project_name} 見積書')
     navy=HexColor('#1F3557'); rule=HexColor('#8A97AB'); tint=HexColor('#EDF1F6')
     x=22; width=w-44; top=h-24
-    pages=_paginate_detail_rows(_build_detail_rows(estimate))
+    pages=_paginate_detail_rows(_build_detail_rows(estimate)) if any(not c.summary_only for c in estimate.categories) else []
     total=2+len(pages)
     def text(value,xx,yy,size=9,color=navy,align='left'):
         c.setFillColor(color);c.setFont(font,size)
@@ -179,7 +179,12 @@ def render_estimate_pdf(estimate):
         return cells(['No.','工事品目','仕様','数量','単位','単価','金額','備考'],top-24,24,navy)
     yy=headers('工 事 品 目 ま と め')
     for i,cat in enumerate(estimate.categories,1):
-        yy=cells([i,cat.name,'工事一式',1,'式','',cat.subtotal,''],yy,26)
+        if cat.summary_only:
+            item=cat.items[0]
+            values=[i,item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark]
+        else:
+            values=[i,cat.name,'工事一式',1,'式','',cat.subtotal,'']
+        yy=cells(values,yy,22)
     for _ in range(16-len(estimate.categories)): yy=cells(['']*8,yy,18)
     text('※工事内容明細には消費税が含まれておりません。',x,yy-21,8)
     sy=yy-34

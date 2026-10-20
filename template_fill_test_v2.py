@@ -575,6 +575,8 @@ def _build_detail_rows(estimate: Estimate) -> List[Dict]:
     rows: List[Dict] = []
     no = 0
     for category_index, category in enumerate(estimate.categories, start=1):
+        if category.summary_only:
+            continue
         rows.append({"kind": "category", "index": category_index, "category": category})
         for item in category.items:
             no += 1
@@ -733,6 +735,12 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
     for index, category in enumerate(estimate.categories, start=1):
         row = SUMMARY_ITEM_START_ROW + index - 1
         _set(ws, row, COL_NO, index)
+        if category.summary_only:
+            item = category.items[0]
+            for column, value in zip((COL_ITEM, COL_SPEC, COL_QTY, COL_UNIT, COL_PRICE, COL_AMOUNT, COL_REMARK),
+                    (item.name, item.spec, item.qty, item.unit, item.unit_price, item.amount, item.remark)):
+                _set(ws, row, column, value)
+            continue
         _set(ws, row, COL_ITEM, category.name)
         _set(ws, row, COL_SPEC, "工事一式")
         _set(ws, row, COL_QTY, 1)
@@ -749,7 +757,7 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
     # 見本と同じようにA4の紙面を十分に使う。
     detail_rows = _build_detail_rows(estimate)
     pages = _paginate_detail_rows(detail_rows)
-    visible_page_count = max(MIN_DETAIL_PAGES, len(pages))
+    visible_page_count = max(MIN_DETAIL_PAGES, len(pages)) if any(not c.summary_only for c in estimate.categories) else 0
     cat_font = Font(name=FONT_NAME, size=10, bold=True, color=BRAND_NAVY)
     cat_fill = PatternFill("solid", fgColor=BRAND_TINT)
     sub_font = Font(name=FONT_NAME, size=10, bold=True)
@@ -950,7 +958,8 @@ def _apply_dynamic_formulas(wb: Workbook, estimate: Estimate) -> None:
     """明細の編集が工事品目集計・表紙まで連動する数式を設定する。"""
     ws = wb[QUOTE_SHEET]
     current_category_items: List[int] = []
-    category_subtotals: List[int] = []
+    category_subtotals = {}
+    current_category_index = None
     item_rows: List[int] = []
 
     for page_index in range(MAX_DETAIL_PAGES):
@@ -972,8 +981,10 @@ def _apply_dynamic_formulas(wb: Workbook, estimate: Estimate) -> None:
                 refs = ",".join(f"G{item_row}" for item_row in current_category_items)
                 ws.cell(row, COL_AMOUNT).value = f"=SUM({refs})" if refs else "=0"
                 ws.cell(row, COL_AMOUNT).number_format = MONEY_FORMAT
-                category_subtotals.append(row)
+                category_subtotals[current_category_index] = row
                 current_category_items = []
+            elif isinstance(item_name, str) and re.match(r'^\d+\. ', item_name):
+                current_category_index = int(item_name.split('.', 1)[0]) - 1
 
         # ページ合計はNo.が入った明細行だけを集計し、分類小計を二重計上しない。
         total_row = page_start + DETAIL_PAGE_BLOCK_ROWS - 1
@@ -982,9 +993,10 @@ def _apply_dynamic_formulas(wb: Workbook, estimate: Estimate) -> None:
         )
         ws.cell(total_row, COL_AMOUNT).number_format = MONEY_FORMAT
 
-    for index, subtotal_row in enumerate(category_subtotals, start=0):
+    for index, category in enumerate(estimate.categories):
         summary_row = SUMMARY_ITEM_START_ROW + index
-        ws.cell(summary_row, COL_AMOUNT).value = f"=G{subtotal_row}"
+        ws.cell(summary_row, COL_AMOUNT).value = (f'=ROUND(D{summary_row}*F{summary_row},0)' if category.summary_only
+                                                else f"=G{category_subtotals[index]}")
         ws.cell(summary_row, COL_AMOUNT).number_format = MONEY_FORMAT
 
     ws.cell(SUMMARY_SUBTOTAL_ROW, COL_AMOUNT).value = (
@@ -1010,7 +1022,14 @@ def _apply_dynamic_formulas(wb: Workbook, estimate: Estimate) -> None:
     # 非表示の明細データにも同じ計算式を残す。
     raw = wb[DETAIL_SHEET]
     item_count = sum(len(category.items) for category in estimate.categories)
-    for row, quote_row in enumerate(item_rows, start=2):
+    detail_links = iter(item_rows)
+    quote_links = []
+    for index, category in enumerate(estimate.categories):
+        if category.summary_only:
+            quote_links.append(SUMMARY_ITEM_START_ROW + index)
+        else:
+            quote_links.extend(next(detail_links) for _ in category.items)
+    for row, quote_row in enumerate(quote_links, start=2):
         # 見積書の数量・単価を唯一の編集元にして二つのシートのズレを防ぐ。
         for raw_col, quote_col in ((3, "B"), (4, "C"), (5, "D"), (6, "E"), (7, "F"), (8, "G"), (9, "H")):
             ref = f"'{QUOTE_SHEET}'!{quote_col}{quote_row}"
@@ -1078,6 +1097,8 @@ def _validate_estimate(estimate: Estimate) -> Tuple[List[str], List[str]]:
         used += 1 + len(cat.items) + 1  # 見出し + 明細 + 小計
     if used > ITEM_MAX_ROWS:
         errors.append("明細行がテンプレートの上限（1シート）を超えています。")
+    if not estimate.reference_layout and len(_paginate_detail_rows(_build_detail_rows(estimate))) > MAX_DETAIL_PAGES:
+        errors.append(f"分類を保った改ページが{MAX_DETAIL_PAGES}ページを超えます。工事範囲を分けて出力してください。")
     if len(estimate.categories) > SUMMARY_ITEM_MAX_ROWS:
         errors.append(
             f"工事項目がまとめページの上限（{SUMMARY_ITEM_MAX_ROWS}項目）を超えています。"
