@@ -578,7 +578,11 @@ def _build_detail_rows(estimate: Estimate) -> List[Dict]:
         if category.summary_only:
             continue
         rows.append({"kind": "category", "index": category_index, "category": category})
+        last_section = None
         for item in category.items:
+            if item.section and item.section != category.name and item.section != last_section:
+                rows.append({'kind': 'section', 'label': item.section})
+            last_section = item.section
             no += 1
             rows.append({"kind": "item", "no": no, "item": item})
         rows.append({"kind": "subtotal", "category": category})
@@ -594,9 +598,13 @@ def _paginate_detail_rows(rows: List[Dict]) -> List[List[Dict]]:
     while cursor < len(rows):
         take = min(DETAIL_PAGE_DATA_ROWS, len(rows) - cursor)
         if cursor + take < len(rows):
-            if rows[cursor + take - 1]["kind"] == "category" and take > 1:
+            if rows[cursor + take - 1]["kind"] in ("category", "section") and take > 1:
                 take -= 1
+                if rows[cursor + take - 1]["kind"] == "category" and take > 1:
+                    take -= 1
             if rows[cursor + take]["kind"] == "subtotal" and take > 1:
+                take -= 1
+            while take > 1 and rows[cursor + take - 1]['kind'] in ('category', 'section'):
                 take -= 1
         pages.append(rows[cursor:cursor + take])
         cursor += take
@@ -784,6 +792,9 @@ def _write_quote_sheet(ws, estimate: Estimate) -> int:
                     cell = ws.cell(row, col)
                     if not isinstance(cell, MergedCell):
                         cell.fill = cat_fill
+                ws.cell(row, COL_ITEM).font = cat_font
+            elif kind == 'section':
+                _set(ws, row, COL_ITEM, '【' + logical['label'] + '】')
                 ws.cell(row, COL_ITEM).font = cat_font
             elif kind == "item":
                 item = logical["item"]
@@ -1095,6 +1106,7 @@ def _validate_estimate(estimate: Estimate) -> Tuple[List[str], List[str]]:
         if cat.summary_only:
             continue
         used += 1 + len(cat.items) + 1  # 見出し + 明細 + 小計
+    used = len(_build_detail_rows(estimate))
     if used > ITEM_MAX_ROWS:
         errors.append("明細行がテンプレートの上限（1シート）を超えています。")
     if not estimate.reference_layout and len(_paginate_detail_rows(_build_detail_rows(estimate))) > MAX_DETAIL_PAGES:

@@ -199,6 +199,7 @@ def render_estimate_pdf(estimate):
         for row in rows:
             kind=row['kind']
             if kind=='category': values=['',f"{row['index']}. {row['category'].name}",'','','','','',''];fill=tint
+            elif kind=='section': values=['','【'+row['label']+'】','','','','','',''];fill=tint
             elif kind=='subtotal': values=['','','','','','小計',row['category'].subtotal,''];fill=None
             else:
                 item=row['item'];values=[row['no'],item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark];fill=None;amount+=item.amount
