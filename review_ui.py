@@ -70,6 +70,9 @@ def preserve_uploads(st, uploads):
 
 
 def capture_extraction(st, detail, summaries, records, read_errors=()):
+    for key in list(st.session_state):
+        if key.startswith('_review_') and key != '_review_sources':
+            del st.session_state[key]
     st.session_state.pop('_vault_archive', None)
     sources = st.session_state.get("_review_sources", [])
     for source in sources:
@@ -88,11 +91,15 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
             del st.session_state[key]
 
 
-def render_review(st):
+def render_review(st, api_key=None):
     original = st.session_state.get("_review_original_rows")
     if not original:
         return
-    st.markdown("### 原本を確認して見積を統合")
+    from conversation_ui import apply_pending, working_context, render_conversation
+    apply_pending(st, vault(st))
+    if st.session_state.pop('_review_clear_instruction', False):
+        st.session_state['review_instruction'] = ''
+    st.markdown("### 1. 読み取った見積を原本と照合")
     st.caption("原本・読取結果・訂正・承認を別々に保管します。工種は候補です。内容と施工範囲を確認してください。")
     if not os.environ.get("CYCA_DATA_DIR"):
         st.info("作業後は、原本と承認記録を左側の『バックアップ』から一括保存してください。アプリの再起動後も復元できます。")
@@ -113,15 +120,17 @@ def render_review(st):
             s["confirmed"] = st.checkbox("原本と明細・税区分を照合した", key="review_source_ok_"+s["id"])
     st.caption("行の追加はできません。訂正には理由、除外には施工範囲等の根拠を入力します。「集計のみ」は諸経費などを工事内容に直接載せる原本行です。原本の備考は社内で保持し、顧客へ伝える条件は「顧客備考」に入力します。")
     columns = ["行ID", "採用", "見積元", "工事種別", "部位", "品名", "仕様", "数量", "単位", "原価単価", "原価金額", "備考", "顧客備考", "元ファイル", "ページ", "集計のみ", "訂正理由", "除外理由"]
-    view = pd.DataFrame(original)[columns]
+    view = pd.DataFrame(st.session_state.get('_review_assistant_rows', original))[columns]
     edited = st.data_editor(view, disabled=["行ID", "元ファイル", "備考"], hide_index=True,
-                            num_rows="fixed", key="review_rows", width="stretch")
+                            num_rows="fixed", key="review_rows_" + str(st.session_state.get('_review_editor_epoch', 0)), width="stretch")
     by_id = {r["行ID"]: copy.deepcopy(r) for r in original}
     rows = []
     for changes in edited.to_dict("records"):
         r = by_id[changes["行ID"]]
         r.update({k: clean(v) for k, v in changes.items()})
         rows.append(r)
+    conversation_slot = st.container()
+    st.markdown('### 3. 決めた上乗せ・値引きと帳票内容を確認')
     scope = st.radio("目標の指定範囲", ["全体", "業者別", "工種別"], horizontal=True, key="review_scope")
     mode = st.selectbox("目標の指定方法", ["上乗せ額", "掛け率", "粗利益率"], key="review_target_mode")
     accepted = [r for r in rows if r["採用"]]
@@ -145,6 +154,10 @@ def render_review(st):
         "有効期限": "30日", "値引き理由": reason,
         "顧客税率": st.selectbox("顧客向け税率", [.10, .08, 0.0], format_func=lambda x:f"{x:.0%}", key="review_customer_tax"),
     }
+    if st.session_state.get('_review_conversation_record'):
+        metadata['相談反映記録'] = st.session_state['_review_conversation_record']
+    with conversation_slot:
+        render_conversation(st, api_key, working_context(rows, sources, targets, discount, metadata))
     resolutions = {}
     try:
         draft = build_draft(original, rows, sources, targets, discount, metadata)
@@ -168,7 +181,7 @@ def render_review(st):
             st.dataframe(result_rows.groupby(col, sort=False)[["原価金額", "見積金額", "上乗せ額"]].sum(), width="stretch")
     valid = not draft["unresolved"] and bool(metadata["宛名"].strip()) and bool(metadata["工事名称"].strip())
     agree = st.checkbox("原本、工種、原価・売価、税、重複疑い、値引きを確認し、この内容を承認する", key="review_agree_"+draft["fingerprint"])
-    if st.button("承認してNumbers用見積書とPDFを作成", disabled=not (valid and agree), key="review_approve"):
+    if st.button("確定して彩架建設の見積書とPDFを作成", disabled=not (valid and agree), key="review_approve"):
         try:
             approval = approve(draft, st.session_state["username"])
             result = build_approved_estimate(draft, approval)
