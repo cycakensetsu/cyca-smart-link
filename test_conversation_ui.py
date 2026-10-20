@@ -67,6 +67,7 @@ class ConversationUITest(unittest.TestCase):
             self.assertEqual(at.session_state['_review_original_rows'][0]['原価金額'], 100000)
             self.assertTrue(at.button(key='review_approve').disabled)
             self.assertEqual(len(list(Path(temp).rglob('extractions/*.json'))), 1)
+            at.button(key='review_preview').click().run()
             next(c for c in at.checkbox if c.key.startswith('review_agree_')).check().run()
             at.button(key='review_approve').click().run()
             self.assertEqual(list(at.exception), [])

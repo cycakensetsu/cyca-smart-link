@@ -133,7 +133,7 @@ def render_review(st, api_key=None):
         rows.append(r)
     conversation_slot = st.container()
     st.markdown('### 3. 決めた上乗せ・値引きと帳票内容を確認')
-    st.caption('出力先：アプリ既存の横型流し込みデザイン。表紙・工事品目集計・明細を分け、明細は文字を縮めず20行ごとに改ページします。')
+    st.caption('出力先：アプリ既存の横型流し込みデザイン。通常は工種ごとに明細を分け、2行程度の小工種は同じページにまとめます。少量の1社見積は一式まとめを省きます。')
     with st.expander("手入力で上乗せ・値引きを調整／宛名・工事名を確認", expanded=False):
         scope = st.radio("目標の指定範囲", ["全体", "業者別", "工種別"], horizontal=True, key="review_scope")
         mode = st.selectbox("目標の指定方法", ["上乗せ額", "掛け率", "粗利益率"], key="review_target_mode")
@@ -160,6 +160,8 @@ def render_review(st, api_key=None):
         }
     if st.session_state.get('_review_conversation_record'):
         metadata['相談反映記録'] = st.session_state['_review_conversation_record']
+    from output_preview_ui import page_controls, render_preview
+    metadata = page_controls(st, rows, metadata)
     with conversation_slot:
         render_conversation(st, api_key, working_context(rows, sources, targets, discount, metadata))
     resolutions = {}
@@ -192,8 +194,10 @@ def render_review(st, api_key=None):
             st.write(col + "ごとの原価・売価")
             st.dataframe(result_rows.groupby(col, sort=False)[["原価金額", "見積金額", "上乗せ額"]].sum(), width="stretch")
     valid = not draft["unresolved"] and bool(metadata["宛名"].strip()) and bool(metadata["工事名称"].strip())
-    agree = st.checkbox("原本、工種、原価・売価、税、重複疑い、値引きを確認し、この内容を承認する", key="review_agree_"+draft["fingerprint"])
-    if st.button("確定して彩架建設の見積書とPDFを作成", disabled=not (valid and agree), key="review_approve"):
+    preview_ready = render_preview(st, draft, valid)
+    agree = st.checkbox("内容とページ分けを確認しました。この配置でPDFを作成します", disabled=not preview_ready,
+                        key="review_agree_"+draft["fingerprint"])
+    if st.button("この配置でPDF・Numbers用見積書を作成", disabled=not (valid and agree and preview_ready), key="review_approve"):
         try:
             approval = approve(draft, st.session_state["username"])
             result = build_approved_estimate(draft, approval)
@@ -211,7 +215,7 @@ def render_review(st, api_key=None):
             st.error(str(exc))
     approval = st.session_state.get("_review_approval")
     result = st.session_state.get("_review_result")
-    if approval and result and approval["fingerprint"] == draft["fingerprint"] and valid and agree:
+    if approval and result and approval["fingerprint"] == draft["fingerprint"] and valid and agree and preview_ready:
         st.success("承認内容と現在の入力が一致しています。数量や目標などを変えると再承認が必要です。")
         st.download_button("承認済み見積書（Numbers用xlsx）", result.data, file_name=result.file_name, key="review_xlsx")
         st.download_button("承認済みPDF", result.pdf_data, file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf")

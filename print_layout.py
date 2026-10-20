@@ -2,6 +2,7 @@
 import re
 from copy import copy
 from io import BytesIO
+from decimal import Decimal
 from openpyxl.formula.tokenizer import Tokenizer
 from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.worksheet.page import PageMargins
@@ -117,8 +118,13 @@ def render_estimate_pdf(estimate):
     c=canvas.Canvas(output,pagesize=(w,h)); c.setTitle(f'{estimate.project_name} 見積書')
     navy=HexColor('#1F3557'); rule=HexColor('#8A97AB'); tint=HexColor('#EDF1F6')
     x=22; width=w-44; top=h-24
-    pages=_paginate_detail_rows(_build_detail_rows(estimate)) if any(not c.summary_only for c in estimate.categories) else []
-    total=2+len(pages)
+    compact=False
+    if estimate.pour_layout:
+        from pour_layout import plan
+        layout=plan(estimate);pages=layout['pages'];compact=layout['compact']
+    else:
+        pages=_paginate_detail_rows(_build_detail_rows(estimate)) if any(not c.summary_only for c in estimate.categories) else []
+    total=(1 if compact else 2)+len(pages)
     def text(value,xx,yy,size=9,color=navy,align='left'):
         c.setFillColor(color);c.setFont(font,size)
         draw={'left':c.drawString,'right':c.drawRightString,'center':c.drawCentredString}[align]
@@ -155,7 +161,7 @@ def render_estimate_pdf(estimate):
     text(COMPANY['tel']+'　'+COMPANY['fax'],x+460,132,8)
     text(COMPANY['ceo'],x+460,112,9)
     footer(1);c.showPage()
-    widths=[26,192,168,38,33,75,90,width-622]
+    widths=[26,192,162,44,33,75,90,width-622]
     style=ParagraphStyle('cell',fontName=font,fontSize=9,leading=11,wordWrap='CJK',textColor=navy)
     def cells(values,yy,height=22,fill=None,bold=False):
         xx=x
@@ -165,7 +171,9 @@ def render_estimate_pdf(estimate):
                 c.setFillColor(fill);c.rect(xx,yy-height,cw,height,fill=1,stroke=0)
             c.rect(xx,yy-height,cw,height,fill=0,stroke=1)
             if value is not None and value!='':
-                value=(f'{value:,.0f}' if float(value).is_integer() else f'{value:,.2f}') if isinstance(value,(int,float)) else str(value)
+                value=(f'{value:,.0f}' if float(value).is_integer() else format(Decimal(str(value)),',f').rstrip('0').rstrip('.')) if isinstance(value,(int,float)) else str(value)
+                if i in (3,5,6) and pdfmetrics.stringWidth(value,font,9)>cw-4:
+                    raise ValueError(f'数値を省略せず印刷できません。数量・単価の表示幅を確認してください: {value}')
                 if i in (3,5,6): text(value,xx+cw-4,yy-height/2-3,9,white if fill==navy else navy,'right')
                 elif fill==navy: text(value,xx+cw/2,yy-height/2-3,9,white,'center')
                 else:
@@ -177,35 +185,39 @@ def render_estimate_pdf(estimate):
     def headers(label):
         band(label,top)
         return cells(['No.','工事品目','仕様','数量','単位','単価','金額','備考'],top-24,24,navy)
-    yy=headers('工 事 品 目 ま と め')
-    for i,cat in enumerate(estimate.categories,1):
-        if cat.summary_only:
-            item=cat.items[0]
-            values=[i,item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark]
-        else:
-            values=[i,cat.name,'工事一式',1,'式','',cat.subtotal,'']
-        yy=cells(values,yy,22)
-    for _ in range(16-len(estimate.categories)): yy=cells(['']*8,yy,18)
-    text('※工事内容明細には消費税が含まれておりません。',x,yy-21,8)
-    sy=yy-34
-    for label,amount in [('小計',estimate.subtotal),('値引き',estimate.discount),('税抜合計',estimate.net_total),('消費税',estimate.tax),('税込合計',estimate.grand_total)]:
-        c.setFillColor(navy if label=='税込合計' else tint);c.rect(x+542,sy-19,105,19,fill=1,stroke=0)
-        c.setStrokeColor(rule);c.rect(x+542,sy-19,105,19,fill=0,stroke=1);c.rect(x+647,sy-19,94,19,fill=0,stroke=1)
-        text(label,x+594,sy-13,9,white if label=='税込合計' else navy,'center')
-        text(('¥' if label=='税込合計' else '')+f'{amount:,}',x+737,sy-13,10,align='right');sy-=19
-    footer(2);c.showPage()
-    for page_no,rows in enumerate(pages,3):
+    if not compact:
+        yy=headers('工 事 品 目 ま と め')
+        for i,cat in enumerate(estimate.categories,1):
+            if cat.summary_only:
+                item=cat.items[0]
+                values=[i,item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark]
+            else:
+                values=[i,cat.name,'工事一式',1,'式','',cat.subtotal,'']
+            yy=cells(values,yy,22)
+        for _ in range(16-len(estimate.categories)): yy=cells(['']*8,yy,18)
+        text('※工事内容明細には消費税が含まれておりません。',x,yy-21,8)
+        sy=yy-34
+        for label,amount in [('小計',estimate.subtotal),('値引き',estimate.discount),('税抜合計',estimate.net_total),('消費税',estimate.tax),('税込合計',estimate.grand_total)]:
+            c.setFillColor(navy if label=='税込合計' else tint);c.rect(x+542,sy-19,105,19,fill=1,stroke=0)
+            c.setStrokeColor(rule);c.rect(x+542,sy-19,105,19,fill=0,stroke=1);c.rect(x+647,sy-19,94,19,fill=0,stroke=1)
+            text(label,x+594,sy-13,9,white if label=='税込合計' else navy,'center')
+            text(('¥' if label=='税込合計' else '')+f'{amount:,}',x+737,sy-13,10,align='right');sy-=19
+        footer(2);c.showPage()
+    for page_no,rows in enumerate(pages,2 if compact else 3):
         yy=headers('工 事 内 容 明 細'); amount=0
         for row in rows:
             kind=row['kind']
             if kind=='category': values=['',f"{row['index']}. {row['category'].name}",'','','','','',''];fill=tint
             elif kind=='section': values=['','【'+row['label']+'】','','','','','',''];fill=tint
             elif kind=='subtotal': values=['','','','','','小計',row['category'].subtotal,''];fill=None
+            elif kind.startswith('compact_'):
+                label={'compact_subtotal':'小計','compact_discount':'値引き','compact_net':'税抜合計','compact_tax':'消費税'}[kind]
+                values=['','','','','',label,row['amount'],''];fill=None
             else:
                 item=row['item'];values=[row['no'],item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark];fill=None;amount+=item.amount
             yy=cells(values,yy,22,fill)
         for _ in range(20-len(rows)): yy=cells(['']*8,yy,18)
-        text('※工事内容明細には消費税が含まれておりません。',x,yy-19,8)
-        text('合　計',x+560,yy-43,11);text(f'{amount:,}',x+710,yy-43,11,align='right')
+        text('各明細金額は税抜です。消費税は合計欄に計上しています。' if compact else '※工事内容明細には消費税が含まれておりません。',x,yy-19,8)
+        text('税込合計' if compact else '合　計',x+560,yy-43,11);text(f'{estimate.grand_total if compact else amount:,}',x+710,yy-43,11,align='right')
         footer(page_no);c.showPage()
     c.save();return output.getvalue()

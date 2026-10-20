@@ -53,6 +53,21 @@ class PrivateReferenceRegressionTest(unittest.TestCase):
                     original_rows.append([sheet.cell(row,col).value if sheet.cell(row,col).value is not None else '' for col in (1,2,3,4,5,6,8)])
         self.assertEqual(original_rows,expected)
         self.assertEqual(original_design.summary['税込合計'],estimate.grand_total)
+        estimate.pour_layout=True
+        estimate.source_count=1
+        arranged=fill_estimate_v2(estimate,save_to_disk=False)
+        self.assertTrue(arranged.ok,arranged.errors)
+        arranged_wb=load_workbook(BytesIO(arranged.data))
+        arranged_rows=[]
+        for sheet in arranged_wb:
+            if not sheet.title.startswith('明細'):continue
+            for row in range(3,23):
+                if isinstance(sheet.cell(row,1).value,int):
+                    arranged_rows.append([sheet.cell(row,col).value if sheet.cell(row,col).value is not None else '' for col in (1,2,3,4,5,6,8)])
+        self.assertEqual(arranged_rows[:count],expected)
+        self.assertEqual(arranged.summary['税込合計'],estimate.grand_total)
+        with fitz.open(stream=arranged.pdf_data,filetype='pdf') as arranged_pdf:
+            self.assertEqual(len(arranged_pdf),len(arranged_wb.sheetnames))
 
     def test_private_case_1(self):
         self.check_reference('case_1')

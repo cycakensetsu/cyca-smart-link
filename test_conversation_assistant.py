@@ -153,5 +153,25 @@ class ConversationTest(unittest.TestCase):
         self.assertEqual(example['値引き後粗利益額'], 24000)
         self.assertEqual(figures[0]['売価小計（税抜）'], 111111)
 
+    def test_page_instruction_uses_real_item_no_and_does_not_edit_amounts(self):
+        from conversation_assistant import print_rows
+        context=fixture();context['print_rows']=print_rows(context['rows'])
+        words='No.1から4ページ目にして'
+        c=change(kind='pagebreak',row_id='row-a',value='4',evidence=words)
+        p=self.validate(proposal([c]),words,context)
+        result=apply_proposal(p,context)
+        self.assertEqual(result['metadata']['改ページ'],['row-a'])
+        self.assertEqual(result['metadata']['希望ページ'],{'row-a':4})
+        self.assertEqual(result['rows'],context['rows'])
+        self.assertEqual(result['targets'],context['targets'])
+        c['row_id']='invented'
+        with self.assertRaises(ValueError): self.validate(proposal([c]),words,context)
+
+    def test_ambiguous_here_cannot_authorize_a_page_break(self):
+        from conversation_assistant import print_rows
+        context=fixture();context['print_rows']=print_rows(context['rows'])
+        c=change(kind='pagebreak',row_id='row-a',value='4',evidence='ここから4ページ目')
+        with self.assertRaises(ValueError):self.validate(proposal([c]),c['evidence'],context)
+
 
 if __name__ == '__main__': unittest.main()

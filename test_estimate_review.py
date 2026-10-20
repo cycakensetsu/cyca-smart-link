@@ -136,7 +136,7 @@ class EstimateReviewTest(unittest.TestCase):
         result=build_approved_estimate(d,approve(d,"検証者"))
         self.assertTrue(result.ok,result.errors)
         wb=load_workbook(BytesIO(result.data))
-        self.assertEqual(wb['見積書']['C13'].value, "='工事品目集計'!G26")
+        self.assertEqual(wb['見積書']['C13'].value, "='明細1'!G24")
         self.assertEqual(wb['見積書']['A2'].fill.fgColor.rgb[-6:], '1F3557')
         values=" ".join(str(c.value or "") for s in wb for row in s for c in row)
         for forbidden in ("原価単価","原価金額","架空防水社","a.pdf"):

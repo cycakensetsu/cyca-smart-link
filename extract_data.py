@@ -427,7 +427,7 @@ if os.path.isfile(LOGO_PATH):
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
 else:
     st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
-st.info("① 他社見積を入れる → ② 読み取りを確認 → ③ 声で上乗せを相談 → ④ 彩架建設の見積書を出力")
+st.info("① 他社見積を入れる → ② 読み取りを確認 → ③ 声で相談 → ④ 完成イメージを確認して出力")
 st.caption("本サービスはベータ版です。計算結果は目安であり、正式な見積には必ずご自身で内容をご確認ください。重要な意思決定の唯一の根拠としてご利用にならないでください。")
 
 # ==========================================

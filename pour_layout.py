@@ -1,0 +1,231 @@
+"""One shared customer page plan, applied to the existing CYCA template."""
+from io import BytesIO
+
+
+def _chunk(rows):
+    pages = []
+    rows = list(rows)
+    while rows:
+        prefix = []
+        if rows[0]['kind'] == 'item':
+            item = rows[0]['item']
+            category = rows[0].get('category')
+            label = (category.name if category else '工事内容') + '（続き）'
+            if item.section and (not category or item.section != category.name):
+                label += '／' + item.section
+            prefix = [{'kind': 'section', 'label': label}]
+        take = min(20 - len(prefix), len(rows))
+        if take < len(rows) and rows[take]['kind'] == 'subtotal' and take > 1:
+            take -= 1
+        while take > 1 and rows[take - 1]['kind'] in ('category', 'section'):
+            take -= 1
+        pages.append(prefix + rows[:take])
+        rows = rows[take:]
+    return pages
+
+
+def plan(estimate):
+    from template_fill_test_v2 import _build_detail_rows
+    normal = [c for c in estimate.categories if not c.summary_only]
+    all_items = ([i for c in normal for i in c.items]
+                 + [i for c in estimate.categories if c.summary_only for i in c.items])
+    compact = (estimate.source_count == 1 and len(normal) == 1
+               and len(all_items) + 4 <= 20 and not estimate.page_breaks)
+    if compact:
+        rows = [{'kind': 'item', 'no': n, 'item': item} for n, item in enumerate(all_items, 1)]
+        rows += [{'kind': 'compact_' + name, 'amount': value} for name, value in
+                 [('subtotal', estimate.subtotal), ('discount', estimate.discount),
+                  ('net', estimate.net_total), ('tax', estimate.tax)]]
+        return {'compact': True, 'pages': [rows], 'first_detail': 2}
+    logical = _build_detail_rows(estimate)
+    pages = []
+    if estimate.page_breaks:
+        known = {r['item'].row_id for r in logical if r['kind'] == 'item'}
+        if len(set(estimate.page_breaks)) != len(estimate.page_breaks) or any(k not in known or not k for k in estimate.page_breaks):
+            raise ValueError('改ページする品目を確認してください。')
+        blocks, block = [], []
+        for row in logical:
+            if row['kind'] == 'item' and row['item'].row_id in estimate.page_breaks and block:
+                headings = []
+                while block and block[-1]['kind'] in ('category', 'section'):
+                    headings.insert(0, block.pop())
+                if block:
+                    blocks.append(block)
+                block = headings
+            block.append(row)
+        if block:
+            blocks.append(block)
+        for block in blocks:
+            pages.extend(_chunk(block))
+    else:
+        # Main trades begin on their own page. A tiny trade may share a page,
+        # while retaining its own heading, subtotal and summary entry.
+        blocks = []
+        for row in logical:
+            if row['kind'] == 'category':
+                blocks.append([])
+            blocks[-1].append(row)
+        tiny_page = False
+        for block in blocks:
+            tiny = sum(r['kind'] == 'item' for r in block) <= 2
+            if pages and len(pages[-1]) + len(block) <= 20 and (tiny or tiny_page):
+                pages[-1].extend(block)
+                tiny_page = tiny_page and tiny
+            elif pages and tiny_page and len(pages[-1]) <= 8:
+                # Let a larger trade share the leading tiny trade's page.
+                combined = _chunk(pages.pop() + block)
+                pages.extend(combined)
+                tiny_page = False
+            elif pages and tiny and len(pages[-1]) >= 12:
+                # A two-row trade must not become a mostly empty last page.
+                previous = pages.pop()
+                cut = len(previous) - 6
+                while cut > 1 and previous[cut - 1]['kind'] in ('category', 'section'):
+                    cut -= 1
+                pages.append(previous[:cut])
+                pages.extend(_chunk(previous[cut:] + block))
+                tiny_page = False
+            else:
+                pages.extend(_chunk(block))
+                tiny_page = tiny
+    if len(pages) > 8:
+        raise ValueError('明細が8ページを超えます。工事範囲を分けてください。文字を縮めて詰め込むことはしません。')
+    actual = {r['item'].row_id: n for n, page in enumerate(pages, 3) for r in page if r['kind'] == 'item'}
+    for row_id, number in estimate.requested_pages.items():
+        if row_id not in actual or actual[row_id] != number:
+            selected = next((r for r in logical if r['kind']=='item' and r['item'].row_id==row_id), None)
+            label = f"No.{selected['no']} {selected['item'].name}" if selected else '指定の品目'
+            raise ValueError(f'{label}は現在{actual.get(row_id, "不明")}ページ目です。指定した{number}ページ目には合いません。区切りを変更するか、自動のページ分けに戻してください。')
+    return {'compact': False, 'pages': pages, 'first_detail': 3}
+
+
+def describe(estimate, layout=None):
+    layout = layout or plan(estimate)
+    result = [{'page': 1, 'label': '表紙・総合金額', 'rows': []}]
+    if not layout['compact']:
+        result.append({'page': 2, 'label': '工種ごとの一式まとめ・諸経費', 'rows': []})
+    for number, page in enumerate(layout['pages'], layout['first_detail']):
+        items = [r for r in page if r['kind'] == 'item']
+        trades = list(dict.fromkeys(r['category'].name for r in page if r.get('category') is not None))
+        if layout['compact']:
+            trades = [c.name for c in estimate.categories if not c.summary_only]
+            if any(c.summary_only for c in estimate.categories):
+                trades.append('諸経費等')
+        result.append({'page': number, 'label': '・'.join(trades) or '工事内容明細',
+                       'rows': [{'no': r['no'], 'row_id': r['item'].row_id, 'name': r['item'].name} for r in items]})
+    return result
+
+
+def build_outputs(estimate, template_path):
+    from openpyxl import load_workbook
+    from openpyxl.styles import PatternFill
+    from template_fill_test_v2 import (QUOTE_SHEET, SUMMARY_SHEET, DETAIL_PAGE_START_ROW,
+        DETAIL_PAGE_BLOCK_ROWS, MAX_DETAIL_PAGES, _set, BRAND_TINT)
+    from print_layout import split_print_pages, render_estimate_pdf
+    before = template_path.read_bytes()
+    layout = plan(estimate)
+    actual_items = [r['item'] for page in layout['pages'] for r in page if r['kind'] == 'item']
+    expected_items = ([i for c in estimate.categories if not c.summary_only for i in c.items]
+                      + ([i for c in estimate.categories if c.summary_only for i in c.items] if layout['compact'] else []))
+    if [id(i) for i in actual_items] != [id(i) for i in expected_items]:
+        raise ValueError('明細の欠落・重複・並び順の不一致を検出しました。')
+    wb = load_workbook(BytesIO(before))
+    source = wb[QUOTE_SHEET]
+    for n in range(MAX_DETAIL_PAGES):
+        start = DETAIL_PAGE_START_ROW + n * DETAIL_PAGE_BLOCK_ROWS
+        for row in range(start, start + DETAIL_PAGE_BLOCK_ROWS):
+            source.row_dimensions[row].hidden = n >= len(layout['pages'])
+    split_print_pages(wb, estimate)
+    if layout['compact']:
+        del wb[SUMMARY_SHEET]
+    cover = wb[QUOTE_SHEET]
+    import re
+    honorific = re.search(r'(御中|様|殿)\s*$', estimate.customer)
+    _set(cover, 5, 1, re.sub(r'[\s　]*(御中|様|殿)\s*$', '', estimate.customer))
+    _set(cover, 5, 4, honorific.group(1) if honorific else '御中')
+    _set(cover, 7, 7, estimate.issue_date)
+    _set(cover, 25, 3, estimate.project_name)
+    _set(cover, 29, 3, estimate.valid_days)
+    item_refs = {i: [] for i in range(len(estimate.categories))}
+    category_index = {id(c): i for i, c in enumerate(estimate.categories)}
+    item_categories = {id(item): i for i, c in enumerate(estimate.categories) for item in c.items}
+    subtotal_cells = []
+    compact_cells = {}
+    for n, page in enumerate(layout['pages'], 1):
+        ws = wb[f'明細{n}']
+        for row in range(3, 23):
+            for col in range(1, 9):
+                _set(ws, row, col, None)
+        page_refs = []
+        for row, entry in enumerate(page, 3):
+            kind = entry['kind']
+            if kind == 'item':
+                item = entry['item']
+                values = [entry['no'], item.name, item.spec, item.qty, item.unit, item.unit_price, None, item.remark]
+                for col, value in enumerate(values, 1):
+                    _set(ws, row, col, value)
+                ws.cell(row, 4).number_format = '#,##0.################'
+                ws.cell(row, 6).number_format = '#,##0.################'
+                ws.cell(row, 7).value = f'=ROUND(D{row}*F{row},0)'
+                ref = f"'{ws.title}'!G{row}"
+                item_refs[item_categories[id(item)]].append(ref)
+                page_refs.append(f'G{row}')
+            elif kind in ('category', 'section'):
+                label = f"{entry['index']}. {entry['category'].name}" if kind == 'category' else '【' + entry['label'] + '】'
+                _set(ws, row, 2, label)
+                for col in range(1, 9):
+                    ws.cell(row, col).fill = PatternFill('solid', fgColor=BRAND_TINT)
+            elif kind == 'subtotal':
+                _set(ws, row, 6, '小計')
+                subtotal_cells.append((ws, row, category_index[id(entry['category'])]))
+            else:
+                label = {'compact_subtotal': '小計', 'compact_discount': '値引き', 'compact_net': '税抜合計', 'compact_tax': '消費税'}[kind]
+                _set(ws, row, 6, label)
+                compact_cells[kind] = row
+        if layout['compact']:
+            subtotal, discount, net, tax = (compact_cells['compact_' + key] for key in ('subtotal', 'discount', 'net', 'tax'))
+            ws.cell(subtotal, 7).value = '=SUM(' + ','.join(page_refs) + ')'
+            _set(ws, discount, 7, estimate.discount)
+            ws.cell(net, 7).value = f'=G{subtotal}+G{discount}'
+            ws.cell(tax, 7).value = f'=ROUNDDOWN(G{net}*{estimate.tax_rate},0)'
+            _set(ws, 24, 6, '税込合計')
+            _set(ws, 23, 1, '各明細金額は税抜です。消費税は合計欄に計上しています。')
+            ws.cell(24, 7).value = f'=G{net}+G{tax}'
+        else:
+            ws.cell(24, 7).value = '=SUM(' + ','.join(page_refs) + ')' if page_refs else '=0'
+    for ws, row, index in subtotal_cells:
+        ws.cell(row, 7).value = '=SUM(' + ','.join(item_refs[index]) + ')'
+    if not layout['compact']:
+        summary = wb[SUMMARY_SHEET]
+        for row in range(3, 19):
+            for col in range(1, 9):
+                _set(summary, row, col, None)
+        for index, category in enumerate(estimate.categories):
+            row = 3 + index
+            if category.summary_only:
+                item = category.items[0]
+                values = [index + 1, item.name, item.spec, item.qty, item.unit, item.unit_price, None, item.remark]
+                formula = f'=ROUND(D{row}*F{row},0)'
+            else:
+                values = [index + 1, category.name, '工事一式', 1, '式', None, None, '']
+                formula = '=SUM(' + ','.join(item_refs[index]) + ')'
+            for col, value in enumerate(values, 1):
+                _set(summary, row, col, value)
+            summary.cell(row, 4).number_format = '#,##0.################'
+            summary.cell(row, 6).number_format = '#,##0.################'
+            summary.cell(row, 7).value = formula
+        summary['G22'] = '=SUM(G3:G18)'
+        _set(summary, 23, 7, estimate.discount)
+        summary['G24'] = '=G22+G23'
+        summary['G25'] = f'=ROUNDDOWN(G24*{estimate.tax_rate},0)'
+        summary['G26'] = '=G24+G25'
+    cover['C13'] = "='明細1'!G24" if layout['compact'] else "='工事品目集計'!G26"
+    for n, ws in enumerate(wb, 1):
+        ws.oddFooter.right.text = f'{n} / {len(wb.worksheets)}'
+    wb.calculation.calcMode = 'auto'
+    wb.calculation.fullCalcOnLoad = True
+    output = BytesIO()
+    wb.save(output)
+    if template_path.read_bytes() != before:
+        raise ValueError('元の流し込みテンプレートが変更されています。')
+    return output.getvalue(), render_estimate_pdf(estimate), wb.sheetnames

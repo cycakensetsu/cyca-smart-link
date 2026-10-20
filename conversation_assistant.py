@@ -37,6 +37,13 @@ SYSTEM = '''あなたは彩架建設の見積相談担当。日本語の会話�
 顧客値引き、既存行の工事種別/顧客備考/採用(除外理由必須)の変更案を作る。
 原価・数量・品名・仕様・税・原本確認・行の追加や削除・工法の推測・承認・出力は実行不可。
 既存行の訂正が必要なら原本を照合して入力欄で直してもらう。工法や架空費目で合計を合わせない。
+ページ分けも相談できる。print_rowsのNoと行IDを使い、pagebreakでその品目から改ページする案を作る。
+kind=pagebreak,row_idを指定、valueは希望する物理ページ番号の文字列（指定なしなら空文字）、
+keyは工種名（工種の先頭から区切る場合のみ）。「ここから」だけで対象不明なら品目/Noを聞く。
+kind=autopagesは自動のページ分けへ戻す案。「自動でページを分け直して」等の明示発言が必要。
+基本は表紙、2枚目に工種別一式と諸経費、3枚目から工種ごとの明細。2行以下の小工種は相乗り。
+1原本・1工種で明細と諸経費が1ページに収まる場合は表紙と明細の2枚にする。
+AIは配置確認や最終PDF作成を承認しない。区切りを変えたら完成イメージを再確認してもらう。
 「よしなに」「いい感じ」は相談開始の言葉。金額・対象・方法を推測せず必要事項を簡潔に聞く。
 複数候補の業者/工種/行、上乗せと最終売価、税込税抜、粗利益率と上乗せ率の曖昧さは質問する。
 前の利用者の発言を参照し、今回の訂正を優先する。未反映の変更案は実行済みと言わない。
@@ -182,6 +189,26 @@ def validate_proposal(raw, context, history):
             elif not value.strip() or value not in evidence:
                 raise ValueError('工種・顧客備考は入力する文字を明示してください。')
             identity = (kind, c['row_id'], field)
+        elif kind == 'pagebreak':
+            printed = context.get('print_rows', [])
+            row = next((r for r in printed if r['row_id'] == c['row_id']), None)
+            if not row or not any(w in evidence for w in ('ページ', '改ページ')):
+                raise ValueError('ページを分ける品目をNoか品名で指定してください。')
+            by_no = bool(re.search(r'(?:No\.?|明細|項目)\s*' + str(row['no']) + r'(?!\d)', unicodedata.normalize('NFKC', evidence), re.I))
+            by_name = row['name'] in evidence and sum(r['name'] == row['name'] for r in printed) == 1
+            trade_rows = [r for r in printed if r['trade'] == c['key']]
+            trade_name = c['key'].removesuffix('工事')
+            by_trade = bool(trade_rows and trade_name and trade_rows[0]['row_id'] == row['row_id'] and trade_name in evidence)
+            if not (by_no or by_name or by_trade):
+                raise ValueError('どの品目から分けるか特定できません。Noか品名で指定してください。')
+            c['value'] = integer(_number(value, evidence)) if value else 0
+            if c['value'] and not 2 <= c['value'] <= 10:
+                raise ValueError('希望ページは2〜10ページの範囲で指定してください。')
+            identity = (kind, c['row_id'])
+        elif kind == 'autopages':
+            if '自動' not in evidence or 'ページ' not in evidence:
+                raise ValueError('自動のページ分けへ戻すことを明示してください。')
+            identity = (kind,)
         else:
             raise ValueError('対応していない操作です。原本にない費目・工法は追加できません。')
         if identity in seen:
@@ -190,6 +217,8 @@ def validate_proposal(raw, context, history):
         checked.append(c)
     if len(target_scope_mode) > 1:
         raise ValueError('上乗せ対象の範囲と方法は、一度に一種類を指定してください。')
+    if any(c['kind']=='autopages' for c in checked) and any(c['kind']=='pagebreak' for c in checked):
+        raise ValueError('自動のページ分けと区切りの指定は、一度に片方を指定してください。')
     return {'reply': reply, 'questions': questions, 'changes': checked, 'base': digest(context)}
 
 
@@ -212,6 +241,15 @@ def apply_proposal(proposal, context):
             row[c['field']] = c['value']
             if c['field'] == '採用':
                 row['除外理由'] = c['reason'] if not c['value'] else ''
+        elif kind == 'pagebreak':
+            result['metadata']['改ページ'] = list(dict.fromkeys(result['metadata'].get('改ページ', []) + [c['row_id']]))
+            if c['value']:
+                result['metadata'].setdefault('希望ページ', {})[c['row_id']] = c['value']
+            else:
+                result['metadata'].setdefault('希望ページ', {}).pop(c['row_id'], None)
+        elif kind == 'autopages':
+            result['metadata']['改ページ'] = []
+            result['metadata']['希望ページ'] = {}
     return result
 
 
@@ -284,3 +322,12 @@ def comparison_figures(context):
         return output
     except (ValueError, TypeError, KeyError):
         return []
+
+
+def print_rows(rows):
+    groups = {}
+    for row in rows:
+        if row.get('採用') and not row.get('集計のみ'):
+            groups.setdefault(row['工事種別'], []).append(row)
+    return [{'no': no, 'row_id': row['行ID'], 'name': row['品名'], 'trade': trade}
+            for no, (trade, row) in enumerate(((trade, row) for trade, group in groups.items() for row in group), 1)]
