@@ -10,9 +10,11 @@ class UploadStateTest(unittest.TestCase):
             with self.subTest(entrypoint=name):
                 at = AppTest.from_file(str(Path(__file__).parent / name))
                 at.secrets['GOOGLE_API_KEY'] = 'verification-only-placeholder'
-                at.session_state['logged_in'] = True
-                at.session_state['username'] = 'verification'
+                at.secrets['users'] = [{'username':'verification','password':'synthetic-login-only'}]
                 at.run(timeout=30)
+                at.text_input[0].set_value('verification')
+                at.text_input[1].set_value('synthetic-login-only')
+                at.button[0].click().run(timeout=30)
                 at.text_input(key='output_customer').set_value('前の宛名 様')
                 at.text_input(key='output_project').set_value('前の工事')
                 at.run(timeout=30)
