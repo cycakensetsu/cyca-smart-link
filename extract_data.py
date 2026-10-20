@@ -2,6 +2,7 @@ import streamlit as st
 from google import genai
 import json
 import hashlib
+import uuid
 import pandas as pd
 import os
 import math
@@ -481,10 +482,13 @@ st.markdown("---")
 st.markdown('<div class="sub-header">📄 ファイルアップロード</div>', unsafe_allow_html=True)
 st.caption("目安：1ファイル20MBまで・複数は5ファイル程度まで。それ以上はタイムアウトやエラーになる場合があります。")
 
+if '_upload_epoch' not in st.session_state:
+    st.session_state['_upload_epoch'] = uuid.uuid4().hex
 uploaded_files = st.file_uploader(
     "PDF・写真（JPG, PNG）を選択、またはドラッグ＆ドロップ（複数社分まとめてOK！）",
     type=["pdf", "jpg", "jpeg", "png"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key='estimate_upload_' + st.session_state['_upload_epoch'],
 )
 
 # 新しいアップロードへ切り替わったら、前回の会社別入力と完成ファイルを破棄する。
