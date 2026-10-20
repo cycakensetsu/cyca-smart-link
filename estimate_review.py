@@ -152,6 +152,7 @@ def review_rows(detail, sources):
     if len(names) != len(set(names)):
         raise ValueError("同名ファイルがあります。異なる名前で取り込み直してください。")
     mapping = {s["name"]: s["id"] for s in sources}
+    source_metadata = {s['name']: s for s in sources}
     result = []
     for i, (_, row) in enumerate(detail.iterrows()):
         r = {str(k): clean(v) for k, v in row.items()}
@@ -163,6 +164,11 @@ def review_rows(detail, sources):
                   "工事種別": suggest_trade(r), "採用": True, "訂正理由": "", "除外理由": ""})
         r["部位"] = original_section if original_section not in ('', '未分類', '不明') else ''
         r["顧客備考"] = ""
+        # Whole-document extraction may omit a page number. Only a measured
+        # single-page source makes its location certain without AI inference.
+        if r.get('ページ') in ('', None) and source_metadata[source].get('pages') == 1:
+            r['ページ'] = 1
+            r['ページ根拠'] = '原本ファイルの実測ページ数が1'
         result.append(r)
     return result
 
