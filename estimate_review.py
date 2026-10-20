@@ -236,7 +236,13 @@ def allocate(rows, targets):
 def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, metadata=None, resolutions=None):
     """Return a complete reviewable snapshot. Corrections never change raw data."""
     metadata = dict(metadata or {})
-    metadata['出力デザイン'] = '既存横型流し込み（20行・版2026-10-20）'
+    metadata['出力デザイン'] = '既存横型流し込み（工種別ページ・配置確認版2026-10-20）'
+    page_breaks = metadata.get('改ページ', [])
+    if not isinstance(page_breaks, list) or len(set(page_breaks)) != len(page_breaks) or any(k not in {r['行ID'] for r in edited_rows if r.get('採用')} for k in page_breaks):
+        raise ValueError('改ページする品目を確認してください。')
+    requested = metadata.get('希望ページ', {})
+    if not isinstance(requested, dict) or any(k not in page_breaks or type(v) is not int or not 2 <= v <= 10 for k, v in requested.items()):
+        raise ValueError('希望するページ番号を確認してください。')
     resolutions = dict(resolutions or {})
     issues = []
     def issue(code, rows, message, level="確認"):
@@ -378,13 +384,18 @@ def verify_approval(draft, approval):
 
 def build_approved_estimate(draft, approval):
     verify_approval(draft, approval)
-    from template_fill_test_v2 import Category, Estimate, LineItem, fill_estimate_v2
+    from template_fill_test_v2 import fill_estimate_v2
+    return fill_estimate_v2(estimate_for_output(draft), save_to_disk=False)
+
+
+def estimate_for_output(draft):
+    from template_fill_test_v2 import Category, Estimate, LineItem
     p = draft["payload"]
     categories = []
     for r in p["計算明細"]:
         item = LineItem(name=r["品名"], spec=r.get("仕様", ""), qty=float(r["数量"]), unit=r["単位"],
                         unit_price=float(r["見積単価"]), amount=integer(r["見積金額"]),
-                        remark=str(r.get("顧客備考", "")), section=r.get("部位", ""))
+                        remark=str(r.get("顧客備考", "")), section=r.get("部位", ""), row_id=r['行ID'])
         summary_only = bool(r.get("集計のみ", False))
         if summary_only:
             categories.append(Category(item.name, [item], summary_only=True))
@@ -398,5 +409,15 @@ def build_approved_estimate(draft, approval):
     if not str(m.get("宛名", "")).strip() or not str(m.get("工事名称", "")).strip():
         raise ValueError("宛名と工事名称を入力してください。")
     estimate = Estimate("", m["宛名"], m["工事名称"], m.get("見積日", ""), m.get("有効期限", "30日"),
-                        categories, p["値引き"], m.get("顧客税率", .10), reference_layout=False)
-    return fill_estimate_v2(estimate, save_to_disk=False)
+                        categories, p["値引き"], m.get("顧客税率", .10), reference_layout=False,
+                        pour_layout=True, source_count=len(p['原本']), page_breaks=tuple(m.get('改ページ', [])),
+                        requested_pages=m.get('希望ページ', {}))
+    return estimate
+
+
+def build_preview(draft):
+    if draft['unresolved']:
+        raise ValueError('原本・金額・確認事項を先に確認してください。')
+    from template_fill_test_v2 import fill_estimate_v2
+    result = fill_estimate_v2(estimate_for_output(draft), save_to_disk=False)
+    return result

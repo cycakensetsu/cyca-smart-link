@@ -3,14 +3,14 @@ import copy
 from dataclasses import asdict
 
 from estimate_review import digest
-from conversation_assistant import apply_proposal, converse, transcribe, comparison_figures
+from conversation_assistant import apply_proposal, converse, transcribe, comparison_figures, print_rows
 
 
 def widget_fingerprint(state):
     prefixes = ('review_rows_', 'review_target_', 'review_basis_', 'review_tax_',
                 'review_net_', 'review_gross_', 'review_source_ok_')
     names = {'review_scope', 'review_target_mode', 'review_discount', 'review_discount_reason',
-             'review_customer', 'review_project', 'review_date', 'review_customer_tax'}
+             'review_customer', 'review_project', 'review_date', 'review_customer_tax', 'review_page_breaks'}
     return digest({key: state[key] for key in state if key in names or key.startswith(prefixes)})
 
 
@@ -37,6 +37,8 @@ def apply_pending(st, store):
         for field, key in mapping.items():
             st.session_state[key] = after['metadata'][field]
         st.session_state['review_discount'] = after['discount']
+        st.session_state['review_page_breaks'] = after['metadata'].get('改ページ', [])
+        st.session_state['_review_requested_pages'] = after['metadata'].get('希望ページ', {})
         targets = after['targets']
         if targets:
             st.session_state['review_scope'] = targets[0]['scope']
@@ -46,7 +48,7 @@ def apply_pending(st, store):
                 del st.session_state[key]
         for target in targets:
             st.session_state['review_target_' + digest([target['scope'], target['mode'], target['key']])] = float(target['value'])
-        for key in ('_review_result', '_review_approval', '_vault_archive', '_review_proposal'):
+        for key in ('_review_result', '_review_approval', '_review_preview', '_vault_archive', '_review_proposal'):
             st.session_state.pop(key, None)
         st.session_state['_review_conversation_record'] = record_id
         st.session_state['_review_assistant_notice'] = '案を入力欄に反映しました。下の金額と確認事項を見てから承認してください。'
@@ -56,7 +58,7 @@ def apply_pending(st, store):
 
 def working_context(rows, sources, targets, discount, metadata):
     return copy.deepcopy({'rows': rows, 'sources': sources,
-        'targets': [asdict(t) for t in targets], 'discount': discount, 'metadata': metadata})
+        'targets': [asdict(t) for t in targets], 'discount': discount, 'metadata': metadata, 'print_rows': print_rows(rows)})
 
 
 def change_description(c, context):
@@ -66,6 +68,11 @@ def change_description(c, context):
         return f"{c['scope']}・{c['key']}：{c['mode']} → {c['value']:g}" + ('円' if c['mode'] == '上乗せ額' else '%' if c['mode'] == '粗利益率' else '倍')
     if c['kind'] == 'discount':
         return f"顧客値引き → {c['value']:,}円（{c['reason']}）"
+    if c['kind'] == 'autopages':
+        return 'ページ分け → 自動で見やすく分け直す'
+    if c['kind'] == 'pagebreak':
+        row = next(r for r in context['print_rows'] if r['row_id'] == c['row_id'])
+        return f"No.{row['no']} {row['name']}から新しいページ" + (f"（希望：{c['value']}ページ目）" if c['value'] else '')
     row = next(r for r in context['rows'] if r['行ID'] == c['row_id'])
     value = ('採用する' if c['value'] else '除外する') if c['field'] == '採用' else c['value']
     return f"{row['見積元']}・{row['品名']}：{c['field']} → {value}" + (f"（{c['reason']}）" if c['reason'] else '')

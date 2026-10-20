@@ -138,6 +138,7 @@ class LineItem:
     remark: str = ""
     section: str = ""
     source_page: int = 0
+    row_id: str = ''
 
 
 @dataclass
@@ -162,6 +163,10 @@ class Estimate:
     discount: int = 0      # 値引き（マイナス値で保持）
     tax_rate: float = 0.10
     reference_layout: bool = False
+    pour_layout: bool = False
+    source_count: int = 1
+    page_breaks: tuple = ()
+    requested_pages: dict = field(default_factory=dict)
 
     @property
     def subtotal(self) -> int:
@@ -584,7 +589,7 @@ def _build_detail_rows(estimate: Estimate) -> List[Dict]:
                 rows.append({'kind': 'section', 'label': item.section})
             last_section = item.section
             no += 1
-            rows.append({"kind": "item", "no": no, "item": item})
+            rows.append({"kind": "item", "no": no, "item": item, 'category': category})
         rows.append({"kind": "subtotal", "category": category})
     return rows
 
@@ -1199,6 +1204,14 @@ def fill_estimate_v2(
         from reference_layout import build_reference_outputs
         try:
             data, pdf_data, names = build_reference_outputs(estimate)
+        except ValueError as exc:
+            return FillResult(False, [str(exc)], warnings, None, file_name, [], summary)
+        return FillResult(True, [], warnings, data, file_name, names, summary, pdf_data)
+
+    if estimate.pour_layout:
+        from pour_layout import build_outputs
+        try:
+            data, pdf_data, names = build_outputs(estimate, template_path)
         except ValueError as exc:
             return FillResult(False, [str(exc)], warnings, None, file_name, [], summary)
         return FillResult(True, [], warnings, data, file_name, names, summary, pdf_data)
