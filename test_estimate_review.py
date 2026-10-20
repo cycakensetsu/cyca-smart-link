@@ -34,6 +34,19 @@ class EstimateReviewTest(unittest.TestCase):
         self.assertEqual(d["payload"]["合計"]["税抜売価"], 110000)
         self.assertEqual(self.rows, before)
 
+    def test_only_measured_single_page_sources_fill_missing_page(self):
+        detail=self.detail.copy()
+        detail['ページ']=''
+        single={**self.source,'pages':1}
+        self.assertEqual(review_rows(detail,[single])[0]['ページ'],1)
+        self.assertEqual(review_rows(detail,[{**single,'pages':2}])[0]['ページ'],'')
+        self.assertEqual(review_rows(detail,[self.source])[0]['ページ'],'')
+        detail['ページ']=2
+        rows=review_rows(detail,[single])
+        self.assertEqual(rows[0]['ページ'],2)
+        draft=build_draft(rows,copy.deepcopy(rows),[single],metadata=self.meta)
+        self.assertTrue(any(i['種類']=='原本参照' for i in draft['unresolved']))
+
     def test_three_scopes_and_three_target_methods(self):
         for scope,key in (("全体", "全体"), ("業者別", "架空防水社"), ("工種別", "防水工事")):
             for mode,value,expected in (("上乗せ額",10000,110000),("掛け率",1.2,120000),("粗利益率",20,125000)):
