@@ -306,6 +306,10 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
                 issue("税合計", [], "原本の税抜小計＋税額と税込総額が一致しません。", "停止")
             if s.get("tax_rate") in (0, 0.08, 0.10) and abs(integer(s["tax"]) - integer(s["net_total"]) * s["tax_rate"]) > 1:
                 issue("税率不一致", [], "原本の税額と選択税率が一致しません。", "停止")
+        elif s.get('gross_total') is not None and s.get('net_total') is not None and s.get('tax_rate') in (0,.08,.10):
+            expected_tax = int((Decimal(str(s['net_total'])) * Decimal(str(s['tax_rate']))).quantize(Decimal(1),rounding=ROUND_HALF_UP))
+            if integer(s['net_total']) + expected_tax != integer(s['gross_total']):
+                issue('税合計', [], '原本の合計と、工事金額に消費税を足した金額が一致しません。', '停止')
     rates = {s.get("tax_rate") for s in sources}
     if len(rates) > 1:
         issue("税率混在", [], "仕入の税率が混在しています。顧客向け税率との対応を確認してください。")

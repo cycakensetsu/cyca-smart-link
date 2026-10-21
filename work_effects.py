@@ -60,7 +60,7 @@ def render(st):
         else:
             from streamlit.components.v1 import declare_component
             _component = declare_component('cyca_work_effects', path=str(assets))
-    with st.sidebar:
+    with st.sidebar.expander('音と演出の設定'):
         events = st.session_state.get('_effects_events', [])
         if hasattr(st.components, 'v2'):
             _component(data={'events': events}, key='cyca_work_effects')

@@ -25,7 +25,7 @@ st.session_state['checked_source']=source
 '''
             at=AppTest.from_string(app).run()
             self.assertFalse(at.session_state['checked_source']['confirmed'])
-            self.assertEqual(at.session_state['checked_source']['tax_basis'],'不明')
+            self.assertEqual(at.session_state['checked_source']['tax_basis'],'税抜')
             self.assertEqual(len(at.session_state['_review_source_previews']),1)
             sid=at.session_state['checked_source']['id']
             at.selectbox(key='review_source_page_'+sid).select(2).run()

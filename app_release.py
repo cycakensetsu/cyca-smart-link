@@ -11,8 +11,9 @@ import sys
 import threading
 
 _ROOT = Path(__file__).resolve().parent
-_MODULES = ('product_design', 'work_effects', 'source_review_ui', 'estimate_pipeline', 'template_fill_test_v2', 'horizontal_estimate_flow',
+_MODULES = ('product_design', 'work_effects', 'estimate_pipeline', 'template_fill_test_v2', 'horizontal_estimate_flow',
             'print_layout', 'reference_layout', 'estimate_review', 'vault_archive',
+            'cyca_reference', 'source_table', 'gemini_resilience', 'source_extraction', 'source_amounts', 'source_review_ui', 'review_input_ui', 'review_findings_ui',
             'conversation_assistant', 'conversation_ui', 'pour_layout',
             'output_preview_ui', 'review_ui', 'legacy_exports')
 _lock = threading.RLock()

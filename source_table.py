@@ -76,9 +76,53 @@ def read_native_tables(path):
     return rows, subtotals, next(iter(projects)) if len(projects) == 1 else ""
 
 
+def reconcile_cyca_reference(path, records, summaries):
+    """Use a fully validated original CYCA table, including summary-only rows.
+
+    No residual amount becomes a new fee. Every added row must exist in the
+    original eight-column table, and its full table must reconcile beforehand.
+    """
+    from cyca_reference import read_reference_quote, reference_estimate
+    vendors = {r.get('見積元') for r in records if r.get('見積元')}
+    if len(vendors) != 1:
+        return None
+    try:
+        quote = read_reference_quote(path)
+        estimate = reference_estimate(quote, '原本照合')
+    except (ValueError, RuntimeError, AttributeError, OSError):
+        return None
+    source = records[0].get('__source_name', '')
+    vendor = next(iter(vendors))
+    native = [dict(row) for row in quote.detail]
+    for category in estimate.categories:
+        if not category.summary_only:
+            continue
+        for item in category.items:
+            found = [row for row in quote.summary if row['品名'] == item.name and row['金額'] == item.amount]
+            if len(found) != 1:
+                return None
+            native.append(dict(found[0], 工事種別=category.name, __summary_only=True))
+    if quote.discount:
+        if not quote.discount_page or not quote.discount_evidence:
+            return None
+        native.append({'品名':'値引き','仕様':'原本に記載された値引き','数量':1,'単位':'式',
+                       '単価':quote.discount,'金額':quote.discount,'工事種別':'値引き',
+                       '__page_number':quote.discount_page,'__summary_only':True,
+                       '抽出元テキスト範囲':quote.discount_evidence})
+    if sum(row['金額'] for row in native) != quote.net_total:
+        return None
+    for index,row in enumerate(native,1):
+        row.update({'No':index,'見積元':vendor,'__source_name':source})
+    # Preserve original summary metadata; details now include its printed fees.
+    return native, summaries
+
+
 def reconcile_native_pdf(path, records, summaries):
     if not str(path).lower().endswith(".pdf"):
         return records, summaries
+    reference = reconcile_cyca_reference(path, records, summaries)
+    if reference is not None:
+        return reference
     try:
         native, subtotals, project = read_native_tables(path)
     except (ValueError, RuntimeError, AttributeError):

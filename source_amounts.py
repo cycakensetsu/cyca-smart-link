@@ -1,0 +1,139 @@
+"""Read printed totals independently of extracted detail rows.
+
+The user's normal supplier convention is net detail prices and 10% tax.
+Never substitute the sum of OCR rows for a missing original total.
+"""
+from decimal import Decimal, ROUND_HALF_UP
+import re
+import unicodedata
+
+
+def money(value):
+    if value is None or isinstance(value, bool):
+        return None
+    text = unicodedata.normalize('NFKC', str(value)).replace(',', '').strip()
+    if not re.fullmatch(r'[¥￥]?\s*-?\d+(?:\.0+)?\s*円?', text):
+        return None
+    return int(Decimal(re.sub(r'[¥￥円\s]', '', text)))
+
+
+def net_from_gross(gross, rate=.10, tax=None):
+    if tax is not None:
+        return gross - tax
+    return int((Decimal(gross) / (1 + Decimal(str(rate)))).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def _lines(data):
+    import fitz
+    try:
+        with fitz.open(stream=data, filetype='pdf') as document:
+            for page_no, page in enumerate(document, 1):
+                words = page.get_text('words')
+                rows = []
+                for word in sorted(words, key=lambda w:(round(w[3], 0), w[0])):
+                    if rows and abs(rows[-1][0] - word[3]) <= 2:
+                        rows[-1][1].append(word)
+                    else:
+                        rows.append([word[3], [word]])
+                for _, row in rows:
+                    yield page_no, ' '.join(w[4] for w in sorted(row, key=lambda w:w[0]))
+    except (ValueError, RuntimeError, OSError):
+        return
+
+
+LABELS = {
+    'net_total': [(5, r'改小計|値引後小計|値引き後小計|税抜合計|税抜小計|税抜金額|税抜価格'), (1, r'小計')],
+    'tax': [(4, r'消費税額|消費税|税額')],
+    'gross_total': [(5, r'税込合計|税込総額|税込金額|税込価格'), (3, r'総合計|工事費計|御見積もり金額|御見積り金額|お見積もり金額|お見積り金額|御見積金額|お見積金額|見積金額'), (1, r'合計金額|合計')],
+}
+
+
+def read_amounts(name, data, summaries=None):
+    candidates = {key: [] for key in LABELS}
+    evidence = []
+    lines = list(_lines(data)) if str(name).lower().endswith('.pdf') else []
+    for pos, (page, raw) in enumerate(lines):
+        text = re.sub(r'\s+', '', unicodedata.normalize('NFKC', raw))
+        for field, patterns in LABELS.items():
+            if field == 'gross_total' and '税抜' in text:
+                continue
+            if field == 'tax' and any(word in text for word in ('税別', '税抜', '別途', '含む')):
+                continue
+            for priority, pattern in patterns:
+                match = re.search(pattern, text)
+                if not match:
+                    continue
+                tail = text[match.end():]
+                tail = re.sub(r'\([^)]*%[^)]*\)|\d+(?:\.\d+)?%', '', tail)
+                tail = tail.strip(':：=()（）')
+                value = money(tail)
+                if value is None and not tail and pos + 1 < len(lines) and lines[pos+1][0] == page:
+                    value = money(lines[pos+1][1])
+                if value is not None and value >= 0:
+                    item = {'value':value, 'priority':priority, 'page':page, 'text':raw[:200], 'method':'原本の文字'}
+                    candidates[field].append(item)
+                    break
+    # OCR summaries are scoped to this exact original, never to another vendor.
+    for item in (summaries or {}).get('summary_sources', []):
+        if item.get('元ファイル') != name:
+            continue
+        for field, keys in {'net_total':('改小計','小計'), 'tax':('消費税',), 'gross_total':('工事費計',)}.items():
+            for key in keys:
+                value = money(item.get(key))
+                if value is not None and value >= 0:
+                    candidates[field].append({'value':value, 'priority':2 if key == '改小計' else 0, 'page':item.get('ページ') or 1, 'text':key, 'method':'AIの読み取り'})
+                    break
+    result = {'net_total':None, 'tax':None, 'gross_total':None, 'tax_basis':'税抜', 'tax_rate':.10, 'conflicts':[], 'evidence':evidence}
+    chosen = {}
+    for field, items in candidates.items():
+        if not items:
+            continue
+        top = max(i['priority'] for i in items)
+        best = [i for i in items if i['priority'] == top]
+        values = {i['value'] for i in best}
+        if len(values) == 1:
+            chosen[field] = best[0]
+            result[field] = best[0]['value']
+            evidence.append({'field':field, **best[0]})
+        else:
+            result['conflicts'].append(field)
+    # A final "合計" after a discount can be the net total while "小計"
+    # above it is before discount. Accept only an amount actually printed and
+    # consistent with an explicitly inclusive total and explicit tax.
+    if (result['gross_total'] is not None and result['tax'] is not None
+            and chosen.get('gross_total', {}).get('priority', 0) >= 5
+            and chosen.get('tax', {}).get('priority', 0) >= 4
+            and chosen.get('net_total', {}).get('priority', -1) < 5):
+        expected_net = result['gross_total'] - result['tax']
+        printed = [i for i in candidates['gross_total'] if 0 < i['priority'] < 5 and i['value'] == expected_net]
+        if printed:
+            result['net_total'] = expected_net
+            chosen['net_total'] = printed[0]
+            result['conflicts'] = [f for f in result['conflicts'] if f != 'net_total']
+            evidence.append({'field':'net_total', **printed[0]})
+    # Supplier quotation totals without an explicit tax amount are normally net.
+    # "見積金額" or "合計" alone is not evidence of an inclusive total.
+    generic = chosen.get('gross_total', {})
+    coherent_gross = (result['net_total'] is not None and result['gross_total'] == result['net_total'] + int((Decimal(result['net_total']) * Decimal('0.10')).quantize(Decimal(1),rounding=ROUND_HALF_UP)))
+    if result['gross_total'] is not None and generic.get('priority', 0) < 5 and result['tax'] is None and not coherent_gross:
+        if chosen.get('net_total', {}).get('priority', -1) < generic.get('priority', 0):
+            result['net_total'] = result['gross_total']
+            chosen['net_total'] = generic
+            result['conflicts'] = [f for f in result['conflicts'] if f != 'net_total']
+            evidence.append({'field':'net_total', **generic})
+        elif result['net_total'] is None and 'net_total' not in result['conflicts']:
+            result['net_total'] = result['gross_total']
+            evidence.append({'field':'net_total', **generic})
+        elif (result['net_total'] != result['gross_total']
+                and chosen.get('net_total', {}).get('priority', 0) <= generic.get('priority', 0)):
+            result['conflicts'].append('net_total')
+        result['gross_total'] = None
+    # A generic "total" can be a pre-tax subtotal. Do not mislabel it as gross.
+    if result['gross_total'] is not None and result['net_total'] == result['gross_total'] and result['tax']:
+        if chosen.get('gross_total', {}).get('priority', 0) < 5:
+            result['gross_total'] = None
+    if result['net_total'] is None and result['gross_total'] is not None and 'net_total' not in result['conflicts']:
+        result['net_total'] = net_from_gross(result['gross_total'], tax=result['tax'])
+        result['net_derived'] = True
+    result['page'] = next((e['page'] for e in evidence if e['field'] in ('net_total','gross_total')), 1)
+    return result
