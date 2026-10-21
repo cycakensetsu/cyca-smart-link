@@ -11,7 +11,7 @@ import sys
 import threading
 
 _ROOT = Path(__file__).resolve().parent
-_MODULES = ('estimate_pipeline', 'template_fill_test_v2', 'horizontal_estimate_flow',
+_MODULES = ('product_design', 'work_effects', 'source_review_ui', 'estimate_pipeline', 'template_fill_test_v2', 'horizontal_estimate_flow',
             'print_layout', 'reference_layout', 'estimate_review', 'vault_archive',
             'conversation_assistant', 'conversation_ui', 'pour_layout',
             'output_preview_ui', 'review_ui', 'legacy_exports')
@@ -24,6 +24,10 @@ def _source_fingerprint():
     for name in _MODULES:
         result.update(name.encode())
         result.update((_ROOT / (name + '.py')).read_bytes())
+    for asset in sorted((_ROOT / 'work_effects_frontend').glob('*')):
+        if asset.is_file():
+            result.update(asset.name.encode())
+            result.update(asset.read_bytes())
     return result.hexdigest()
 
 

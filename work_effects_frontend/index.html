@@ -1,0 +1,25 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;color:#203552}
+.card{position:relative;overflow:hidden;border:1px solid #d2dae7;border-radius:16px;background:linear-gradient(135deg,#fff,#eef5fc);padding:14px}
+.title{font-weight:750;margin-bottom:8px}.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}button{cursor:pointer;border:1px solid #cbd6e7;border-radius:10px;padding:9px 12px;font:inherit;background:#fff;color:#203552}#sound{background:#253e6c;color:#fff;font-weight:650;flex:1}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #38a5b9;outline-offset:2px}label{display:flex;align-items:center;gap:5px;font-size:12px}.volume{margin:10px 0}input[type=range]{width:118px;accent-color:#315784}select{font:inherit;border-radius:7px;border:1px solid #cad4e4;background:#fff;padding:3px;color:inherit;max-width:135px}.stage{position:relative;z-index:1;min-height:47px;display:flex;align-items:center;gap:9px;margin-top:8px;padding:8px;border-radius:10px;background:#ffffffb8}#icon{font-size:24px}#message{font-size:13px;font-weight:650}small{display:block;color:#63718a;font-size:11px;margin-top:8px}.pop{animation:pop .7s ease-out}.glow{animation:glow .9s ease-out}.slide{animation:slide .65s ease-out}.spark{position:absolute;pointer-events:none;width:5px;height:10px;top:35px;animation:fall 1s ease-out forwards}
+@keyframes pop{0%{transform:scale(.92);opacity:.3}60%{transform:scale(1.03)}100%{transform:scale(1)}}@keyframes glow{0%,100%{box-shadow:0 0 0 transparent}45%{box-shadow:0 0 0 8px #80cfbf55}}@keyframes slide{0%{transform:translateY(10px);opacity:.2}100%{transform:translateY(0);opacity:1}}@keyframes fall{to{transform:translate(var(--dx),140px) rotate(300deg);opacity:0}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+.card{border-color:#254c66;background:radial-gradient(circle at 100% 0,#17566688,transparent 65%),#0b192b;color:#eaf6ff;border-radius:14px;box-shadow:inset 0 1px #91e6ef15}.title{font-size:10px;letter-spacing:.19em;color:#79d8dc;margin-bottom:12px}.stage{border:1px solid #31576d;background:#0b2035cc}.stage #icon{width:29px;height:29px;display:grid;place-items:center;border:1px solid #67d4d588;border-radius:50%;font-size:17px;color:#8af3e2}.stage #message{font-size:12px;color:#f1faff}#sound{border:1px solid #63cfd278;background:linear-gradient(120deg,#194359,#245571);font-size:12px}button{background:#142e46;color:#d9effb;border-color:#315369;padding:8px 10px;font-size:12px}label,small{color:#a9c5d8}select{background:#142e46;border-color:#315369;color:#d9effb;font-size:12px}input[type=range]{accent-color:#6fd9da}.spark{width:2px;height:12px}.glow{animation:glow .9s ease-out}
+</style>
+<div class="card" id="card"><div class="title">CYCA / SOUND & MOTION</div>
+<div class="controls"><button id="sound" type="button" aria-pressed="false">音つきで始める</button><button id="sample" type="button" aria-label="完成の音を試す">試聴</button></div>
+<div class="controls volume"><label>音量 <input id="volume" aria-label="効果音の音量" type="range" min="0" max="50" step="5" value="20"><span id="volumeValue">20%</span></label><label><input id="motion" type="checkbox" checked>演出</label></div>
+<div class="controls"><label>雰囲気 <select id="theme"><option value="shuffle">毎回おまかせ</option><option value="glass">クリア</option><option value="wood">クール</option><option value="soft">ソフト</option></select></label></div>
+<div class="stage" id="stage" role="status" aria-live="polite"><span id="icon">◎</span><span id="message">ひらめきを、見積に。</span></div><small id="hint">音は最初にボタンを押すと有効になります。</small></div>
+<script src="effects.js"></script><script>
+const effects=createEffects(document);
+let connected=false,attempts=0;
+window.addEventListener('message',event=>{
+  if(event.source!==window.parent || event.data?.type!=='streamlit:render')return;
+  connected=true;effects.receive(event.data.args?.events || []);
+  window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:Math.ceil(document.getElementById('card').getBoundingClientRect().height)+4},'*');
+});
+function ready(){if(connected || attempts++>=20)return;window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');setTimeout(ready,250);}
+ready();
+</script></html>

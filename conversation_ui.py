@@ -80,16 +80,16 @@ def change_description(c, context):
 
 def render_conversation(st, api_key, context):
     st.session_state['_review_working'] = context
-    st.markdown('### 2. 🎙️ 確認した原価をもとに、上乗せ額を相談')
-    st.caption('彩架建設の見積書の型は設定済みです。例：「いくら載せるか相談したい」「全体に10万円上乗せして」「防水工事だけ粗利益率20%にして」。相談して決めた案を反映し、最後に確定して出力します。')
+    st.markdown('### 2. AIと見積プランをつくる')
+    st.caption('話しかけるだけで、価格・利益・値引き・ページ分けを一緒に整理できます。例：「利益を10万円確保したい」「防水工事の粗利益率を20%にして」「足場は別ページにして」。提案を確認してから反映します。')
     checked = bool(context['sources']) and all(s.get('confirmed') for s in context['sources'])
     ready = bool(api_key) and checked
     if not checked:
-        st.info('先に、各原本の「原本と明細・税区分を照合した」にチェックしてください。確認した仕入原価をもとに上乗せ額を相談します。')
+        st.info('先にステップ1で、元の見積書と読み取り結果を確認してください。確認できた原価をもとに、見積プランをつくります。')
     if checked:
         figures = comparison_figures(context)
         if figures:
-            with st.expander('相談用に、上乗せ額と粗利益率を比較する'):
+            with st.expander('価格と利益のバランスを見る'):
                 st.caption('比較のための計算例です。値引き後の粗利益額も表示します。適正利益の推奨値ではありません。')
                 st.dataframe(figures, hide_index=True, width='stretch')
     notice = st.session_state.pop('_review_assistant_notice', '')
