@@ -28,7 +28,10 @@ st.session_state['checked_source']=source
             self.assertEqual(at.session_state['checked_source']['tax_basis'],'税抜')
             self.assertEqual(len(at.session_state['_review_source_previews']),1)
             sid=at.session_state['checked_source']['id']
-            at.selectbox(key='review_source_page_'+sid).select(2).run()
+            self.assertTrue(at.button(key='review_source_page_'+sid+'_previous').disabled)
+            at.button(key='review_source_page_'+sid+'_next').click().run()
+            self.assertEqual(at.session_state['review_source_page_'+sid],2)
+            self.assertTrue(at.button(key='review_source_page_'+sid+'_next').disabled)
             self.assertEqual(list(at.exception),[])
             self.assertEqual(len(at.session_state['_review_source_previews']),2)
             from estimate_review import OriginalVault

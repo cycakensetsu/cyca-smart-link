@@ -432,7 +432,7 @@ if os.path.isfile(LOGO_PATH):
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
 else:
     st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
-st.info("原本を取り込む → 内容を確認 → AIと見積プランをつくる → 仕上がりを見て出力")
+st.info("原本を確認 → 品目・数量を確認 → お客様に出す金額を決める → 仕上がりを見て出力")
 st.caption("本サービスはベータ版です。計算結果は目安であり、正式な見積には必ずご自身で内容をご確認ください。重要な意思決定の唯一の根拠としてご利用にならないでください。")
 
 # ==========================================
@@ -485,6 +485,7 @@ with st.expander("従来の利益設定・出力形式を使う", expanded=False
             st.caption("工事品目・仕様・数量・単位・単価・金額・備考の汎用 Excel を出力します。")
 
 st.markdown("---")
+effects_slot = st.container()
 st.markdown('<div class="sub-header">原本を取り込む</div>', unsafe_allow_html=True)
 st.caption("目安：1ファイル20MBまで・複数は5ファイル程度まで。それ以上はタイムアウトやエラーになる場合があります。")
 st.caption("見積を読み込んだ後は、マイクで今回の要望を伝えて相談できます。")
@@ -630,7 +631,7 @@ def render_template_fill_test_v2():
 
 if uploaded_files:
     st.markdown(ready_panel([f.name for f in uploaded_files]), unsafe_allow_html=True)
-    analyze_label = (
+    analyze_label = "見積書を読み取る" if profit_mode == REVIEW_MODE else (
         "AIで見積を整理する" if profit_mode == REVIEW_MODE else
         "✨ 新しい見積書を解析してNumbers用に流し込む ✨"
         if format_choice == HORIZONTAL_FORMAT else "✨ AIでデータを解析 ＆ 利益計算を実行する ✨"
@@ -1153,4 +1154,5 @@ if profit_mode != REVIEW_MODE:
 
 # Stable component position preserves the user-activated audio context across reruns.
 render_archive(st)
-render_work_effects(st)
+with effects_slot:
+    render_work_effects(st)

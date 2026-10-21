@@ -209,6 +209,8 @@ def allocate(rows, targets):
     out["見積単価"] = pd.to_numeric(out["原価単価"]).astype(float)
     out["見積金額"] = pd.to_numeric(out["原価金額"]).astype(float)
     out["上乗せ額"] = 0.0
+    if not targets and any(r.get('__source_rounding_approved') for r in rows):
+        targets = [Target('全体','全体','上乗せ額',0)]
     covered = set()
     scopes = {t.scope for t in targets}
     if len(scopes) > 1:
@@ -227,10 +229,55 @@ def allocate(rows, targets):
             raise ValueError("同じ明細に複数の目標が指定されています。")
         covered.update(group.index)
         cost = sum(integer(x) for x in group["原価金額"])
-        allocated = _allocate_group_markup(group, target_total(cost, t))
+        total = target_total(cost, t)
+        if group.get('__source_rounding_approved', pd.Series(False,index=group.index)).any():
+            allocated = _price_rounded_source(group, total)
+        else:
+            allocated = _allocate_group_markup(group, total)
         for col in ("見積単価", "見積金額", "上乗せ額"):
             out.loc[allocated.index, col] = allocated[col].astype(float)
     return out
+
+
+def _price_rounded_source(group, total):
+    """Source costs stay immutable; only customer unit prices are calculated.
+
+    Validation has already required human confirmation of the printed facts,
+    bounded quantity rounding and an exact final source total. No residual is
+    inserted as a fee, discount or extra item.
+    """
+    from markup_rules import line_amount, quantity_steps, exact_remainder
+    pricing=group.copy()
+    for idx,row in pricing.iterrows():
+        if row.get('__source_rounding_approved'):
+            pricing.at[idx,'原価金額']=line_amount(row['数量'],row['原価単価'])
+    baseline=sum(integer(v) for v in pricing['原価金額'])
+    if total >= baseline:
+        result=_allocate_group_markup(pricing,total)
+    else:
+        difference=baseline-total
+        candidates=[]
+        for idx,row in pricing.iterrows():
+            if str(row['単位']) in ('式','一式') or float(row['原価単価'])<=0 or float(row['原価金額'])<=0:continue
+            step,_=quantity_steps(float(row['数量']),False)
+            capacity=min(difference,int(float(row['原価金額'])*.01))
+            if capacity>=step:candidates.append((idx,step,capacity))
+        adjustments=exact_remainder(difference,candidates) if difference<=1000000 else None
+        if adjustments is None:raise ValueError('原本の数量表示の丸めにより、この金額では売価単価を確定できません。希望する利益額を指定してください。')
+        result=pricing.copy()
+        result['見積単価']=result['原価単価'].astype(float)
+        result['見積金額']=result['原価金額'].astype(float)
+        for idx,amount in adjustments.items():
+            rate=round(float(result.at[idx,'原価単価'])-amount/float(result.at[idx,'数量']),2)
+            result.at[idx,'見積単価']=rate
+            result.at[idx,'見積金額']=line_amount(result.at[idx,'数量'],rate)
+        if sum(integer(v) for v in result['見積金額'])!=total:raise ValueError('売価の単価と合計を一致させられませんでした。利益額を変更してください。')
+    # Return original purchase facts even though a separate mathematical basis
+    # was used to determine customer prices.
+    result['原価金額']=group['原価金額']
+    result['原価単価']=group['原価単価']
+    result['上乗せ額']=result['見積金額']-group['原価金額']
+    return result
 
 
 def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, metadata=None, resolutions=None):
@@ -323,8 +370,18 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
                 raise ValueError("有限の数値が必要です。")
         for value in frame["原価金額"]:
             integer(value)
-        for check in validate_intermediate(frame, {}):
-            issue("明細検算", [], check["内容"], "停止")
+        from source_rounding import printed_rounding
+        for idx,row in frame.iterrows():
+            before=raw[row['行ID']]
+            source=source_map[row['原本ID']]
+            unchanged=all(row.get(k)==before.get(k) for k in ('数量','単位','原価単価','原価金額','抽出元テキスト範囲'))
+            allowed_rounding=(unchanged and source.get('confirmed') and row['行ID'] in source.get('rounding_rows',[])
+                              and printed_rounding(before) is not None)
+            frame.at[idx,'__source_rounding_approved']=bool(allowed_rounding)
+            accepted[idx]['__source_rounding_approved']=bool(allowed_rounding)
+            for check in validate_intermediate(frame.loc[[idx]], {}):
+                if allowed_rounding and '単価×数量' in check['内容']:continue
+                issue("明細検算", [row['行ID']], check["内容"], "停止")
         allocated = allocate(accepted, targets) if not any(i["レベル"] == "停止" for i in issues) else frame
     except (ValueError, TypeError, KeyError) as exc:
         issue("配分・数値", [], str(exc), "停止")

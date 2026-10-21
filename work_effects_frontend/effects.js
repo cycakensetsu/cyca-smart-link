@@ -17,16 +17,17 @@ function createEffects(root) {
     output: [[0,4,7,12,16],[0,7,12,14,19],[4,7,11,16,19],[0,4,9,12,21]],
     finish: [[12,9,7,12],[7,4,0,12],[16,12,7,12],[14,9,7,12]]
   };
-  let context, master, enabled = false, lastVoice = '', lastAnimation = '', pending, timer;
+  let context, master, enabled = true, unlocked = false, unlocking, lastVoice = '', lastAnimation = '', pending, timer;
   const seen = new Set(), lastMotif = {};
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const storage = {get: () => {try{return JSON.parse(localStorage.getItem('cyca_effect_preferences') || '{}');}catch{return {};}},
     set: v => {try{localStorage.setItem('cyca_effect_preferences',JSON.stringify(v));}catch{}}};
   const saved = storage.get();
+  enabled = saved.sound !== false;
   if ([0,5,10,15,20,25,30,35,40,45,50].includes(saved.volume)) $('volume').value = saved.volume;
   if (saved.motion === false) $('motion').checked = false;
   if (['shuffle','glass','wood','soft'].includes(saved.theme)) $('theme').value = saved.theme;
-  const persist = () => storage.set({volume:Number($('volume').value),motion:$('motion').checked,theme:$('theme').value});
+  const persist = () => storage.set({sound:enabled,volume:Number($('volume').value),motion:$('motion').checked,theme:$('theme').value});
   const choose = (values, previous) => {const available=values.filter(v=>v!==previous);return available[Math.floor(Math.random()*available.length)];};
   const stopSound = () => {if(context && master){master.gain.cancelScheduledValues(context.currentTime);master.gain.setTargetAtTime(0,context.currentTime,.012);}};
   async function unlock() {
@@ -34,12 +35,17 @@ function createEffects(root) {
       if (!context) {context = new (window.AudioContext || window.webkitAudioContext)(); master=context.createGain();master.connect(context.destination);}
       if (context.state !== 'running') await context.resume();
       if(context.state !== 'running') throw new Error('suspended');
-      enabled=true; updateButton(); return true;
-    } catch {enabled=false;updateButton();$('hint').textContent='音を再生できません。消音のまま見積は作れます。';return false;}
+      unlocked=true; updateButton(); return true;
+    } catch {unlocked=false;updateButton();$('hint').textContent='音を再生できません。消音のまま見積は作れます。';return false;}
   }
-  function updateButton(){ $('sound').textContent=enabled?'🔊 音を消す':'音つきで始める';$('sound').setAttribute('aria-pressed',String(enabled));$('hint').textContent=enabled?'短い効果音だけ。いつでも消音できます。':'音は最初にボタンを押すと有効になります。';}
+  function updateButton(){
+    $('sound').textContent=enabled?'🔊 音 ON':'🔇 音 OFF';
+    $('sound').setAttribute('aria-pressed',String(enabled));
+    $('card').setAttribute('data-sound-state',!enabled?'muted':unlocked?'running':'ready');
+    $('hint').textContent=!enabled?'効果音を消しています。':unlocked?'短い音で工程をお知らせします。':'ファイル選択など、最初の操作で音が有効になります。';
+  }
   function play(stage) {
-    if(!enabled || !context || context.state!=='running' || document.hidden) return;
+    if(!enabled || !context || context.state!=='running') return;
     const volume=Number($('volume').value)/100;
     if(!volume) return;
     stopSound();
@@ -57,6 +63,7 @@ function createEffects(root) {
       oscillator.connect(envelope);envelope.connect(master);oscillator.start(at);oscillator.stop(at+duration+.02);
       oscillator.onended=()=>{oscillator.disconnect();envelope.disconnect();};
     });
+    $('card').setAttribute('data-last-sound',stage);
   }
   function show(stage, sound=true){
     if(!labels[stage]) return;
@@ -71,19 +78,35 @@ function createEffects(root) {
     }
     if(sound) play(stage);
   }
-  $('sound').onclick=async()=>{if(enabled){enabled=false;stopSound();updateButton();}else if(await unlock())show('start');};
-  $('sample').onclick=async()=>{if(await unlock())show('output');};
+  $('sound').onclick=async()=>{
+    if(enabled){enabled=false;stopSound();}
+    else {enabled=true;if(await unlock())show('start');}
+    persist();updateButton();
+  };
+  $('sample').onclick=async()=>{enabled=true;persist();if(await unlock())show('output');};
   $('volume').oninput=()=>{$('volumeValue').textContent=`${$('volume').value}%`;persist();if(!Number($('volume').value))stopSound();};
   $('motion').onchange=()=>{persist();if(!$('motion').checked){$('stage').className='stage';root.querySelectorAll('.spark').forEach(p=>p.remove());}};
   $('theme').onchange=persist;
   $('volumeValue').textContent=`${$('volume').value}%`;
-  const visibility=()=>{if(document.hidden){stopSound();clearTimeout(timer);pending=null;}};
-  document.addEventListener('visibilitychange',visibility);
+  // v2 lives in the application's document (including a shadow root). Unlock
+  // synchronously from the ordinary upload/click/key gesture, not a hidden
+  // settings button. Safari requires resume() to originate in this gesture.
+  const owner=root.ownerDocument || document;
+  const gesture=event=>{
+    if(!enabled || unlocked || unlocking || event?.isTrusted===false)return;
+    const path=event?.composedPath?.() || [];
+    if(path.includes($('sound')) || path.includes($('sample')))return;
+    unlocking=unlock().then(ok=>{if(ok)show('start');}).finally(()=>{unlocking=null;});
+    return unlocking;
+  };
+  owner.addEventListener('pointerdown',gesture,true);
+  owner.addEventListener('keydown',gesture,true);
+  updateButton();
   function receive(events){
     let newest;
     for(const item of events || []){if(typeof item.id!=='string' || seen.has(item.id) || !labels[item.stage])continue;seen.add(item.id);if(Date.now()/1000-item.at<12)newest=item;}
     if(seen.size>100){const keep=Array.from(seen).slice(-40);seen.clear();keep.forEach(id=>seen.add(id));}
     if(newest){pending=newest;clearTimeout(timer);timer=setTimeout(()=>{if(pending){show(pending.stage);pending=null;}},120);}
   }
-  return {receive, card:$('card'), dispose(){stopSound();clearTimeout(timer);document.removeEventListener('visibilitychange',visibility);if(context)context.close().catch(()=>{});}};
+  return {receive, card:$('card'), dispose(){stopSound();clearTimeout(timer);owner.removeEventListener('pointerdown',gesture,true);owner.removeEventListener('keydown',gesture,true);if(context)context.close().catch(()=>{});}};
 }

@@ -19,10 +19,12 @@ def vault(st):
 
 def render_archive(st):
     from vault_archive import restore_archive
-    with st.expander("5. 作業データを保存", expanded=True):
+    if not st.session_state.get('_review_export_ready'):
+        return
+    with st.expander("原本・記録もまとめて保存する（社内用・必要なときだけ）", expanded=False):
         st.caption("原本・作成済みの見積・記録を、PCにまとめて保存できます。社内用なのでお客様には送りません。")
         if not os.environ.get('CYCA_DATA_DIR'):
-            st.caption("アプリ内は一時保存です。作業が終わったら、ここからPCに保存してください。")
+            st.caption("完成した見積と、読み取り・承認の記録もまとめて残す場合に使います。")
         try:
             render_backup_download(st, 'vault', auto=True)
             with st.expander('以前保存したデータを戻すときだけ開く'):
@@ -95,6 +97,7 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
 
 
 def render_review(st, api_key=None):
+    st.session_state['_review_export_ready'] = False
     original = st.session_state.get("_review_original_rows")
     if not original:
         return
@@ -108,9 +111,6 @@ def render_review(st, api_key=None):
     ready=bool(sources) and all(source.get('confirmed') for source in sources)
     if ready:
         _render_review_plan(st,api_key,original,rows,sources)
-    else:
-        with st.expander('次は、確認した内容をもとにAIと見積プランをつくります'):
-            _render_review_plan(st,api_key,original,rows,sources)
 
 
 def _render_review_plan(st,api_key,original,rows,sources):
@@ -163,10 +163,9 @@ def _render_review_plan(st,api_key,original,rows,sources):
         return
     totals = draft["payload"]["合計"]
     st.text('宛名：' + metadata['宛名'] + '　／　工事名称：' + metadata['工事名称'])
-    cost_card, markup_card, total_card = st.columns(3)
-    cost_card.metric('仕入原価（税抜）', f"{totals['仕入原価']:,}円")
-    markup_card.metric('利益（値引き前）', f"{totals['売価小計'] - totals['仕入原価']:,}円")
-    total_card.metric('お客様への税込見積額', f"{totals['税込売価']:,}円")
+    st.metric('仕入原価（税抜）', f"{totals['仕入原価']:,}円")
+    st.metric('利益（値引き前）', f"{totals['売価小計'] - totals['仕入原価']:,}円")
+    st.metric('お客様への税込見積額', f"{totals['税込売価']:,}円")
     if discount:
         st.caption(f"顧客値引き：{discount:,}円 ／ 値引き後の粗利益：{totals['粗利益']:,}円")
     with st.expander('原価・売価・税・粗利益の内訳を確認'):
@@ -202,9 +201,11 @@ def _render_review_plan(st,api_key,original,rows,sources):
     approval = st.session_state.get("_review_approval")
     result = st.session_state.get("_review_result")
     if approval and result and approval["fingerprint"] == draft["fingerprint"] and valid and agree and preview_ready:
+        st.session_state['_review_export_ready'] = True
         st.success("承認内容と現在の入力が一致しています。数量や目標などを変えると再承認が必要です。")
         st.download_button("承認済み見積書（Numbers用xlsx）", result.data, file_name=result.file_name, key="review_xlsx", on_click=download_cue)
         st.download_button("承認済みPDF", result.pdf_data, file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf", on_click=download_cue)
-        st.download_button("承認記録（原価を含む社内用）", canonical(approval).encode(), file_name="社内承認記録.json", key="review_receipt")
+        with st.expander('承認記録を見る・保存する（社内用）'):
+            st.download_button("承認記録を保存", canonical(approval).encode(), file_name="社内承認記録.json", key="review_receipt")
     elif result:
         st.info("入力が変更されたため、前回の承認済みファイルを非表示にしました。再承認してください。")
