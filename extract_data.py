@@ -51,6 +51,8 @@ from horizontal_estimate_flow import build_horizontal_estimate
 from estimate_review import REVIEW_MODE
 from review_ui import preserve_uploads, capture_extraction, render_review, render_archive
 from legacy_exports import queue_draft_export, render_draft_exports
+from work_effects import cue, render as render_work_effects
+from product_design import STYLE as PRODUCT_STYLE, loading_panel, ready_panel
 
 HORIZONTAL_FORMAT = "彩架建設 横型見積書（Numbers対応・A4横）"
 
@@ -347,6 +349,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown(PRODUCT_STYLE, unsafe_allow_html=True)
+
 # ==========================================
 # 🔐 ログイン画面
 # ==========================================
@@ -429,7 +433,7 @@ if os.path.isfile(LOGO_PATH):
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
 else:
     st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
-st.info("① 他社見積を入れる → ② 読み取りを確認 → ③ 声で相談 → ④ 完成イメージを確認して出力")
+st.info("原本を取り込む → 内容を確認 → AIと見積プランをつくる → 仕上がりを見て出力")
 st.caption("本サービスはベータ版です。計算結果は目安であり、正式な見積には必ずご自身で内容をご確認ください。重要な意思決定の唯一の根拠としてご利用にならないでください。")
 
 # ==========================================
@@ -510,6 +514,9 @@ if st.session_state.get("_upload_signature") != upload_signature:
     st.session_state["output_customer"] = ""
     st.session_state["output_project"] = ""
     st.session_state["_upload_signature"] = upload_signature
+    st.session_state.pop("_effects_source_checks", None)
+    if uploaded_files:
+        cue(st, "upload")
 
 
 if format_choice == HORIZONTAL_FORMAT and profit_mode != REVIEW_MODE:
@@ -623,16 +630,9 @@ def render_template_fill_test_v2():
 # 本番の横型見積書は、解析・利益計算後の実データから下段で生成する。
 
 if uploaded_files:
-    file_names = ", ".join([f.name for f in uploaded_files]).replace("<", "&lt;").replace(">", "&gt;")
-    st.markdown(f"""
-    <div class="upload-success-box">
-        <div class="big-check">✅</div>
-        <div class="msg">{len(uploaded_files)}件のファイルを受付しました！準備完了です。</div>
-        <div style="margin-top:8px; color:#2e7d32; font-size:0.95rem;">{file_names}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(ready_panel([f.name for f in uploaded_files]), unsafe_allow_html=True)
     analyze_label = (
-        "✨ 他社見積を読み取り、確認用に整理する ✨" if profit_mode == REVIEW_MODE else
+        "AIで見積を整理する" if profit_mode == REVIEW_MODE else
         "✨ 新しい見積書を解析してNumbers用に流し込む ✨"
         if format_choice == HORIZONTAL_FORMAT else "✨ AIでデータを解析 ＆ 利益計算を実行する ✨"
     )
@@ -655,56 +655,10 @@ if uploaded_files:
                     analysis_errors = []
                     n_files = len(uploaded_files)
 
-                    progress_bar = st.progress(0, text="🚀 解析を開始します...")
+                    progress_bar = st.progress(0, text="原本を読み取りに送る準備をしています…")
                     status_area = st.empty()
 
-                    _anim_steps = [
-                        ("📄 ファイルをアップロード中...", "AIサーバーにデータを転送しています"),
-                        ("🔍 全ページをスキャン中...", "見積書の文字を高速認識しています"),
-                        ("🧮 金額を照合・計算中...", "工事種別と明細を自動で仕分けしています"),
-                        ("📊 データを最終整理中...", "もうすぐ完了です！"),
-                    ]
-
-                    status_area.markdown(f"""
-                    <div style="
-                        background: linear-gradient(135deg, #0f2847 0%, #1e3c72 50%, #2a5298 100%);
-                        border-radius: 12px;
-                        padding: 20px 24px; margin: 12px 0;
-                        animation: shimmer 2s ease-in-out infinite;
-                        box-shadow: 0 4px 20px rgba(15, 40, 71, 0.3);
-                        position: relative;
-                        overflow: hidden;
-                    ">
-                        <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
-                            📄 {n_files}件のファイルをアップロード中...
-                        </div>
-                        <div style="color: #a8c8f0; font-size: 0.95rem;">
-                            🤖 AIサーバーにデータを転送しています
-                        </div>
-                        <div style="
-                            margin-top: 12px; height: 4px; border-radius: 2px;
-                            background: rgba(255,255,255,0.15);
-                            overflow: hidden;
-                        ">
-                            <div style="
-                                height: 100%; width: 40%;
-                                background: linear-gradient(90deg, #f0c040, #ffd700, #f0c040);
-                                border-radius: 2px;
-                                animation: loading-slide 1.8s ease-in-out infinite;
-                            "></div>
-                        </div>
-                    </div>
-                    <style>
-                    @keyframes shimmer {{
-                        0%, 100% {{ opacity: 0.92; }}
-                        50% {{ opacity: 1; }}
-                    }}
-                    @keyframes loading-slide {{
-                        0% {{ transform: translateX(-100%); }}
-                        100% {{ transform: translateX(350%); }}
-                    }}
-                    </style>
-                    """, unsafe_allow_html=True)
+                    status_area.markdown(loading_panel(n_files), unsafe_allow_html=True)
 
                     page_jobs = []
                     temp_paths = []
@@ -728,56 +682,16 @@ if uploaded_files:
 
                     progress_bar.progress(30, text=f"🔍 AI が{len(page_jobs)}件を解析中...")
 
-                    status_area.markdown(f"""
-                    <div style="
-                        background: linear-gradient(135deg, #0f2847 0%, #1e3c72 50%, #2a5298 100%);
-                        border-radius: 12px;
-                        padding: 20px 24px; margin: 12px 0;
-                        animation: shimmer 2s ease-in-out infinite;
-                        box-shadow: 0 4px 20px rgba(15, 40, 71, 0.3);
-                        position: relative; overflow: hidden;
-                    ">
-                        <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
-                            🔍 AI が {len(page_jobs)}件のファイルを読み取り中...
-                        </div>
-                        <div style="color: #a8c8f0; font-size: 0.95rem;">
-                            🧮 各見積書の全ページを解析し、工事種別を自動判別しています
-                        </div>
-                        <div style="
-                            margin-top: 12px; height: 4px; border-radius: 2px;
-                            background: rgba(255,255,255,0.15); overflow: hidden;
-                        ">
-                            <div style="
-                                height: 100%; width: 40%;
-                                background: linear-gradient(90deg, #f0c040, #ffd700, #f0c040);
-                                border-radius: 2px;
-                                animation: loading-slide 1.8s ease-in-out infinite;
-                            "></div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    status_area.markdown(loading_panel(n_files), unsafe_allow_html=True)
 
                     primary_model, fallback_models = get_configured_gemini_models(st.secrets)
                     successful_models = []
 
                     def _on_gemini_model_start(model_name, page_number):
-                        status_area.info(
-                            f"使用中モデル: {model_name} / リトライ回数: 0 / ページ: {page_number or '-'}"
-                        )
+                        status_area.markdown(loading_panel(n_files, page_number), unsafe_allow_html=True)
 
                     def _on_gemini_retry(model_name, attempt, delay, error_code, page_number):
-                        status_area.markdown(f"""
-                        <div style="
-                            background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
-                            border-left: 4px solid #ef6c00; border-radius: 8px;
-                            padding: 12px 16px; margin: 8px 0;
-                        ">
-                            <span style="font-size: 1.05rem;">AI解析サーバーが混み合っています。{int(delay)}秒後に自動再試行します。</span>
-                            <div style="color:#6d4c41; font-size:0.9rem; margin-top:4px;">
-                                model={model_name} / retry={attempt} / code={error_code or "unknown"} / page={page_number or "-"}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        status_area.warning(f"AIが混み合っています。{int(delay)}秒後に自動で再試行します。入力した原本はそのままです。")
 
                     total_pages = max(len(page_jobs), 1)
                     for page_idx, page in enumerate(page_jobs, start=1):
@@ -792,34 +706,7 @@ if uploaded_files:
                             progress,
                             text=f"🔍 {analysis_label}"
                         )
-                        status_area.markdown(f"""
-                        <div style="
-                            background: linear-gradient(135deg, #0f2847 0%, #1e3c72 50%, #2a5298 100%);
-                            border-radius: 12px;
-                            padding: 20px 24px; margin: 12px 0;
-                            animation: shimmer 2s ease-in-out infinite;
-                            box-shadow: 0 4px 20px rgba(15, 40, 71, 0.3);
-                            position: relative; overflow: hidden;
-                        ">
-                            <div style="font-size: 1.2rem; color: #ffffff; font-weight: 700; margin-bottom: 8px;">
-                                🧮 {analysis_label}
-                            </div>
-                            <div style="color: #a8c8f0; font-size: 0.95rem;">
-                                使用モデル: {primary_model} / フォールバック: {", ".join(fallback_models) or "なし"}
-                            </div>
-                            <div style="
-                                margin-top: 12px; height: 4px; border-radius: 2px;
-                                background: rgba(255,255,255,0.15); overflow: hidden;
-                            ">
-                                <div style="
-                                    height: 100%; width: 40%;
-                                    background: linear-gradient(90deg, #f0c040, #ffd700, #f0c040);
-                                    border-radius: 2px;
-                                    animation: loading-slide 1.8s ease-in-out infinite;
-                                "></div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        status_area.markdown(loading_panel(n_files), unsafe_allow_html=True)
 
                         result = call_gemini_with_retry(
                             client,
@@ -869,6 +756,7 @@ if uploaded_files:
                         detail_df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
                         cost_df, vendor_summaries = build_cost_basis_dataframe(summary_data, detail_df)
                         capture_extraction(st, detail_df, summary_data, all_extracted_data, analysis_errors)
+                        cue(st, "read")
                         if profit_mode == REVIEW_MODE:
                             raise _CatInputNeeded()
                         df = cost_df
@@ -1282,3 +1170,6 @@ if profit_mode == REVIEW_MODE:
 
 if profit_mode != REVIEW_MODE:
     render_draft_exports(st, legacy_export_signature())
+
+# Stable component position preserves the user-activated audio context across reruns.
+render_work_effects(st)

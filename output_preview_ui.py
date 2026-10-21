@@ -52,6 +52,8 @@ def render_preview(st, draft, valid):
                         page.insert_text((page.rect.width / 2 - 65, 18), '配置確認用・未確定', fontname='japan', fontsize=9)
                         images.append(page.get_pixmap(matrix=fitz.Matrix(1.3, 1.3)).tobytes('png'))
                 st.session_state['_review_preview'] = {'fingerprint': draft['fingerprint'], 'images': images, 'pages': pages}
+                from work_effects import cue
+                cue(st, 'preview')
         except (ValueError, OSError) as exc:
             st.error('完成イメージを作れませんでした。' + str(exc))
     preview = st.session_state.get('_review_preview')

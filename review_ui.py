@@ -6,6 +6,7 @@ import copy
 import os
 
 import pandas as pd
+from work_effects import cue, confirmed_sources, download_cue
 
 from estimate_review import (OriginalVault, Target, REVIEW_MODE, review_rows, build_draft,
                              approve, build_approved_estimate, canonical, clean, digest)
@@ -99,25 +100,16 @@ def render_review(st, api_key=None):
     apply_pending(st, vault(st))
     if st.session_state.pop('_review_clear_instruction', False):
         st.session_state['review_instruction'] = ''
-    st.markdown("### 1. 読み取った見積を原本と照合")
+    st.markdown("### 1. 元の見積書と読み取り結果を確認")
     st.caption("原本・読取結果・訂正・承認を別々に保管します。工種は候補です。内容と施工範囲を確認してください。")
     if not os.environ.get("CYCA_DATA_DIR"):
         st.info("作業後は、原本と承認記録を左側の『バックアップ』から一括保存してください。アプリの再起動後も復元できます。")
     sources = copy.deepcopy(st.session_state["_review_sources"])
-    for s in sources:
-        with st.expander(f"原本：{s['name']}"):
-            st.caption(f"原本ID {s['id'][:16]} / {s['size']:,} bytes")
-            st.download_button("保全した原本", vault(st).read(s["id"]), file_name=Path(s["name"]).name,
-                               key="review_original_" + s["id"])
-            s["tax_basis"] = st.selectbox("原価の税区分", ["不明", "税抜", "税込", "非課税"], key="review_basis_"+s["id"])
-            rate = st.selectbox("原本の税率", ["不明", "10%", "8%", "0%"], key="review_tax_"+s["id"])
-            s["tax_rate"] = {"10%": .10, "8%": .08, "0%": 0}.get(rate)
-            s["net_total"] = st.number_input("原本の税抜小計（値引き後）", min_value=0, value=0, step=1, key="review_net_"+s["id"])
-            check_tax = st.checkbox("原本に税額・税込総額の記載がある", key="review_tax_exists_"+s["id"])
-            if check_tax:
-                s["tax"] = st.number_input("原本の税額", min_value=0, value=0, step=1, key="review_tax_amount_"+s["id"])
-                s["gross_total"] = st.number_input("原本の税込総額", min_value=0, value=0, step=1, key="review_gross_"+s["id"])
-            s["confirmed"] = st.checkbox("原本と明細・税区分を照合した", key="review_source_ok_"+s["id"])
+    from source_review_ui import render_source
+    st.info('元の見積書と、読み取った内容が合っているか確認するステップです。確認が終わるとAIとのプラン作成へ進めます。')
+    for index, s in enumerate(sources, 1):
+        render_source(st, s, vault(st), index)
+    confirmed_sources(st, sources)
     st.caption("行の追加はできません。訂正には理由、除外には施工範囲等の根拠を入力します。「集計のみ」は諸経費などを工事内容に直接載せる原本行です。原本の備考は社内で保持し、顧客へ伝える条件は「顧客備考」に入力します。")
     columns = ["採用", "品名", "仕様", "数量", "単位", "原価単価", "原価金額", "見積元", "工事種別", "部位", "顧客備考", "元ファイル", "ページ", "集計のみ", "訂正理由", "除外理由", "備考", "行ID"]
     view = pd.DataFrame(st.session_state.get('_review_assistant_rows', original))[columns]
@@ -132,9 +124,9 @@ def render_review(st, api_key=None):
         r.update({k: clean(v) for k, v in changes.items()})
         rows.append(r)
     conversation_slot = st.container()
-    st.markdown('### 3. 決めた上乗せ・値引きと帳票内容を確認')
+    st.markdown('### 3. 見積金額と内容を整える')
     st.caption('出力先：アプリ既存の横型流し込みデザイン。通常は工種ごとに明細を分け、2行程度の小工種は同じページにまとめます。少量の1社見積は一式まとめを省きます。')
-    with st.expander("手入力で上乗せ・値引きを調整／宛名・工事名を確認", expanded=False):
+    with st.expander("金額・利益・宛名を手動で調整する", expanded=False):
         scope = st.radio("目標の指定範囲", ["全体", "業者別", "工種別"], horizontal=True, key="review_scope")
         mode = st.selectbox("目標の指定方法", ["上乗せ額", "掛け率", "粗利益率"], key="review_target_mode")
         accepted = [r for r in rows if r["採用"]]
@@ -211,14 +203,15 @@ def render_review(st, api_key=None):
             st.session_state.pop('_vault_archive', None)
             st.session_state["_review_result"] = result
             st.session_state["_review_approval"] = approval
+            cue(st, 'output')
         except (ValueError, OSError) as exc:
             st.error(str(exc))
     approval = st.session_state.get("_review_approval")
     result = st.session_state.get("_review_result")
     if approval and result and approval["fingerprint"] == draft["fingerprint"] and valid and agree and preview_ready:
         st.success("承認内容と現在の入力が一致しています。数量や目標などを変えると再承認が必要です。")
-        st.download_button("承認済み見積書（Numbers用xlsx）", result.data, file_name=result.file_name, key="review_xlsx")
-        st.download_button("承認済みPDF", result.pdf_data, file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf")
+        st.download_button("承認済み見積書（Numbers用xlsx）", result.data, file_name=result.file_name, key="review_xlsx", on_click=download_cue)
+        st.download_button("承認済みPDF", result.pdf_data, file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf", on_click=download_cue)
         st.download_button("承認記録（原価を含む社内用）", canonical(approval).encode(), file_name="社内承認記録.json", key="review_receipt")
         try:
             render_backup_download(st, 'review')

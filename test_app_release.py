@@ -15,6 +15,14 @@ class ReleaseRefreshTest(unittest.TestCase):
             source.write_text('version = 2')
             self.assertNotEqual(first,app_release._source_fingerprint())
 
+    def test_frontend_asset_change_also_refreshes_component(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(app_release,'_ROOT',Path(temp)), patch.object(app_release,'_MODULES',()):
+            folder=Path(temp)/'work_effects_frontend';folder.mkdir()
+            asset=folder/'effects.js';asset.write_text('first')
+            first=app_release._source_fingerprint()
+            asset.write_text('second')
+            self.assertNotEqual(first,app_release._source_fingerprint())
+
     def test_refresh_once_per_source_change(self):
         module=SimpleNamespace(version=1)
         with patch.object(app_release,'_MODULES',('synthetic_release_module',)), patch.object(app_release,'_loaded_fingerprint',None), patch.dict('sys.modules',{'synthetic_release_module':module}), patch.object(app_release,'_source_fingerprint',side_effect=['a','a','b']), patch('app_release.importlib.reload') as reload:
