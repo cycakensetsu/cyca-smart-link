@@ -39,10 +39,22 @@ def plan(estimate):
     normal = [c for c in estimate.categories if not c.summary_only]
     all_items = ([i for c in normal for i in c.items]
                  + [i for c in estimate.categories if c.summary_only for i in c.items])
-    compact = (estimate.source_count == 1 and len(normal) == 1
-               and len(all_items) + 4 <= 20 and not estimate.page_breaks)
+    compact_rows=[]
+    ordered=normal+[c for c in estimate.categories if c.summary_only]
+    number=0
+    for index,category in enumerate(ordered,1):
+        if len(normal)>1:
+            compact_rows.append({'kind':'category','index':index,'category':category})
+        last_section=None
+        for item in category.items:
+            if item.section and item.section!=category.name and item.section!=last_section:
+                compact_rows.append({'kind':'section','label':item.section})
+            last_section=item.section
+            number+=1
+            compact_rows.append({'kind':'item','no':number,'item':item,'category':category})
+    compact = (estimate.source_count == 1 and bool(normal) and len(compact_rows) + 4 <= 20 and not estimate.page_breaks)
     if compact:
-        rows = [{'kind': 'item', 'no': n, 'item': item} for n, item in enumerate(all_items, 1)]
+        rows = compact_rows
         rows += [{'kind': 'compact_' + name, 'amount': value} for name, value in
                  [('subtotal', estimate.subtotal), ('discount', estimate.discount),
                   ('net', estimate.net_total), ('tax', estimate.tax)]]

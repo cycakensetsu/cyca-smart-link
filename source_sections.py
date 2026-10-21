@@ -18,6 +18,25 @@ def _name(value):
     return re.sub(r'\s|一式','',str(value or ''))
 
 
+def reconcile_printed_totals(summary):
+    """Repair a net/gross label swap only when printed figures prove it."""
+    import unicodedata
+    out=dict(summary)
+    text=re.sub(r'\s+','',unicodedata.normalize('NFKC',str(summary.get('抽出元テキスト範囲') or ''))).replace(',','')
+    gross=re.search(r'税込(?:み)?(?:合計|金額)?[:：]?[¥￥]?(\d+)',text)
+    net=re.search(r'(?:改小計|税抜合計|(?<!小)合計)[:：]?[¥￥]?(\d+)',text)
+    tax=_integer(summary.get('消費税'));before=_integer(summary.get('小計'));discount=_integer(summary.get('端数調整'))
+    if not gross or not net or tax is None:return out
+    g,n=int(gross[1]),int(net[1])
+    # The explicit inclusive figure and explicit tax must independently agree.
+    # When a discount exists, both its printed amount and subtotal must agree too.
+    coherent=(g==n+tax and (discount in (None,0) or (before is not None and before+discount==n
+              and str(abs(discount)) in text and bool(re.search('値引|調整|出精',text)))))
+    if coherent:
+        out.update(改小計=n,工事費計=g)
+    return out
+
+
 def reconcile_sections(records, summaries, source_name):
     output=[dict(r) for r in records]
     for row in output:
@@ -28,6 +47,7 @@ def reconcile_sections(records, summaries, source_name):
             row['単価']=amount
             row['__normalization']='原本の数量1式・金額を単価へ転記'
     for summary in summaries:
+        summary=reconcile_printed_totals(summary)
         if summary.get('__source_name')!=source_name or summary.get('__page_role') not in ('cover_summary_page','summary_page'):continue
         page=_integer(summary.get('__page_number'))
         if page is None:continue
@@ -42,7 +62,10 @@ def reconcile_sections(records, summaries, source_name):
         for row in cover:
             name=_name(row.get('品名'));amount=_integer(row.get('金額'))
             item=next((i for i in items if isinstance(i,dict)
-                       and _name(i.get('工事項目',i.get('品名')))==name and _integer(i.get('金額'))==amount),None)
+                       and (_name(i.get('工事項目',i.get('品名')))==name
+                            or re.sub(r'[（）()・、]','',_name(i.get('工事項目',i.get('品名'))))==
+                               re.sub(r'[（）()・、]','',name+_name(row.get('仕様'))))
+                       and _integer(i.get('金額'))==amount),None)
             if item is None or amount is None:continue
             details=[r for r in later if _name(r.get('工事種別'))==name]
             values=[_integer(r.get('金額')) for r in details]

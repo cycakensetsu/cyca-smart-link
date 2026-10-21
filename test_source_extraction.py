@@ -62,6 +62,16 @@ class SourceExtractionTest(unittest.TestCase):
         self.assertEqual(rows[0]['__source_name'],'scan.pdf')
         self.assertEqual(rows[0]['__page_number'],2)
 
+    def test_native_numbers_keep_the_unique_matching_work_category_and_part(self):
+        from source_table import reconcile_native_pdf
+        native=[dict(品名='室外機移設',仕様='',数量=3.,単位='台',単価=10000.,金額=30000.,__page_number=1,工事種別='')]
+        rows=[dict(native[0],見積元='架空設備社',工事種別='空調設備工事',部位='屋上',__source_name='a.pdf')]
+        with patch('source_table.reconcile_cyca_reference',return_value=None),patch('source_table.read_native_tables',return_value=(native,[30000],'')):
+            result,_=reconcile_native_pdf('a.pdf',rows,[])
+        self.assertEqual(result[0]['工事種別'],'空調設備工事')
+        self.assertEqual(result[0]['部位'],'屋上')
+        self.assertEqual(result[0]['金額'],30000)
+
     def test_unknown_table_does_not_get_balancing_fees(self):
         with tempfile.TemporaryDirectory() as temp:
             p=Path(temp)/'unsupported.pdf';p.write_bytes(b'not a pdf')

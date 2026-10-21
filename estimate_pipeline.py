@@ -383,6 +383,8 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
     for source in summary_sources or []:
         if not isinstance(source, dict):
             continue
+        from source_sections import reconcile_printed_totals
+        source = reconcile_printed_totals(source)
         source_vendor = _source_vendor(source)
         source_name = normalize_text(source.get("__source_name", ""))
         page_number = source.get("__page_number")
@@ -416,6 +418,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                 "改小計": parse_money(_first_present(source, ["改小計", "税抜合計", "revised_subtotal"])),
                 "消費税": parse_money(_first_present(source, ["消費税", "税額", "tax"])),
                 "工事費計": parse_money(_first_present(source, ["工事費計", "税込合計", "総合計", "total"])),
+                "金額の要確認箇所": source.get("金額の要確認箇所", []),
             })
 
     return {
@@ -446,6 +449,8 @@ def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: L
     for source in summary_sources or []:
         if not isinstance(source, dict):
             continue
+        from source_sections import reconcile_printed_totals
+        source = reconcile_printed_totals(source)
         source_pdf = normalize_text(source.get("__source_name", ""))
         vendor = _source_vendor(source)
         role = normalize_text(_first_present(source, ["__page_role", "page_role", "role", "ページ種別"]))
@@ -1136,6 +1141,7 @@ def build_intermediate_dataframe(records: List[Dict]) -> Tuple[pd.DataFrame, Dic
                 "品名": name,
                 "仕様": spec,
                 "工事種別": normalize_text(record.get("工事種別", "")),
+                "部位": normalize_text(record.get("部位", "")),
                 "抽出元テキスト範囲": normalize_text(record.get("抽出元テキスト範囲", "")),
                 "数量": quantity if quantity is not None else pd.NA,
                 "単位": unit,
@@ -1150,7 +1156,7 @@ def build_intermediate_dataframe(records: List[Dict]) -> Tuple[pd.DataFrame, Dic
             }
         )
 
-    df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS + ["仕様", "工事種別", "抽出元テキスト範囲", "元ファイル", "ページ"])
+    df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS + ["仕様", "工事種別", "部位", "抽出元テキスト範囲", "元ファイル", "ページ"])
     for col in ["数量", "原価単価", "原価金額", "上乗せ額", "見積単価", "見積金額"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df, totals

@@ -26,6 +26,20 @@ class EstimateReviewTest(unittest.TestCase):
         return build_draft(self.rows, copy.deepcopy(rows or self.rows), sources or [self.source],
                            targets, discount, meta or self.meta, resolutions)
 
+    def test_negotiated_or_gross_discount_requires_a_recorded_decision(self):
+        self.source['amount_reading']={'amount_notes':[{'kind':'gross_discount','value':-500,'page':1}]}
+        self.assertIn('原本金額の選択',[i['種類'] for i in self.draft()['unresolved']])
+        self.source['amount_notes_resolution']='架空検証：見積内訳どおりを採用'
+        self.assertEqual(self.draft()['unresolved'],[])
+
+    def test_explicit_source_part_survives_dataframe_and_review(self):
+        record={'品名':'柱','仕様':'塗料TEST','部位':'スロープ','工事種別':'塗装工事','数量':10,'単位':'m',
+                '単価':10000,'金額':100000,'見積元':'架空防水社','__source_name':'a.pdf','__page_number':1}
+        frame,_=build_intermediate_dataframe([record])
+        rows=review_rows(frame,[self.source])
+        self.assertEqual(rows[0]['部位'],'スロープ')
+        self.assertEqual(rows[0]['工事種別'],'塗装工事')
+
     def test_cost_and_sale_are_separate(self):
         before = copy.deepcopy(self.rows)
         d = self.draft(targets=[Target("全体", "全体", "上乗せ額", 10000)])

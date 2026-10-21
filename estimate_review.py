@@ -162,7 +162,7 @@ def review_rows(detail, sources):
             raise ValueError("抽出明細と原本の対応を確認できません。")
         r.update({"行ID": digest([mapping[source], i, r])[:24], "原本ID": mapping[source],
                   "工事種別": suggest_trade(r), "採用": True, "訂正理由": "", "除外理由": ""})
-        r["部位"] = original_section if original_section not in ('', '未分類', '不明') else ''
+        r["部位"] = str(r.get("部位") or original_section) if str(r.get("部位") or original_section) not in ('', '未分類', '不明') else ''
         r["顧客備考"] = ""
         # Whole-document extraction may omit a page number. Only a measured
         # single-page source makes its location certain without AI inference.
@@ -328,6 +328,8 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
             issue("原本参照", [row["行ID"]], "原本とページの対応が必要です。", "停止")
         accepted.append(dict(row))
     for s in sources:
+        if s.get('amount_reading',{}).get('amount_notes') and not str(s.get('amount_notes_resolution') or '').strip():
+            issue('原本金額の選択', [], 'NET金額・税込後の値引きがあります。原本の記載と採用する金額を確認してください。', '停止')
         if s.get("read_errors"):
             issue("読取未完了", [], "解析できなかった原本・ページがあります。再解析または原本の再確認が必要です。", "停止")
         if s.get("tax_basis") not in ("税抜", "非課税") or s.get("tax_rate") not in (0, 0.08, 0.10):

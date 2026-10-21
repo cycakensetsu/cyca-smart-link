@@ -94,7 +94,9 @@ def _items_html(rows):
     table = []
     for number, row in enumerate(rows, 1):
         name = escape(str(row.get('品名') or '品名を確認してください'))
-        spec = escape(str(row.get('仕様') or ''))
+        part = str(row.get('部位') or '')
+        context = part if part and part != str(row.get('工事種別') or '') else ''
+        spec = escape(' ｜ '.join(v for v in (context, str(row.get('仕様') or '')) if v))
         quantity = escape(_number(row.get('数量')) + ' ' + str(row.get('単位') or ''))
         table.append(f'<tr><td><b>{number}. {name}</b><small>{spec}</small></td><td>{quantity}</td>'
                      f'<td>{escape(_number(row.get("原価単価")))}円</td><td>{escape(_number(row.get("原価金額")))}円</td></tr>')
@@ -230,6 +232,15 @@ def render_source(st, source, store, index, detail_rows=None):
             st.info('原本の数量表示の丸めによる計算差がある品目です：'+
                     '、'.join(str(rows.index(r)+1)+'番目' for r in rounded)+
                     '。仕入金額は原本どおりに保持します。お客様向けは、同じ数量で単価と金額の計算が合うよう別に設定します。')
+        if reading.get('amount_notes'):
+            from source_variants import notes_message
+            st.info('明細とは別の金額が書かれています：'+notes_message(reading['amount_notes'])+'。自動では差し引きません。')
+            with st.expander('この金額をどう扱うか確認する'):
+                st.caption('NET金額が税込か税抜か、値引きがどの金額に対するものかを原本・業者に確認してください。必要なら上の合計・品目を訂正し、根拠を残します。')
+                source['amount_notes_resolution']=st.text_input('採用する金額と確認した内容',key='review_amount_notes_'+sid,
+                    placeholder='例：業者に確認済み。今回は明細記載の金額を採用する')
+            if not str(source.get('amount_notes_resolution') or '').strip():
+                problems.append('NET金額・税込後の値引きの扱いが未確認です。上の「この金額をどう扱うか確認する」を開いてください。')
         if net is None: problems.append('原本の合計金額を入力すると確認できます。')
         if actual is not None and net is not None and actual != net:
             problems.append(f'品目の合計と原本が{abs(actual-net):,}円違います。原本の値引き・諸経費や品目を確認し、上の修正欄で直してください。合計だけを合わせる変更はしません。')
@@ -243,7 +254,7 @@ def render_source(st, source, store, index, detail_rows=None):
         if source['tax_basis'] not in ('税抜','非課税') or source['tax_rate'] is None:
             problems.append('通常と異なる見積です。原本の税の扱いを確認してください。')
         from estimate_review import digest
-        signature = digest([source.get(k) for k in ('tax_basis','tax_rate','net_total','tax','gross_total')] + [rows])
+        signature = digest([source.get(k) for k in ('tax_basis','tax_rate','net_total','tax','gross_total','amount_notes_resolution')] + [rows])
         last = st.session_state.get('_review_source_signature_' + sid)
         if problems or (last is not None and last != signature):
             st.session_state['review_source_ok_' + sid] = False

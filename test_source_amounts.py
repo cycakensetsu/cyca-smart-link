@@ -98,6 +98,38 @@ class SourceAmountsTest(unittest.TestCase):
         self.assertEqual(result['gross_total'],110000)
         self.assertEqual(result['conflicts'],[])
 
+    def test_printed_count_tax_and_inclusive_total_override_an_ocr_net_price(self):
+        result=self.read([(1,'NET金額 108,000'),(2,'お見積り合計金額 ￥110,000（消費税込）'),
+                          (2,'計 100,000'),(2,'消費税 10% 10,000'),(2,'小計 110,000')],
+                         {'summary_sources':[{'元ファイル':'a.pdf','改小計':108000,'工事費計':110000}]})
+        self.assertEqual(result['net_total'],100000)
+        self.assertEqual(result['gross_total'],110000)
+        self.assertEqual(result['amount_notes'][0]['value'],108000)
+
+    def test_net_and_gross_discount_are_not_silently_ignored(self):
+        result=self.read([(1,'NET金額 ￥108,000'),(2,'小計 100,000'),(2,'消費税 10,000'),(2,'合計 110,000')])
+        self.assertEqual(result['net_total'],100000)
+        self.assertEqual(result['amount_notes'][0]['value'],108000)
+        self.assertEqual(result['amount_notes'][0]['page'],1)
+        result=self.read([(1,'合計金額 ￥109,500 税込み'),(2,'小計 100,000'),(2,'消費税 10,000'),(2,'合計 110,000 ▼500')])
+        self.assertEqual(result['gross_total'],109500)
+        self.assertEqual(result['amount_notes'][0]['value'],-500)
+        self.assertEqual(result['net_total'],100000,'do not manufacture a net adjustment')
+
+    def test_blank_net_field_and_normal_net_equal_to_details_need_no_question(self):
+        for label in ('NET:￥-(税別)','NET金額 100,000'):
+            result=self.read([(1,label),(1,'小計 100,000'),(1,'消費税 10,000'),(1,'合計 110,000')])
+            self.assertEqual(result['amount_notes'],[])
+
+    def test_scanned_amount_notes_require_numeric_evidence_and_exact_source(self):
+        summary={'summary_sources':[{'元ファイル':'a.pdf','改小計':100000,'消費税':10000,'工事費計':110000,
+            '金額の要確認箇所':[{'種類':'税込後値引き','金額':-500,'ページ':2,'根拠':'税込合計 110,000 ▼500'},
+                {'種類':'NET金額','金額':108000,'ページ':1,'根拠':'NET金額 未読'}]},
+            {'元ファイル':'other.pdf','金額の要確認箇所':[{'種類':'NET金額','金額':9,'根拠':'NET9'}]}]}
+        result=self.read([],summary)
+        self.assertEqual(len(result['amount_notes']),1)
+        self.assertEqual(result['amount_notes'][0]['value'],-500)
+
     def test_strict_amounts_and_explicit_tax_derivation(self):
         for value in (None,True,'abc','10%','100 200'):
             self.assertIsNone(money(value))

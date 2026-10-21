@@ -68,6 +68,19 @@ class PourLayoutTest(unittest.TestCase):
             self.assertIn('原本運搬費',pdf[1].get_text())
             self.assertIn('税込合計',pdf[1].get_text())
 
+    def test_short_single_source_with_several_trades_keeps_headings_without_extra_summary(self):
+        e=example((2,4),sources=1,expense=True)
+        result,w=self.output(e)
+        layout=plan(e)
+        self.assertTrue(layout['compact'])
+        self.assertEqual(w.sheetnames,['見積書','明細1'])
+        self.assertEqual(len([r for r in layout['pages'][0] if r['kind']=='category']),3)
+        self.assertTrue(len(layout['pages'][0])<=20)
+        with fitz.open(stream=result.pdf_data,filetype='pdf') as pdf:
+            self.assertEqual(len(pdf),2)
+            for name in ('防水工事','足場工事','原本諸経費'):
+                self.assertIn(name,pdf[1].get_text())
+
     def test_large_single_source_retains_summary_and_multiple_detail_pages(self):
         e=example((25,),sources=1,expense=True); result,w=self.output(e)
         self.assertFalse(plan(e)['compact'])
