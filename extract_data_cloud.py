@@ -408,7 +408,6 @@ with st.sidebar:
                 del st.session_state[business_key]
         st.rerun()
 
-render_archive(st)
 
 # ==========================================
 # APIキー（環境変数 GOOGLE_API_KEY または .streamlit/secrets.toml）
@@ -708,34 +707,15 @@ if uploaded_files:
                         )
                         status_area.markdown(loading_panel(n_files), unsafe_allow_html=True)
 
-                        result = call_gemini_with_retry(
-                            client,
-                            page.parts + [build_page_prompt(page, n_files)],
-                            primary_model=primary_model,
-                            fallback_models=fallback_models,
-                            page_number=analysis_page_number,
-                            source_name=page.source_name,
-                            on_retry=_on_gemini_retry,
-                            on_model_start=_on_gemini_model_start,
-                        )
-                        successful_models.append(result.model_name)
-                        if not result.text:
-                            continue
-                        try:
-                            payload = parse_gemini_json_payload(result.text)
-                            page_summaries, page_records = split_extraction_payload(
-                                payload,
-                                source_name=page.source_name,
-                                page_number=analysis_page_number,
-                            )
-                            if page.whole_document:
-                                from source_table import reconcile_native_pdf
-                                page_records, page_summaries = reconcile_native_pdf(source_paths[id(page)], page_records, page_summaries)
-                            summary_sources.extend(page_summaries)
-                            all_extracted_data.extend(page_records)
-                        except json.JSONDecodeError:
-                            analysis_errors.append({"source": page.source_name, "page": page.page_number})
-                            st.warning(f"{page.source_name} のAI応答をJSONとして読み取れませんでした。このファイルをスキップして続行します。")
+                        from source_extraction import extract_job
+                        page_summaries,page_records,page_models,page_errors = extract_job(
+                            client,page,source_paths[id(page)],n_files,
+                            primary_model=primary_model,fallback_models=fallback_models,
+                            on_retry=_on_gemini_retry,on_model_start=_on_gemini_model_start)
+                        successful_models.extend(page_models)
+                        summary_sources.extend(page_summaries)
+                        all_extracted_data.extend(page_records)
+                        analysis_errors.extend(page_errors)
 
                     if successful_models:
                         log_gemini_analysis_complete(successful_models, len(page_jobs))
@@ -1172,4 +1152,5 @@ if profit_mode != REVIEW_MODE:
     render_draft_exports(st, legacy_export_signature())
 
 # Stable component position preserves the user-activated audio context across reruns.
+render_archive(st)
 render_work_effects(st)

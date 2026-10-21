@@ -91,7 +91,7 @@ class EstimateReviewTest(unittest.TestCase):
             self.assertTrue(self.draft(sources=[{**self.source,"tax_basis":basis}])["unresolved"])
 
     def test_source_totals_and_tax_equation_blocked(self):
-        for changes in ({"net_total":1},{"tax":10000,"gross_total":99999},
+        for changes in ({"net_total":1},{"gross_total":99999},{"tax":10000,"gross_total":99999},
                         {"tax":8000,"gross_total":108000},{"confirmed":False}):
             self.assertTrue(self.draft(sources=[{**self.source,**changes}])["unresolved"])
 

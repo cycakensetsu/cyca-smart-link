@@ -1,0 +1,86 @@
+"""Novice flow: normal totals are automatic, mismatches remain a hard stop."""
+from pathlib import Path
+import tempfile
+import unittest
+from streamlit.testing.v1 import AppTest
+import fitz
+
+
+class SimpleReviewFlowTest(unittest.TestCase):
+    def app(self, temp, *, amount=100000, read_errors=False):
+        p=Path(temp)/'synthetic.pdf';doc=fitz.open();page=doc.new_page()
+        for y,text in [(50,'税抜合計 100,000円'),(80,'消費税 10,000円'),(110,'税込合計 110,000円')]:
+            page.insert_text((30,y),text,fontname='japan',fontsize=12)
+        p.write_bytes(doc.tobytes());doc.close()
+        return f'''
+import streamlit as st
+from estimate_review import OriginalVault
+from source_review_ui import render_source
+store=OriginalVault({str(Path(temp)/'vault')!r},'synthetic')
+source=store.preserve('synthetic.pdf',open({str(p)!r},'rb').read())
+source['pages']=1
+source['read_errors']={([{'page':1}] if read_errors else [])!r}
+rows=[{{'原本ID':source['id'],'品名':'架空工事','数量':1,'単位':'式','原価単価':{amount},'原価金額':{amount}}}]
+render_source(st,source,store,1,rows)
+st.session_state['source_result']=source
+'''
+
+    def test_normal_original_is_ready_without_tax_or_amount_input(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app=self.app(temp);at=AppTest.from_string(app).run()
+            self.assertEqual(list(at.exception),[])
+            source=at.session_state['source_result'];sid=source['id']
+            self.assertEqual(source['net_total'],100000)
+            self.assertEqual(source['tax_rate'],.10)
+            self.assertFalse(source['confirmed'])
+            self.assertEqual(len(at.warning),0)
+            self.assertFalse(at.checkbox(key='review_source_ok_'+sid).disabled)
+            at.checkbox(key='review_source_ok_'+sid).check().run()
+            self.assertTrue(at.session_state['source_result']['confirmed'])
+            at.number_input(key='review_net_'+sid).set_value(99999).run()
+            self.assertFalse(at.session_state['source_result']['confirmed'])
+            self.assertTrue(at.checkbox(key='review_source_ok_'+sid).disabled)
+            self.assertEqual(len(at.warning),1)
+            self.assertEqual(len(at.error),0)
+
+    def test_mismatched_detail_has_one_actionable_prompt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=AppTest.from_string(self.app(temp,amount=90000)).run()
+            source=at.session_state['source_result']
+            self.assertEqual(len(at.warning),1)
+            self.assertIn('品目の抜け',at.warning[0].value)
+            self.assertEqual(len(at.error),0)
+            self.assertTrue(at.checkbox(key='review_source_ok_'+source['id']).disabled)
+
+    def test_unread_page_cannot_be_confirmed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=AppTest.from_string(self.app(temp,read_errors=True)).run()
+            self.assertTrue(at.checkbox(key='review_source_ok_'+at.session_state['source_result']['id']).disabled)
+
+    def test_findings_are_silent_before_check_and_deduplicated_after(self):
+        for ready,count in [(False,0),(True,1)]:
+            at=AppTest.from_string(f'''
+import streamlit as st
+from review_findings_ui import render_findings
+item={{'id':'one','種類':'原本小計','内容':'品目の金額を確認','行':[],'レベル':'停止'}}
+render_findings(st,{{'payload':{{'指摘':[item,dict(item,id='two')],'計算明細':[]}}}},{ready!r})
+''').run()
+            self.assertEqual(list(at.exception),[])
+            self.assertEqual(len(at.warning),count)
+            self.assertEqual(len(at.error),0)
+
+    def test_bottom_save_is_a_single_action_in_main(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=AppTest.from_string(f'''
+import os
+os.environ['CYCA_DATA_DIR']={temp!r}
+import streamlit as st
+from review_ui import vault,render_archive
+st.session_state['username']='synthetic'
+vault(st).preserve('synthetic.pdf',b'synthetic test')
+render_archive(st)
+''').run()
+            self.assertEqual(list(at.exception),[])
+            self.assertEqual(len(at.sidebar),0)
+            labels=[d.label for d in at.get('download_button')]
+            self.assertEqual(labels,['作業データをまとめて保存'])

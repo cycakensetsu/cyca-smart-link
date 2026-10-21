@@ -35,6 +35,7 @@ class ConversationUITest(unittest.TestCase):
         at.selectbox(key='review_basis_' + sid).select('税抜')
         at.selectbox(key='review_tax_' + sid).select('10%')
         at.number_input(key='review_net_' + sid).set_value(100000)
+        at.run()
         at.checkbox(key='review_source_ok_' + sid).check()
         at.text_input(key='review_customer').set_value('架空会社 御中')
         at.text_input(key='review_project').set_value('架空工事')

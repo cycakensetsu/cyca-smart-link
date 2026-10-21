@@ -54,6 +54,8 @@ class ReferenceQuote:
     discount: int
     net_total: int
     page_count: int
+    discount_page: int = 0
+    discount_evidence: str = ""
 
 
 def read_reference_quote(path):
@@ -61,6 +63,8 @@ def read_reference_quote(path):
     details, summaries = [], []
     subtotal = net_total = None
     discount = 0
+    discount_page = 0
+    discount_evidence = ""
     section = ""
     with fitz.open(path) as doc:
         for page_no, page in enumerate(doc, 1):
@@ -99,6 +103,8 @@ def read_reference_quote(path):
                             if amount > 0 and sign not in ("-", "−", "△", "▲"):
                                 raise ValueError("値引きの符号を確定できません。")
                             discount = -abs(int(amount))
+                            discount_page = page_no
+                            discount_evidence = " / ".join(str(c or "") for c in cells)
                         continue
                     if name.startswith("【") and "】" in name:
                         section = name.strip("【】 ")
@@ -125,7 +131,7 @@ def read_reference_quote(path):
     numbers = [r["No"] for r in details]
     if numbers != list(range(1, len(numbers) + 1)):
         raise ValueError("原本の明細連番に欠落・重複があります。")
-    return ReferenceQuote(details, summaries, subtotal, discount, net_total, page_count)
+    return ReferenceQuote(details, summaries, subtotal, discount, net_total, page_count, discount_page, discount_evidence)
 
 
 def reference_estimate(quote, project, group_map=None):
