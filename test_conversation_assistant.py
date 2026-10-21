@@ -30,6 +30,17 @@ class ConversationTest(unittest.TestCase):
     def validate(self, raw, words, context=None):
         return validate_proposal(raw, context or fixture(), [{'role': 'user', 'content': words}])
 
+    def test_unqualified_profit_sentence_uses_only_the_selected_whole_estimate(self):
+        words='利益を1万円確保したい'
+        c=change(kind='target',scope='全体',key='全体',mode='上乗せ額',value='10000',evidence=words)
+        result=self.validate(proposal([c]),words)
+        self.assertEqual(result['changes'][0]['scope'],'全体')
+        with self.assertRaises(ValueError):
+            self.validate(proposal([c]),'防水だけ。'+words)
+        context=fixture();context['targets'][0].update(scope='工種別',key='防水工事')
+        with self.assertRaises(ValueError):
+            self.validate(proposal([c]),words,context)
+
     def test_japanese_and_arabic_spoken_amounts(self):
         for words, value in [('十万円', 100000), ('百二十万円', 1200000), ('1.5万円', 15000), ('１２万円', 120000), ('1,000円', 1000), ('1.2倍', 1.2)]:
             with self.subTest(words=words):

@@ -486,14 +486,14 @@ with st.expander("従来の利益設定・出力形式を使う", expanded=False
 
 st.markdown("---")
 effects_slot = st.container()
-st.markdown('<div class="sub-header">原本を取り込む</div>', unsafe_allow_html=True)
-st.caption("目安：1ファイル20MBまで・複数は5ファイル程度まで。それ以上はタイムアウトやエラーになる場合があります。")
+st.markdown('<div class="sub-header">業者の見積書を入れる</div>', unsafe_allow_html=True)
+st.caption("PDF・写真を選べます。複数の業者分もまとめて選べます（1ファイル20MBまで）。")
 st.caption("見積を読み込んだ後は、マイクで今回の要望を伝えて相談できます。")
 
 if '_upload_epoch' not in st.session_state:
     st.session_state['_upload_epoch'] = uuid.uuid4().hex
 uploaded_files = st.file_uploader(
-    "PDF・写真（JPG, PNG）を選択、またはドラッグ＆ドロップ（複数社分まとめてOK！）",
+    "見積書のPDF・写真を選ぶ",
     type=["pdf", "jpg", "jpeg", "png"],
     accept_multiple_files=True,
     key='estimate_upload_' + st.session_state['_upload_epoch'],
@@ -630,12 +630,12 @@ def render_template_fill_test_v2():
 # 本番の横型見積書は、解析・利益計算後の実データから下段で生成する。
 
 if uploaded_files:
-    st.markdown(ready_panel([f.name for f in uploaded_files]), unsafe_allow_html=True)
     analyze_label = "見積書を読み取る" if profit_mode == REVIEW_MODE else (
         "AIで見積を整理する" if profit_mode == REVIEW_MODE else
         "✨ 新しい見積書を解析してNumbers用に流し込む ✨"
         if format_choice == HORIZONTAL_FORMAT else "✨ AIでデータを解析 ＆ 利益計算を実行する ✨"
     )
+    st.markdown(ready_panel([f.name for f in uploaded_files], analyze_label), unsafe_allow_html=True)
     analyze_clicked = st.button(analyze_label)
     horizontal_output_slot = st.empty()
     if st.session_state.pop("_force_analyze", False):

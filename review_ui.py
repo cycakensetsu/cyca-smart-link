@@ -113,15 +113,23 @@ def render_review(st, api_key=None):
         _render_review_plan(st,api_key,original,rows,sources)
 
 
+def customer_default(metadata):
+    """A supplier's addressee is often CYCA itself, not the final customer."""
+    import re,unicodedata
+    value=str(metadata.get('宛名') or '')
+    compact=re.sub(r'株式会社|有限会社|\(株\)|\(有\)|御中|様|殿|[\s㈱()（）]','',unicodedata.normalize('NFKC',value))
+    return '' if compact=='彩架建設' else value
+
+
 def _render_review_plan(st,api_key,original,rows,sources):
     from conversation_ui import working_context, render_conversation
     conversation_slot = st.container()
-    st.markdown('### 3. 見積金額と内容を整える')
+    st.markdown('### 3. 見積金額を確認する')
     st.caption('出力先：アプリ既存の横型流し込みデザイン。通常は工種ごとに明細を分け、2行程度の小工種は同じページにまとめます。少量の1社見積は一式まとめを省きます。')
     m = st.session_state.get('_review_metadata', {})
-    has_names = all(str(st.session_state.get(key, m.get(field) or '')).strip() for key,field in [('review_customer','宛名'),('review_project','工事名称')])
-    with st.expander('宛名と工事名を確認・変更', expanded=not has_names):
-        customer = st.text_input('宛名（敬称まで）', value=str(m.get('宛名') or ''), key='review_customer')
+    with st.container(border=True):
+        st.caption('見積書を渡すお客様と、表紙の工事名を確認してください。')
+        customer = st.text_input('お客様名', value=customer_default(m), placeholder='例：〇〇株式会社 御中', key='review_customer')
         project = st.text_input('工事名', value=str(m.get('工事名称') or ''), key='review_project')
     with st.expander("金額・利益を手動で調整する", expanded=False):
         scope = st.radio("目標の指定範囲", ["全体", "業者別", "工種別"], horizontal=True, key="review_scope")
@@ -178,10 +186,13 @@ def _render_review_plan(st,api_key,original,rows,sources):
                 st.write(col + "ごとの原価・売価")
                 st.dataframe(result_rows.groupby(col, sort=False)[["原価金額", "見積金額", "上乗せ額"]].sum(), width="stretch")
     valid = not draft["unresolved"] and bool(metadata["宛名"].strip()) and bool(metadata["工事名称"].strip())
+    missing_names=[label for field,label in [('宛名','お客様名'),('工事名称','工事名')] if not metadata[field].strip()]
+    if missing_names:
+        st.info('・'.join(missing_names)+'を入れると、完成イメージを見られます。')
     preview_ready = render_preview(st, draft, valid)
-    agree = st.checkbox("内容とページ分けを確認しました。この配置でPDFを作成します", disabled=not preview_ready,
+    agree = st.checkbox("内容とページ分けは、これでOKです", disabled=not preview_ready,
                         key="review_agree_"+draft["fingerprint"])
-    if st.button("この配置でPDF・Numbers用見積書を作成", disabled=not (valid and agree and preview_ready), key="review_approve"):
+    if st.button("この内容で見積書を作成", disabled=not (valid and agree and preview_ready), key="review_approve"):
         try:
             approval = approve(draft, st.session_state["username"])
             result = build_approved_estimate(draft, approval)
@@ -202,10 +213,10 @@ def _render_review_plan(st,api_key,original,rows,sources):
     result = st.session_state.get("_review_result")
     if approval and result and approval["fingerprint"] == draft["fingerprint"] and valid and agree and preview_ready:
         st.session_state['_review_export_ready'] = True
-        st.success("承認内容と現在の入力が一致しています。数量や目標などを変えると再承認が必要です。")
-        st.download_button("承認済み見積書（Numbers用xlsx）", result.data, file_name=result.file_name, key="review_xlsx", on_click=download_cue)
-        st.download_button("承認済みPDF", result.pdf_data, file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf", on_click=download_cue)
+        st.success("見積書ができました。下のボタンから保存できます。")
+        st.download_button("PDFを保存", result.pdf_data, file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf", on_click=download_cue)
+        st.download_button("Numbers用を保存", result.data, file_name=result.file_name, key="review_xlsx", on_click=download_cue)
         with st.expander('承認記録を見る・保存する（社内用）'):
             st.download_button("承認記録を保存", canonical(approval).encode(), file_name="社内承認記録.json", key="review_receipt")
     elif result:
-        st.info("入力が変更されたため、前回の承認済みファイルを非表示にしました。再承認してください。")
+        st.info("内容が変わりました。完成イメージをもう一度確認して、見積書を作り直してください。")

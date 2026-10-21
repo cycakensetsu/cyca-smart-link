@@ -6,6 +6,13 @@ from streamlit.testing.v1 import AppTest
 
 
 class ReviewUITest(unittest.TestCase):
+    def test_supplier_addressee_does_not_silently_become_customer(self):
+        from review_ui import customer_default
+        for name in ('彩架建設 株式会社 御中','彩架建設㈱ 様','株式会社 彩架建設'):
+            self.assertEqual(customer_default({'宛名':name}),'')
+        self.assertEqual(customer_default({'宛名':'架空のお客様 御中'}),'架空のお客様 御中')
+        self.assertEqual(customer_default({'宛名':'彩架建設管理株式会社 御中'}),'彩架建設管理株式会社 御中')
+
     def test_approval_requires_checks_and_changes_hide_old_downloads(self):
         with tempfile.TemporaryDirectory() as temp:
             source=f'''
@@ -35,6 +42,7 @@ render_review(st)
             at.number_input(key='review_net_'+sid).set_value(100000)
             at.run()
             at.checkbox(key='review_source_ok_'+sid).check().run()
+            self.assertTrue(any('お客様名' in message.value for message in at.info))
             at.text_input(key='review_customer').set_value('デモ 御中')
             at.text_input(key='review_project').set_value('検証用工事')
             at.run()
@@ -49,11 +57,15 @@ render_review(st)
             at.button(key='review_approve').click().run()
             self.assertEqual(list(at.exception),[])
             self.assertIn('_review_approval',at.session_state)
-            self.assertTrue(any('承認内容と現在' in s.value for s in at.success))
+            labels=[b.label for b in at.get('download_button')]
+            self.assertIn('PDFを保存',labels)
+            self.assertIn('Numbers用を保存',labels)
+            self.assertLess(labels.index('PDFを保存'),labels.index('Numbers用を保存'))
+            self.assertTrue(any('見積書ができました' in s.value for s in at.success))
             target=next(n for n in at.number_input if n.key.startswith('review_target_'))
             target.set_value(10000).run()
             self.assertEqual(list(at.exception),[])
-            self.assertFalse(any('承認内容と現在' in s.value for s in at.success))
+            self.assertFalse(any('見積書ができました' in s.value for s in at.success))
             self.assertTrue(at.button(key='review_approve').disabled)
 
 

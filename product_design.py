@@ -22,5 +22,5 @@ def loading_panel(count, page=None):
     return f'''<div class="cyca-scan" role="status"><div class="cyca-ring">AI</div><div style="flex:1"><div class="eyebrow">CYCA SMART LINK / ANALYZING</div><div class="headline">{int(count)}件の原本から、見積の構成を読み解く。</div><div class="detail">{detail}</div><div class="cyca-track"><i></i></div></div></div>'''
 
 
-def ready_panel(names):
-    return f'''<div class="cyca-scan cyca-ready"><div class="cyca-ring">LINK</div><div><div class="eyebrow">CYCA SMART LINK / READY</div><div class="headline">{len(names)}件の原本を受け取りました。</div><div class="detail">{escape(' ／ '.join(names))}</div><div class="detail">次は「AIで見積を整理する」。原本を残して、確認用の明細をつくります。</div></div></div>'''
+def ready_panel(names, action_label='見積書を読み取る'):
+    return f'''<div class="cyca-scan cyca-ready"><div class="cyca-ring">LINK</div><div><div class="eyebrow">CYCA SMART LINK / READY</div><div class="headline">{len(names)}件の見積書を受け取りました。</div><div class="detail">{escape(' ／ '.join(names))}</div><div class="detail">次は「{escape(action_label)}」を押してください。読み取りが終わったら、元の見積書と見比べられます。</div></div></div>'''

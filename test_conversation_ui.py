@@ -81,6 +81,37 @@ class ConversationUITest(unittest.TestCase):
             self.assertNotIn('_review_result', at.session_state)
             self.assertTrue(at.button(key='review_approve').disabled)
 
+    def test_recording_goes_straight_to_a_proposal_without_applying_money(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp:
+            at=self.checked_app(temp)
+            words='利益を1万円確保したい'
+            raw=proposal([change(kind='target',scope='全体',key='全体',mode='上乗せ額',value='10000',evidence=words)])
+            audio=SimpleNamespace(getvalue=lambda:b'synthetic-audio-not-sent')
+            with patch('streamlit.audio_input',return_value=audio),patch('conversation_ui.transcribe',return_value=words) as transcription,patch('conversation_assistant._generate',return_value=raw) as model:
+                at.run()
+                self.assertNotIn('review_transcribe',[b.key for b in at.button])
+                at.button(key='review_voice_consult').click().run()
+                self.assertEqual(list(at.exception),[])
+                self.assertEqual(transcription.call_count,1)
+                self.assertEqual(model.call_count,1)
+            self.assertEqual(at.text_area(key='review_instruction').value,words)
+            self.assertFalse(at.button(key='review_apply_conversation').disabled)
+            self.assertEqual(next(n for n in at.number_input if n.key.startswith('review_target_')).value,0)
+            self.assertNotIn('_review_approval',at.session_state)
+            self.assertNotIn('_review_voice_bytes',at.session_state)
+
+    def test_empty_recording_does_not_send_a_request_or_create_a_proposal(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp:
+            at=self.checked_app(temp)
+            with patch('streamlit.audio_input',return_value=SimpleNamespace(getvalue=lambda:b'empty-fixture')),patch('conversation_ui.transcribe',return_value='  '),patch('conversation_ui.converse') as model:
+                at.run();at.button(key='review_voice_consult').click().run()
+            self.assertEqual(list(at.exception),[])
+            model.assert_not_called()
+            self.assertNotIn('_review_proposal',at.session_state)
+            self.assertTrue(any('聞き取れません' in e.value for e in at.error))
+
     def test_manual_change_disables_stale_plan_and_reset_keeps_current_estimate(self):
         with tempfile.TemporaryDirectory() as temp:
             at = self.checked_app(temp)
