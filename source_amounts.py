@@ -57,6 +57,14 @@ def read_amounts(name, data, summaries=None):
     lines = list(_lines(data)) if str(name).lower().endswith('.pdf') else []
     for pos, (page, raw) in enumerate(lines):
         text = re.sub(r'\s+', '', unicodedata.normalize('NFKC', raw))
+        plain_net=re.fullmatch(r'計[:：=]?[¥￥]?(\d[\d,]*)(?:円)?',text)
+        if plain_net:
+            candidates['net_total'].append({'value':int(plain_net[1].replace(',','')),'priority':1,
+                'page':page,'text':raw[:200],'method':'原本の文字'})
+        inclusive=re.search(r'(?:合計金額|お見積り合計金額)[:：=]?[¥￥]?(\d[\d,]*)(?:円)?(?:税込み|税込|\(消費税込\))',text)
+        if inclusive:
+            candidates['gross_total'].append({'value':int(inclusive[1].replace(',','')),'priority':5,
+                'page':page,'text':raw[:200],'method':'原本の文字'})
         for field, patterns in LABELS.items():
             if field == 'gross_total' and '税抜' in text:
                 continue
@@ -120,7 +128,8 @@ def read_amounts(name, data, summaries=None):
             and chosen.get('tax', {}).get('priority', 0) >= 4
             and chosen.get('net_total', {}).get('priority', -1) < 5):
         expected_net = result['gross_total'] - result['tax']
-        printed = [i for i in candidates['gross_total'] if 0 < i['priority'] < 5 and i['value'] == expected_net]
+        printed = [i for i in candidates['gross_total'] + candidates['net_total']
+                   if 0 < i['priority'] < 5 and i['value'] == expected_net and i['method']=='原本の文字']
         if printed:
             result['net_total'] = expected_net
             chosen['net_total'] = printed[0]
@@ -150,5 +159,7 @@ def read_amounts(name, data, summaries=None):
     if result['net_total'] is None and result['gross_total'] is not None and 'net_total' not in result['conflicts']:
         result['net_total'] = net_from_gross(result['gross_total'], tax=result['tax'])
         result['net_derived'] = True
+    from source_variants import find_amount_notes
+    result['amount_notes'] = find_amount_notes(lines, (summaries or {}).get('summary_sources', []), name, result)
     result['page'] = next((e['page'] for e in evidence if e['field'] in ('net_total','gross_total')), 1)
     return result

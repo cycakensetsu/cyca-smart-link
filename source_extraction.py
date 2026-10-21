@@ -4,7 +4,7 @@ from gemini_resilience import (call_gemini_with_retry, build_page_prompt,
                                parse_gemini_json_payload, _render_pdf_pages_as_images)
 from estimate_pipeline import split_extraction_payload, build_intermediate_dataframe, validate_intermediate
 from source_table import reconcile_native_pdf
-from source_sections import reconcile_sections
+from source_sections import reconcile_sections, reconcile_printed_totals
 
 
 def _total_mismatch(records, summaries, source_name):
@@ -96,6 +96,7 @@ def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
         try:
             summaries,records=split_extraction_payload(parse_gemini_json_payload(result.text),
                 source_name=job.source_name,page_number=None if job.whole_document else job.page_number)
+            summaries=[reconcile_printed_totals(s) for s in summaries]
             return summaries,records,True
         except json.JSONDecodeError:
             return [],[],False

@@ -146,6 +146,12 @@ def reconcile_native_pdf(path, records, summaries):
     vendor = native[0].get("__native_vendor") or next(iter(vendors))
     source = records[0].get("__source_name", "")
     for idx, row in enumerate(native, 1):
+        matches=[r for r in records if number(r.get('数量'))==row['数量']
+                 and number(r.get('単価'))==row['単価'] and number(r.get('金額'))==row['金額']
+                 and compact(r.get('品名'))==compact(row['品名'])]
+        if len(matches)==1:
+            for field in ('工事種別','部位'):
+                if not row.get(field) and matches[0].get(field):row[field]=matches[0][field]
         row.update({"No": idx, "見積元": vendor, "__source_name": source})
         # Native table cells are authoritative. Re-splitting them using OCR
         # specifications can erase floor numbers or vary equal-work grouping.

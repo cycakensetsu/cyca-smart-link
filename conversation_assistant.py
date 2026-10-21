@@ -56,7 +56,7 @@ discount(valueは0以下の整数円、reason必須)、row(row_id,fieldは工事
 各変更のevidenceには、その値と対象を明示した利用者発言の一部分をそのまま引用する。
 「じゃあ20%で」など前の発言と組み合わせると明確になる場合、引用を改行でつなげる。
 比較用の計算が与えられた場合だけ、その数字を相談の材料として使う。相場や適正利益は断定しない。
-未使用フィールドは空文字。明確な根拠がない変更案は出さない。質問があればchangesを空にする。
+未使用フィールドは空文字。明確な根拠がない変更案は出さない。質問があればchangesを空にする。 現在の指定範囲が全体で、利用者が対象を付けず「利益を10万円確保したい」とだけ話した場合は見積全体の利益の相談として案を作れる。業者名・工種・「だけ」などを省略して全体へ広げてはいけない。
 返答は短く、これから反映する案であることを明示する。出力は指定JSON形式のみ。'''
 
 
@@ -158,7 +158,14 @@ def validate_proposal(raw, context, history):
                 raise ValueError('目標の指定範囲・方法が不正です。')
             known = {'全体'} if scope == '全体' else {str(r['見積元' if scope == '業者別' else '工事種別']) for r in rows.values() if r['採用']}
             needle = key.removesuffix('工事') if scope == '工種別' else key
-            if key not in known or (scope == '全体' and not any(w in evidence for w in ('全体', '全部', 'トータル'))) or (scope != '全体' and (not needle or needle not in evidence)):
+            # The normal form's selected target is the whole estimate. Accept
+            # a complete, unqualified profit sentence in that context only;
+            # never remove a vendor/trade qualification from a longer utterance.
+            implicit_whole = (scope == key == '全体' and len(context.get('targets', [])) == 1
+                and context['targets'][0].get('scope') == '全体'
+                and evidence == (utterances[-1].strip() if utterances else '')
+                and re.fullmatch(r'利益(?:を|は)\s*[0-9０-９一二三四五六七八九十百千万億.,]+円?\s*(?:確保したい|確保して|にしたい|にして|ほしい|欲しい)[。！!]*', evidence) is not None)
+            if key not in known or (scope == '全体' and not implicit_whole and not any(w in evidence for w in ('全体', '全部', 'トータル'))) or (scope != '全体' and (not needle or needle not in evidence)):
                 raise ValueError('上乗せする対象を一つに特定できません。対象名を明示してください。')
             markers = {'上乗せ額': ('上乗せ', '利益を', '利益は'), '掛け率': ('掛け率', '倍'), '粗利益率': ('粗利', '粗利益率')}
             if not any(w in evidence for w in markers[mode]):

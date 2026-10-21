@@ -2,17 +2,18 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const source=fs.readFileSync(__dirname+'/work_effects_frontend/effects.js','utf8');
-function setup({unsupported=false,saved={}}={}) {
-  const items={}, messages=[], oscillators=[], gains=[], listeners={}, pending=new Map(); let serial=0, particles=0;
-  for(const id of ['sound','sample','volume','volumeValue','motion','theme','stage','icon','message','hint','card'])items[id]={value:'',checked:true,textContent:'',className:'',attrs:{},classList:{add(){}},setAttribute(k,v){this.attrs[k]=v;},getBoundingClientRect(){return {height:248};},appendChild(){particles++;}};
+function setup({unsupported=false,saved={},reduce=false,deferFrames=false}={}) {
+  const items={}, messages=[], oscillators=[], gains=[], listeners={}, pending=new Map(),frames=[],activeParticles=[]; let serial=0, particles=0;
+  for(const id of ['sound','sample','volume','volumeValue','motion','theme','stage','icon','message','hint','card'])items[id]={value:'',checked:true,textContent:'',className:'',attrs:{},classList:{add(...names){items[id].className+=' '+names.join(' ');}},setAttribute(k,v){this.attrs[k]=v;},getBoundingClientRect(){return {height:248};},appendChild(node){particles++;activeParticles.push(node);}};
   items.volume.value='20';items.theme.value='shuffle';
-  const document={hidden:false,querySelector:id=>items[id.slice(1)],addEventListener:(event,fn)=>listeners[event]=fn,removeEventListener:(event)=>delete listeners[event],querySelectorAll:()=>[],createElement:()=>({style:{setProperty(){}},addEventListener(){}})};
+  const pageStyle={};const document={documentElement:{style:{setProperty:(k,v)=>pageStyle[k]=v}},hidden:false,querySelector:id=>items[id.slice(1)],addEventListener:(event,fn)=>listeners[event]=fn,removeEventListener:(event)=>delete listeners[event],querySelectorAll:()=>[...activeParticles],createElement:()=>({style:{setProperty(){}},addEventListener(){},remove(){const i=activeParticles.indexOf(this);if(i>=0)activeParticles.splice(i,1);}})};
   const window={parent:{postMessage:m=>messages.push(m)},addEventListener:(event,fn)=>listeners[event]=fn};
   window.AudioContext=class {constructor(){if(unsupported)throw Error();this.state='suspended';this.currentTime=0;this.destination={};}async resume(){this.state='running';}createGain(){const gain={gain:{cancelScheduledValues(){},setTargetAtTime(){},setValueAtTime:v=>gains.push(v),linearRampToValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){},disconnect(){}};return gain;}createOscillator(){const o={frequency:{},connect(){},disconnect(){},start(){oscillators.push(this.frequency.value);},stop(){}};return o;}};
-  const engine=vm.runInNewContext(source+'\ncreateEffects(document);',{document,window,localStorage:{getItem:()=>JSON.stringify(saved),setItem(){}},matchMedia:()=>({matches:false}),ResizeObserver:class{observe(){}},Math,Date,JSON,Set,Array,Number,String,Error,requestAnimationFrame:fn=>fn(),setTimeout:fn=>{pending.set(++serial,fn);return serial;},clearTimeout:id=>pending.delete(id)});
+  const motionListeners={};const media={matches:reduce,addEventListener:(event,fn)=>motionListeners[event]=fn,removeEventListener:event=>delete motionListeners[event]};
+  const engine=vm.runInNewContext(source+'\ncreateEffects(document);',{document,window,localStorage:{getItem:()=>JSON.stringify(saved),setItem(){}},matchMedia:()=>media,ResizeObserver:class{observe(){}},Math,Date,JSON,Set,Array,Number,String,Error,requestAnimationFrame:fn=>deferFrames?frames.push(fn):fn(),setTimeout:fn=>{pending.set(++serial,fn);return serial;},clearTimeout:id=>pending.delete(id)});
   const flush=()=>{for(const [id,fn] of [...pending]){pending.delete(id);fn();}};
   const event=(id,stage,age=0)=>engine.receive([{id,stage,at:Date.now()/1000-age}]);
-  return {items,messages,oscillators,gains,flush,event,document,listeners,get particles(){return particles;}};
+  return {items,messages,oscillators,gains,flush,event,document,listeners,pageStyle,engine,media,motionListeners,flushFrames:()=>{while(frames.length)frames.shift()();},get particles(){return particles;},get activeParticles(){return activeParticles.length;}};
 }
 (async()=>{
   const t=setup();
@@ -32,5 +33,34 @@ function setup({unsupported=false,saved={}}={}) {
   const unavailable=setup({unsupported:true});await unavailable.listeners.pointerdown({isTrusted:true});assert.match(unavailable.items.hint.textContent,/消音のまま見積は作れます/);
   const muted=setup({saved:{sound:false}});await muted.listeners.keydown({isTrusted:true});assert.equal(muted.oscillators.length,0,'an explicit mute preference is respected');
   const earlyMute=setup();await earlyMute.items.sound.onclick();await earlyMute.listeners.pointerdown({isTrusted:true});assert.equal(earlyMute.oscillators.length,0);
+  const animation=setup();
+  animation.event('check-animation','check');animation.flush();
+  assert.equal(animation.items.card.attrs['data-stage'],'check');
+  assert.match(animation.items.stage.className,/phase-check/);
+  assert.match(animation.items.stage.className,/is-animated/);
+  const variant=animation.items.card.attrs['data-last-animation'];
+  animation.event('next-check-animation','check');animation.flush();
+  assert.notEqual(animation.items.card.attrs['data-last-animation'],variant,'consecutive animations vary');
+  for(let i=0;i<8;i++){animation.event('output-animation-'+i,'output');animation.flush();assert(animation.activeParticles<=12,'particles are bounded across repeated completion events');}
+  animation.items.motion.checked=false;animation.items.motion.onchange();
+  assert.equal(animation.activeParticles,0,'turning motion off removes particles');
+  assert.equal(animation.pageStyle['--cyca-motion-play-state'],'paused','the loading scan also stops');
+  assert.doesNotMatch(animation.items.stage.className,/is-animated/);
+  const reduced=setup({reduce:true});await reduced.listeners.pointerdown({isTrusted:true});
+  reduced.event('reduced-output','output');reduced.flush();
+  assert.equal(reduced.items.card.attrs['data-motion-state'],'reduced');
+  assert.equal(reduced.pageStyle['--cyca-motion-play-state'],'paused');
+  assert.equal(reduced.activeParticles,0);assert.doesNotMatch(reduced.items.stage.className,/is-animated/);
+  assert(reduced.oscillators.length>0,'reduced motion does not mute sound');
+  const separate=setup({saved:{sound:false}});separate.event('silent-output','output');separate.flush();
+  assert.match(separate.items.stage.className,/is-animated/,'muting sound does not turn off animation');
+  separate.document.hidden=true;separate.listeners.visibilitychange();
+  assert.equal(separate.activeParticles,0);assert.equal(separate.items.card.attrs['data-motion-state'],'hidden');
+  const pendingFrame=setup({deferFrames:true});pendingFrame.event('pending-check','check');pendingFrame.flush();
+  pendingFrame.items.motion.checked=false;pendingFrame.items.motion.onchange();pendingFrame.flushFrames();
+  assert.doesNotMatch(pendingFrame.items.stage.className,/is-animated/,'a late frame cannot restart disabled motion');
+  animation.engine.dispose();assert.equal(animation.listeners.pointerdown,undefined);assert.equal(animation.listeners.visibilitychange,undefined);
+  animation.event('after-dispose','output');animation.flush();assert.equal(animation.activeParticles,0);
+  console.log('アニメーション：工程別の動き・連続変化・粒子数上限・OFF時の停止・動きを減らす設定・背景時停止・破棄後の停止を確認しました。');
   console.log('効果音：デフォルトON・通常操作から開始・明示的な消音保持・背景完了通知・重複防止・音量上限を確認しました。');
 })().catch(error=>{console.error(error);process.exitCode=1;});

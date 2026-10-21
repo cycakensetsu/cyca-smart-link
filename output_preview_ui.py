@@ -34,7 +34,7 @@ def page_controls(st, rows, metadata):
 def render_preview(st, draft, valid):
     st.markdown('### 4. 完成イメージを見て、ページ分けを確認')
     st.caption('まだ確定しません。実際の流し込みデザインで、表紙から最後の明細まで確認できます。')
-    if st.button('完成イメージを確認する', key='review_preview', disabled=not valid):
+    if st.button('完成イメージを見る', key='review_preview', disabled=not valid):
         st.session_state.pop('_review_preview', None)
         try:
             from pour_layout import describe
@@ -70,5 +70,5 @@ def render_preview(st, draft, valid):
         st.info('直したい場合は、上の「ページの区切りを変える」か音声相談を使い、完成イメージをもう一度確認してください。')
         st.write('このページ分けでPDFを作成してよいですか？')
     elif preview:
-        st.info('内容やページの区切りが変わりました。「完成イメージを確認する」を押して、最新の配置を確認してください。')
+        st.info('内容やページの区切りが変わりました。「完成イメージを見る」を押して、最新の配置を確認してください。')
     return ready

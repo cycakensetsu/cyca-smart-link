@@ -45,6 +45,26 @@ class SourceSectionsTest(unittest.TestCase):
         self.assertFalse(any(r.get('__summary_only') for r in unrelated))
         self.assertEqual(rows,original)
 
+    def test_cover_fee_with_its_description_is_summary_only_once(self):
+        row=dict(品名='養生 諸経費',仕様='安全対策費・法定福利費含む',数量=1,単位='式',単価=6000,金額=6000,
+                 工事種別='諸経費',__source_name='a.pdf',__page_number=1)
+        summary={'__source_name':'a.pdf','__page_number':1,'__page_role':'cover_summary_page',
+                 '工事項目':[{'工事項目':'養生 諸経費（安全対策費・法定福利費含む）','金額':6000}]}
+        result=reconcile_sections([row],[summary],'a.pdf')
+        self.assertEqual(len(result),1)
+        self.assertTrue(result[0]['__summary_only'])
+        self.assertEqual(result[0]['金額'],6000)
+
+    def test_printed_inclusive_total_repairs_a_net_gross_label_swap(self):
+        from source_sections import reconcile_printed_totals
+        s={'小計':106000,'端数調整':-6000,'消費税':10000,'工事費計':100000,
+           '抽出元テキスト範囲':'小計106,000 / 調整値引き -6,000 / 合計100,000 / 税込：￥110,000'}
+        fixed=reconcile_printed_totals(s)
+        self.assertEqual((fixed['改小計'],fixed['工事費計']),(100000,110000))
+        self.assertEqual(s['工事費計'],100000)
+        for bad in ({**s,'消費税':9000},{**s,'端数調整':-5000},{**s,'抽出元テキスト範囲':'合計100,000'}):
+            self.assertEqual(reconcile_printed_totals(bad),bad)
+
     def fixture(self):
         source={'id':'source-a','name':'a.pdf','pages':1,'net_total':110095,'tax_basis':'税抜','tax_rate':.1,'confirmed':True}
         records=[dict(品名='測定数量の工事',仕様='原本仕様',数量=10.1,単位='㎡',単価=1000,金額=10095,見積元='検証社',工事種別='取付工事',抽出元テキスト範囲='測定数量の工事 10.1㎡ 単価1,000 金額10,095',__source_name='a.pdf',__page_number=1),
