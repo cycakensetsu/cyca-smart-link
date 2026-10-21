@@ -486,7 +486,7 @@ with st.expander("従来の利益設定・出力形式を使う", expanded=False
             st.caption("工事品目・仕様・数量・単位・単価・金額・備考の汎用 Excel を出力します。")
 
 st.markdown("---")
-st.markdown('<div class="sub-header">📄 ファイルアップロード</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">原本を取り込む</div>', unsafe_allow_html=True)
 st.caption("目安：1ファイル20MBまで・複数は5ファイル程度まで。それ以上はタイムアウトやエラーになる場合があります。")
 st.caption("見積を読み込んだ後は、マイクで今回の要望を伝えて相談できます。")
 
@@ -739,12 +739,12 @@ if uploaded_files:
 
                     if successful_models:
                         log_gemini_analysis_complete(successful_models, len(page_jobs))
-                        st.toast(f"✅ {successful_models[-1]} で解析完了！", icon="🤖")
+                        st.toast("原本の読み取りが完了しました。内容を確認しましょう。", icon=":material/check_circle:")
 
                     _cleanup_temp_paths(temp_paths)
                     progress_bar.progress(80, text="📊 データを整理しています...")
 
-                    progress_bar.progress(100, text="🎉 解析完了！")
+                    progress_bar.progress(100, text="読み取り完了。原本との確認へ進みます。")
                     status_area.empty()
                     time.sleep(0.3)
 

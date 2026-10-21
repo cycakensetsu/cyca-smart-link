@@ -101,15 +101,14 @@ def render_review(st, api_key=None):
     if st.session_state.pop('_review_clear_instruction', False):
         st.session_state['review_instruction'] = ''
     st.markdown("### 1. 元の見積書と読み取り結果を確認")
-    st.caption("原本・読取結果・訂正・承認を別々に保管します。工種は候補です。内容と施工範囲を確認してください。")
-    if not os.environ.get("CYCA_DATA_DIR"):
-        st.info("作業後は、原本と承認記録を左側の『バックアップ』から一括保存してください。アプリの再起動後も復元できます。")
+    st.caption("元の見積書はそのまま残ります。原本を見ながら、金額と税の扱いを確認してください。")
     sources = copy.deepcopy(st.session_state["_review_sources"])
     from source_review_ui import render_source
-    st.info('元の見積書と、読み取った内容が合っているか確認するステップです。確認が終わるとAIとのプラン作成へ進めます。')
     for index, s in enumerate(sources, 1):
         render_source(st, s, vault(st), index)
     confirmed_sources(st, sources)
+    if not os.environ.get("CYCA_DATA_DIR"):
+        st.caption("アプリ内の保存は一時的です。作業後は左側の『バックアップ』から原本と記録を一括保存してください。")
     st.caption("行の追加はできません。訂正には理由、除外には施工範囲等の根拠を入力します。「集計のみ」は諸経費などを工事内容に直接載せる原本行です。原本の備考は社内で保持し、顧客へ伝える条件は「顧客備考」に入力します。")
     columns = ["採用", "品名", "仕様", "数量", "単位", "原価単価", "原価金額", "見積元", "工事種別", "部位", "顧客備考", "元ファイル", "ページ", "集計のみ", "訂正理由", "除外理由", "備考", "行ID"]
     view = pd.DataFrame(st.session_state.get('_review_assistant_rows', original))[columns]
