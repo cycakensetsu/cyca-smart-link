@@ -20,7 +20,7 @@ store=OriginalVault({str(Path(temp)/'vault')!r},'synthetic')
 source=store.preserve('synthetic.pdf',open({str(p)!r},'rb').read())
 source['pages']=1
 source['read_errors']={([{'page':1}] if read_errors else [])!r}
-rows=[{{'原本ID':source['id'],'品名':'架空工事','数量':1,'単位':'式','原価単価':{amount},'原価金額':{amount}}}]
+rows=[{{'行ID':'row-1','原本ID':source['id'],'ページ':1,'採用':True,'訂正理由':'','見積元':'架空社','工事種別':'防水工事','品名':'架空工事','数量':1,'単位':'式','原価単価':{amount},'原価金額':{amount}}}]
 render_source(st,source,store,1,rows)
 st.session_state['source_result']=source
 '''
@@ -48,7 +48,7 @@ st.session_state['source_result']=source
             at=AppTest.from_string(self.app(temp,amount=90000)).run()
             source=at.session_state['source_result']
             self.assertEqual(len(at.warning),1)
-            self.assertIn('品目の抜け',at.warning[0].value)
+            self.assertIn('10,000円違います',at.warning[0].value)
             self.assertEqual(len(at.error),0)
             self.assertTrue(at.checkbox(key='review_source_ok_'+source['id']).disabled)
 
@@ -83,15 +83,15 @@ st.session_state['answers']=render_findings(st,{'payload':{'指摘':items,'計�
 
     def test_file_without_items_does_not_ask_for_a_total_to_force_it_through(self):
         with tempfile.TemporaryDirectory() as temp:
-            app=self.app(temp).replace("rows=[{'原本ID':source['id'],'品名':'架空工事','数量':1,'単位':'式','原価単価':100000,'原価金額':100000}]","rows=[]")
+            app=self.app(temp).replace('render_source(st,source,store,1,rows)','render_source(st,source,store,1,[])')
             at=AppTest.from_string(app).run()
             self.assertEqual(list(at.exception),[])
             self.assertEqual(len(at.warning),1)
-            self.assertIn('品目が見つかりません',at.warning[0].value)
+            self.assertIn('品目を読み取れません',at.warning[0].value)
             self.assertEqual(len(at.number_input),0)
             self.assertFalse(at.session_state['source_result']['confirmed'])
 
-    def test_bottom_save_is_a_single_action_in_main(self):
+    def test_original_save_is_absent_until_completed_output(self):
         with tempfile.TemporaryDirectory() as temp:
             at=AppTest.from_string(f'''
 import os
@@ -105,4 +105,7 @@ render_archive(st)
             self.assertEqual(list(at.exception),[])
             self.assertEqual(len(at.sidebar),0)
             labels=[d.label for d in at.get('download_button')]
-            self.assertEqual(labels,['作業データをまとめて保存'])
+            self.assertEqual(labels,[])
+            at.session_state['_review_export_ready']=True
+            at.run()
+            self.assertEqual([d.label for d in at.get('download_button')],['作業データをまとめて保存'])

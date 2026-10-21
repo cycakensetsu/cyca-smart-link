@@ -403,7 +403,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                     if coerced:
                         items.append(coerced)
                         source_items.append(coerced)
-        if source_items or any(source.get(key) not in (None, "", []) for key in ("小計", "改小計", "消費税", "工事費計")):
+        if source_items or any(source.get(key) not in (None, "", []) for key in ("小計", "改小計", "消費税", "工事費計", "工事名称", "工事名", "件名", "project_name")):
             normalized_sources.append({
                 "見積元": source_vendor,
                 "元ファイル": source_name,

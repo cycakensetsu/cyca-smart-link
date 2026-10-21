@@ -80,12 +80,12 @@ def change_description(c, context):
 
 def render_conversation(st, api_key, context):
     st.session_state['_review_working'] = context
-    st.markdown('### 2. AIと見積プランをつくる')
-    st.caption('話しかけるだけで、価格・利益・値引き・ページ分けを一緒に整理できます。例：「利益を10万円確保したい」「防水工事の粗利益率を20%にして」「足場は別ページにして」。提案を確認してから反映します。')
+    st.markdown('### 2. お客様に出す金額を決める')
+    st.caption('確保したい利益や値引きを、話すか文字で伝えてください。例：「利益を10万円確保したい」「値引きは1万円にして」。AIの提案を見てから反映します。ページ分けの相談もできます。')
     checked = bool(context['sources']) and all(s.get('confirmed') for s in context['sources'])
     ready = bool(api_key) and checked
     if not checked:
-        st.info('先にステップ1で、元の見積書と読み取り結果を確認してください。確認できた原価をもとに、見積プランをつくります。')
+        st.info('先に、元の見積書と品目・数量・金額を確認してください。')
     if checked:
         figures = comparison_figures(context)
         if figures:

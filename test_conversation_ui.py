@@ -36,7 +36,7 @@ class ConversationUITest(unittest.TestCase):
         at.selectbox(key='review_tax_' + sid).select('10%')
         at.number_input(key='review_net_' + sid).set_value(100000)
         at.run()
-        at.checkbox(key='review_source_ok_' + sid).check()
+        at.checkbox(key='review_source_ok_' + sid).check().run()
         at.text_input(key='review_customer').set_value('架空会社 御中')
         at.text_input(key='review_project').set_value('架空工事')
         at.run()
@@ -54,8 +54,8 @@ class ConversationUITest(unittest.TestCase):
     def test_must_check_original_then_consult_then_explicit_apply_and_approve(self):
         with tempfile.TemporaryDirectory() as temp:
             initial = AppTest.from_string(app_source(temp)).run()
-            initial.text_area(key='review_instruction').set_value('全体に10万円上乗せ').run()
-            self.assertTrue(initial.button(key='review_consult').disabled)
+            self.assertNotIn('review_consult',[b.key for b in initial.button])
+            self.assertNotIn('review_instruction',[b.key for b in initial.text_area])
             at = self.checked_app(temp)
             self.ask(at)
             target = next(n for n in at.number_input if n.key.startswith('review_target_'))
