@@ -31,7 +31,16 @@ def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
         records,summaries=reconcile_native_pdf(path,records,summaries)
     frame,_=build_intermediate_dataframe(records)
     incomplete = bool(validate_intermediate(frame)) or frame.empty
-    missing_pages = page.total_pages > 1 and any(not r.get('__page_number') for r in records)
+    def valid_page(row):
+        value=row.get('__page_number')
+        if value in (None,''):
+            return page.total_pages == 1
+        try:
+            number=float(value)
+            return number.is_integer() and 1 <= number <= page.total_pages
+        except (TypeError,ValueError):
+            return False
+    missing_pages = any(not valid_page(row) for row in records)
     if page.whole_document and (not records or incomplete or missing_pages):
         whole_summaries=summaries
         # No partial PDF rows are combined with another reading. This avoids

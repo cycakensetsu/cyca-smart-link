@@ -118,6 +118,33 @@ class PourLayoutTest(unittest.TestCase):
                 with fitz.open(stream=result.pdf_data,filetype='pdf') as pdf:
                     self.assertEqual(len(pdf),len(w.sheetnames))
 
+    def test_summary_continues_without_losing_the_seventeenth_category(self):
+        e=example((1,),sources=2)
+        e.categories=[Category(f'工種{n}',[LineItem(f'確認作業{n}','仕様',1,'式',1000,1000,row_id=f'x{n}')]) for n in range(17)]
+        result,w=self.output(e)
+        self.assertEqual(w.sheetnames[:3],['見積書','工事品目集計','工事品目集計2'])
+        self.assertEqual(w['工事品目集計']['B11'].value,'工種8')
+        self.assertEqual(w['工事品目集計2']['B3'].value,'工種9')
+        self.assertEqual(w['工事品目集計2']['B10'].value,'工種16')
+        self.assertIn("'工事品目集計2'!G3:G18",w['工事品目集計']['G22'].value)
+        self.assertEqual(plan(e)['first_detail'],4)
+        with fitz.open(stream=result.pdf_data,filetype='pdf') as pdf:
+            self.assertEqual(len(pdf),len(w.sheetnames))
+            self.assertIn('続き',pdf[2].get_text())
+            self.assertIn('工事内',pdf[3].get_text().replace(' ',''))
+
+    def test_more_than_eight_detail_pages_copy_the_existing_design(self):
+        e=example((180,),sources=2)
+        before=hashlib.sha256(TEMPLATE_PATH.read_bytes()).hexdigest()
+        result,w=self.output(e)
+        self.assertGreater(len(plan(e)['pages']),8)
+        self.assertIn('明細9',w.sheetnames)
+        numbers=[sheet.cell(row,1).value for sheet in w if sheet.title.startswith('明細') for row in range(3,23) if isinstance(sheet.cell(row,1).value,int)]
+        self.assertEqual(numbers,list(range(1,181)))
+        self.assertEqual(w['明細9'].page_setup.orientation,'landscape')
+        self.assertEqual(hashlib.sha256(TEMPLATE_PATH.read_bytes()).hexdigest(),before)
+        with fitz.open(stream=result.pdf_data,filetype='pdf') as pdf:self.assertEqual(len(pdf),len(w.sheetnames))
+
     def test_fractional_quantity_and_unit_price_are_not_hidden_by_integer_format(self):
         e=example((1,),sources=1)
         item=e.categories[0].items[0]

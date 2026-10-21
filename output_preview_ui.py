@@ -38,19 +38,14 @@ def render_preview(st, draft, valid):
         st.session_state.pop('_review_preview', None)
         try:
             from pour_layout import describe
-            import fitz
+            from pdf_worker import render_pages
             with st.spinner('ページの完成イメージを作っています…'):
                 result = build_preview(draft)
                 if not result.ok:
                     raise ValueError(' / '.join(result.errors))
                 pages = describe(estimate_for_output(draft))
-                images = []
-                with fitz.open(stream=result.pdf_data, filetype='pdf') as pdf:
-                    if len(pdf) != len(pages):
-                        raise ValueError('ページ数を確認できません。')
-                    for page in pdf:
-                        page.insert_text((page.rect.width / 2 - 65, 18), '配置確認用・未確定', fontname='japan', fontsize=9)
-                        images.append(page.get_pixmap(matrix=fitz.Matrix(1.3, 1.3)).tobytes('png'))
+                images=render_pages(result.pdf_data)
+                if len(images) != len(pages):raise ValueError('ページ数を確認できません。')
                 st.session_state['_review_preview'] = {'fingerprint': draft['fingerprint'], 'images': images, 'pages': pages}
                 from work_effects import cue
                 cue(st, 'preview')

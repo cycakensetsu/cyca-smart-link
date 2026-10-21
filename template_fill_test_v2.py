@@ -1112,11 +1112,11 @@ def _validate_estimate(estimate: Estimate) -> Tuple[List[str], List[str]]:
             continue
         used += 1 + len(cat.items) + 1  # 見出し + 明細 + 小計
     used = len(_build_detail_rows(estimate))
-    if used > ITEM_MAX_ROWS:
+    if not estimate.pour_layout and used > ITEM_MAX_ROWS:
         errors.append("明細行がテンプレートの上限（1シート）を超えています。")
-    if not estimate.reference_layout and len(_paginate_detail_rows(_build_detail_rows(estimate))) > MAX_DETAIL_PAGES:
+    if not estimate.pour_layout and not estimate.reference_layout and len(_paginate_detail_rows(_build_detail_rows(estimate))) > MAX_DETAIL_PAGES:
         errors.append(f"分類を保った改ページが{MAX_DETAIL_PAGES}ページを超えます。工事範囲を分けて出力してください。")
-    if len(estimate.categories) > SUMMARY_ITEM_MAX_ROWS:
+    if not estimate.pour_layout and len(estimate.categories) > SUMMARY_ITEM_MAX_ROWS:
         errors.append(
             f"工事項目がまとめページの上限（{SUMMARY_ITEM_MAX_ROWS}項目）を超えています。"
         )

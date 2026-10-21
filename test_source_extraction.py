@@ -52,6 +52,15 @@ class SourceExtractionTest(unittest.TestCase):
         self.assertTrue(all(r['__page_number']>=1 for r in rows))
         self.assertTrue(all(r.get('抽出元テキスト範囲') for r in rows))
         self.assertEqual(len(rows),5)
+        from source_amounts import read_amounts
+        totals=read_amounts('synthetic.pdf',pdf,{'summary_sources':[{'元ファイル':'synthetic.pdf','改小計':999999}]})
+        self.assertEqual(totals['net_total'],estimate.net_total)
+
+    def test_legacy_array_keeps_source_and_physical_page(self):
+        from estimate_pipeline import split_extraction_payload
+        _,rows=split_extraction_payload([{'品名':'架空工事'}],source_name='scan.pdf',page_number=2)
+        self.assertEqual(rows[0]['__source_name'],'scan.pdf')
+        self.assertEqual(rows[0]['__page_number'],2)
 
     def test_unknown_table_does_not_get_balancing_fees(self):
         with tempfile.TemporaryDirectory() as temp:

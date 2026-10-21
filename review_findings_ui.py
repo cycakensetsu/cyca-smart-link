@@ -24,7 +24,10 @@ def render_findings(st, draft, ready):
             if rows:
                 names={row['行ID']:row['品名'] for row in draft['payload'].get('計算明細',[]) if '行ID' in row}
                 st.caption('対象：'+'、'.join(names.get(row,'該当品目') for row in rows))
-            for item in items:
-                if item['レベル']!='停止':
-                    resolutions[item['id']]=st.text_input('確認した内容をひとこと入力',key='review_resolution_'+item['id'])
+            warnings=[item for item in items if item['レベル']!='停止']
+            if warnings:
+                from estimate_review import digest
+                key='review_resolution_group_'+digest([kind,message,[item['id'] for item in warnings]])
+                answer=st.text_input('上の品目すべてについて確認した内容を入力',key=key)
+                resolutions.update({item['id']:answer for item in warnings})
     return resolutions

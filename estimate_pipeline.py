@@ -295,7 +295,14 @@ def deduplicate_estimate_records(records: List[Dict]) -> Tuple[List[Dict], List[
 def split_extraction_payload(payload, source_name: str = "", page_number: Optional[int] = None) -> Tuple[List[Dict], List[Dict]]:
     """AI応答を summary_data と detail_data に分離する。旧配列形式も受け入れる。"""
     if isinstance(payload, list):
-        return [], payload
+        records=[]
+        for item in payload:
+            if not isinstance(item,dict):continue
+            record=dict(item)
+            if source_name:record.setdefault('__source_name',source_name)
+            if page_number is not None:record.setdefault('__page_number',page_number)
+            records.append(record)
+        return [], records
     if not isinstance(payload, dict):
         return [], []
 

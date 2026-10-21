@@ -6,6 +6,8 @@ Unknown layouts return an explicit error rather than a guessed estimate.
 """
 from dataclasses import dataclass
 from decimal import Decimal
+from pdf_worker import isolated_pdf
+
 import re
 import unicodedata
 
@@ -58,7 +60,8 @@ class ReferenceQuote:
     discount_evidence: str = ""
 
 
-def read_reference_quote(path):
+@isolated_pdf
+def read_reference_quote(path=None, *, data=None):
     import fitz
     details, summaries = [], []
     subtotal = net_total = None
@@ -66,7 +69,7 @@ def read_reference_quote(path):
     discount_page = 0
     discount_evidence = ""
     section = ""
-    with fitz.open(path) as doc:
+    with (fitz.open(stream=data,filetype="pdf") if data is not None else fitz.open(path)) as doc:
         for page_no, page in enumerate(doc, 1):
             for table in page.find_tables().tables:
                 raw = table.extract()

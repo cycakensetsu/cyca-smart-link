@@ -57,10 +57,9 @@ def preserve_uploads(st, uploads):
     sources = [store.preserve(f.name, f.getbuffer()) for f in uploads]
     for source, upload in zip(sources, uploads):
         if Path(source["name"]).suffix.lower() == '.pdf':
-            import fitz
+            from pdf_worker import page_count
             try:
-                with fitz.open(stream=bytes(upload.getbuffer()), filetype='pdf') as pdf:
-                    source['pages'] = len(pdf)
+                source['pages'] = page_count(bytes(upload.getbuffer()))
             except Exception:
                 raise ValueError("原本PDFを開けません。保全した原本を確認してください。") from None
         else:

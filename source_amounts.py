@@ -4,6 +4,8 @@ The user's normal supplier convention is net detail prices and 10% tax.
 Never substitute the sum of OCR rows for a missing original total.
 """
 from decimal import Decimal, ROUND_HALF_UP
+from pdf_worker import isolated_pdf
+
 import re
 import unicodedata
 
@@ -48,6 +50,7 @@ LABELS = {
 }
 
 
+@isolated_pdf
 def read_amounts(name, data, summaries=None):
     candidates = {key: [] for key in LABELS}
     evidence = []
@@ -73,6 +76,18 @@ def read_amounts(name, data, summaries=None):
                     item = {'value':value, 'priority':priority, 'page':page, 'text':raw[:200], 'method':'原本の文字'}
                     candidates[field].append(item)
                     break
+    # The application's eight-column original contains a validated final net
+    # total and separate summary-only fees. Read those cells directly instead
+    # of allowing an OCR subtotal or section total to override them.
+    if lines:
+        try:
+            from cyca_reference import read_reference_quote, reference_estimate
+            quote=read_reference_quote(data=data)
+            reference_estimate(quote,'原本照合')
+            candidates['net_total'].append({'value':quote.net_total,'priority':6,
+                'page':quote.summary[0]['__page_number'],'text':'原本の小計・値引き・合計を照合','method':'原本の集計表'})
+        except (ValueError,RuntimeError,AttributeError,OSError):
+            pass
     # OCR summaries are scoped to this exact original, never to another vendor.
     for item in (summaries or {}).get('summary_sources', []):
         if item.get('元ファイル') != name:
