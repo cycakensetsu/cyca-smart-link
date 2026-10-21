@@ -124,7 +124,8 @@ def render_estimate_pdf(estimate):
         layout=plan(estimate);pages=layout['pages'];compact=layout['compact']
     else:
         pages=_paginate_detail_rows(_build_detail_rows(estimate)) if any(not c.summary_only for c in estimate.categories) else []
-    total=(1 if compact else 2)+len(pages)
+    summary_pages=0 if compact else (layout['summary_pages'] if estimate.pour_layout else 1)
+    total=1+summary_pages+len(pages)
     def text(value,xx,yy,size=9,color=navy,align='left'):
         c.setFillColor(color);c.setFont(font,size)
         draw={'left':c.drawString,'right':c.drawRightString,'center':c.drawCentredString}[align]
@@ -186,24 +187,30 @@ def render_estimate_pdf(estimate):
         band(label,top)
         return cells(['No.','工事品目','仕様','数量','単位','単価','金額','備考'],top-24,24,navy)
     if not compact:
-        yy=headers('工 事 品 目 ま と め')
-        for i,cat in enumerate(estimate.categories,1):
-            if cat.summary_only:
-                item=cat.items[0]
-                values=[i,item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark]
-            else:
-                values=[i,cat.name,'工事一式',1,'式','',cat.subtotal,'']
-            yy=cells(values,yy,22)
-        for _ in range(16-len(estimate.categories)): yy=cells(['']*8,yy,18)
-        text('※工事内容明細には消費税が含まれておりません。',x,yy-21,8)
-        sy=yy-34
-        for label,amount in [('小計',estimate.subtotal),('値引き',estimate.discount),('税抜合計',estimate.net_total),('消費税',estimate.tax),('税込合計',estimate.grand_total)]:
-            c.setFillColor(navy if label=='税込合計' else tint);c.rect(x+542,sy-19,105,19,fill=1,stroke=0)
-            c.setStrokeColor(rule);c.rect(x+542,sy-19,105,19,fill=0,stroke=1);c.rect(x+647,sy-19,94,19,fill=0,stroke=1)
-            text(label,x+594,sy-13,9,white if label=='税込合計' else navy,'center')
-            text(('¥' if label=='税込合計' else '')+f'{amount:,}',x+737,sy-13,10,align='right');sy-=19
-        footer(2);c.showPage()
-    for page_no,rows in enumerate(pages,2 if compact else 3):
+        from pour_layout import summary_chunks
+        chunks=summary_chunks(estimate.categories) if estimate.pour_layout else [estimate.categories]
+        category_offset=0
+        for summary_index in range(summary_pages):
+            yy=headers('工 事 品 目 ま と め'+(f'（続き {summary_index+1}/{summary_pages}）' if summary_index else ''))
+            chunk=chunks[summary_index]
+            for i,cat in enumerate(chunk,category_offset+1):
+                if cat.summary_only:
+                    item=cat.items[0]
+                    values=[i,item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark]
+                else:
+                    values=[i,cat.name,'工事一式',1,'式','',cat.subtotal,'']
+                yy=cells(values,yy,22)
+            for _ in range(16-len(chunk)): yy=cells(['']*8,yy,18)
+            text('※工事内容明細には消費税が含まれておりません。',x,yy-21,8)
+            sy=yy-34
+            for label,amount in [('全体小計' if summary_pages>1 else '小計',estimate.subtotal),('値引き',estimate.discount),('税抜合計',estimate.net_total),('消費税',estimate.tax),('税込合計',estimate.grand_total)]:
+                c.setFillColor(navy if label=='税込合計' else tint);c.rect(x+542,sy-19,105,19,fill=1,stroke=0)
+                c.setStrokeColor(rule);c.rect(x+542,sy-19,105,19,fill=0,stroke=1);c.rect(x+647,sy-19,94,19,fill=0,stroke=1)
+                text(label,x+594,sy-13,9,white if label=='税込合計' else navy,'center')
+                text(('¥' if label=='税込合計' else '')+f'{amount:,}',x+737,sy-13,10,align='right');sy-=19
+            category_offset+=len(chunk)
+            footer(2+summary_index);c.showPage()
+    for page_no,rows in enumerate(pages,2 if compact else 2+summary_pages):
         yy=headers('工 事 内 容 明 細'); amount=0
         for row in rows:
             kind=row['kind']

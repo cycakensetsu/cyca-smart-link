@@ -1,4 +1,6 @@
 import json
+from pdf_worker import isolated_pdf
+
 import logging
 import os
 import random
@@ -250,6 +252,7 @@ def _jpeg_part_from_image(image, *, max_side: int = 1600, quality: int = 78) -> 
     return types.Part.from_bytes(data=output.getvalue(), mime_type="image/jpeg")
 
 
+@isolated_pdf
 def _render_pdf_pages_as_images(path: str, source_name: str) -> List[GeminiPage]:
     import fitz
     from PIL import Image
@@ -271,6 +274,7 @@ def _render_pdf_pages_as_images(path: str, source_name: str) -> List[GeminiPage]
     return pages
 
 
+@isolated_pdf
 def prepare_upload_for_gemini_pages(path: str, source_name: str) -> List[GeminiPage]:
     ext = os.path.splitext(source_name or path)[1].lower()
     if ext == ".pdf":

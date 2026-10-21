@@ -24,6 +24,16 @@ def _chunk(rows):
     return pages
 
 
+def summary_chunks(categories):
+    count=max(1,(len(categories)+15)//16)
+    base,extra=divmod(len(categories),count)
+    result=[];offset=0
+    for number in range(count):
+        size=base+(number<extra)
+        result.append(categories[offset:offset+size]);offset+=size
+    return result
+
+
 def plan(estimate):
     from template_fill_test_v2 import _build_detail_rows
     normal = [c for c in estimate.categories if not c.summary_only]
@@ -36,7 +46,7 @@ def plan(estimate):
         rows += [{'kind': 'compact_' + name, 'amount': value} for name, value in
                  [('subtotal', estimate.subtotal), ('discount', estimate.discount),
                   ('net', estimate.net_total), ('tax', estimate.tax)]]
-        return {'compact': True, 'pages': [rows], 'first_detail': 2}
+        return {'compact': True, 'pages': [rows], 'first_detail': 2, 'summary_pages':0}
     logical = _build_detail_rows(estimate)
     pages = []
     if estimate.page_breaks:
@@ -88,22 +98,23 @@ def plan(estimate):
             else:
                 pages.extend(_chunk(block))
                 tiny_page = tiny
-    if len(pages) > 8:
-        raise ValueError('明細が8ページを超えます。工事範囲を分けてください。文字を縮めて詰め込むことはしません。')
-    actual = {r['item'].row_id: n for n, page in enumerate(pages, 3) for r in page if r['kind'] == 'item'}
+    summary_pages=max(1,(len(estimate.categories)+15)//16)
+    first_detail=2+summary_pages
+    actual = {r['item'].row_id: n for n, page in enumerate(pages, first_detail) for r in page if r['kind'] == 'item'}
     for row_id, number in estimate.requested_pages.items():
         if row_id not in actual or actual[row_id] != number:
             selected = next((r for r in logical if r['kind']=='item' and r['item'].row_id==row_id), None)
             label = f"No.{selected['no']} {selected['item'].name}" if selected else '指定の品目'
             raise ValueError(f'{label}は現在{actual.get(row_id, "不明")}ページ目です。指定した{number}ページ目には合いません。区切りを変更するか、自動のページ分けに戻してください。')
-    return {'compact': False, 'pages': pages, 'first_detail': 3}
+    return {'compact': False, 'pages': pages, 'first_detail': first_detail, 'summary_pages':summary_pages}
 
 
 def describe(estimate, layout=None):
     layout = layout or plan(estimate)
     result = [{'page': 1, 'label': '表紙・総合金額', 'rows': []}]
     if not layout['compact']:
-        result.append({'page': 2, 'label': '工種ごとの一式まとめ・諸経費', 'rows': []})
+        for index in range(layout['summary_pages']):
+            result.append({'page':2+index,'label':'工種ごとの一式まとめ・諸経費'+('（続き）' if index else ''),'rows':[]})
     for number, page in enumerate(layout['pages'], layout['first_detail']):
         items = [r for r in page if r['kind'] == 'item']
         trades = list(dict.fromkeys(r['category'].name for r in page if r.get('category') is not None))
@@ -138,6 +149,13 @@ def build_outputs(estimate, template_path):
     split_print_pages(wb, estimate)
     if layout['compact']:
         del wb[SUMMARY_SHEET]
+    else:
+        for n in range(2,layout['summary_pages']+1):
+            sheet=wb.copy_worksheet(wb[SUMMARY_SHEET]);sheet.title=SUMMARY_SHEET+str(n)
+            wb.move_sheet(sheet,offset=(n-len(wb.worksheets)+1))
+    for n in range(1,len(layout['pages'])+1):
+        if f'明細{n}' not in wb:
+            sheet=wb.copy_worksheet(wb['明細1']);sheet.title=f'明細{n}'
     cover = wb[QUOTE_SHEET]
     import re
     honorific = re.search(r'(御中|様|殿)\s*$', estimate.customer)
@@ -196,29 +214,39 @@ def build_outputs(estimate, template_path):
     for ws, row, index in subtotal_cells:
         ws.cell(row, 7).value = '=SUM(' + ','.join(item_refs[index]) + ')'
     if not layout['compact']:
-        summary = wb[SUMMARY_SHEET]
-        for row in range(3, 19):
-            for col in range(1, 9):
-                _set(summary, row, col, None)
-        for index, category in enumerate(estimate.categories):
-            row = 3 + index
-            if category.summary_only:
-                item = category.items[0]
-                values = [index + 1, item.name, item.spec, item.qty, item.unit, item.unit_price, None, item.remark]
-                formula = f'=ROUND(D{row}*F{row},0)'
+        summary_names=[SUMMARY_SHEET+(str(n) if n>1 else '') for n in range(1,layout['summary_pages']+1)]
+        chunks=summary_chunks(estimate.categories)
+        category_offset=0
+        for page_index,name in enumerate(summary_names):
+            summary=wb[name]
+            if page_index:_set(summary,1,1,'工事品目まとめ（続き）')
+            for row in range(3,19):
+                for col in range(1,9):_set(summary,row,col,None)
+            for offset,category in enumerate(chunks[page_index]):
+                index=category_offset+offset;row=3+offset
+                if category.summary_only:
+                    item=category.items[0]
+                    values=[index+1,item.name,item.spec,item.qty,item.unit,item.unit_price,None,item.remark]
+                    formula=f'=ROUND(D{row}*F{row},0)'
+                else:
+                    values=[index+1,category.name,'工事一式',1,'式',None,None,'']
+                    formula='=SUM('+','.join(item_refs[index])+')'
+                for col,value in enumerate(values,1):_set(summary,row,col,value)
+                summary.cell(row,4).number_format='#,##0.################'
+                summary.cell(row,6).number_format='#,##0.################'
+                summary.cell(row,7).value=formula
+            category_offset+=len(chunks[page_index])
+            if page_index==0:
+                summary['G22']='=SUM('+','.join("'"+title+"'!G3:G18" for title in summary_names)+')'
+                _set(summary,23,7,estimate.discount)
+                summary['G24']='=G22+G23'
+                summary['G25']=f'=ROUNDDOWN(G24*{estimate.tax_rate},0)'
+                summary['G26']='=G24+G25'
             else:
-                values = [index + 1, category.name, '工事一式', 1, '式', None, None, '']
-                formula = '=SUM(' + ','.join(item_refs[index]) + ')'
-            for col, value in enumerate(values, 1):
-                _set(summary, row, col, value)
-            summary.cell(row, 4).number_format = '#,##0.################'
-            summary.cell(row, 6).number_format = '#,##0.################'
-            summary.cell(row, 7).value = formula
-        summary['G22'] = '=SUM(G3:G18)'
-        _set(summary, 23, 7, estimate.discount)
-        summary['G24'] = '=G22+G23'
-        summary['G25'] = f'=ROUNDDOWN(G24*{estimate.tax_rate},0)'
-        summary['G26'] = '=G24+G25'
+                for row in (22,23,24,25,26):summary.cell(row,7).value=f"='{SUMMARY_SHEET}'!G{row}"
+            if len(summary_names)>1:
+                _set(summary,22,6,'全体小計')
+                _set(summary,21,1,'合計欄は、まとめ全ページを合わせた金額です。')
     cover['C13'] = "='明細1'!G24" if layout['compact'] else "='工事品目集計'!G26"
     for n, ws in enumerate(wb, 1):
         ws.oddFooter.right.text = f'{n} / {len(wb.worksheets)}'

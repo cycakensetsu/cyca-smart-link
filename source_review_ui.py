@@ -13,12 +13,9 @@ def preview(st, source, store, *, default_page=1, large=False):
     cache = st.session_state.setdefault('_review_source_previews', {})
     try:
         if key not in cache:
-            import fitz
+            from pdf_worker import render_original
             suffix = Path(source['name']).suffix.lower().lstrip('.')
-            with fitz.open(stream=store.read(source['id']), filetype=suffix) as document:
-                original = document[page - 1]
-                scale = min(1600 / max(original.rect.width, 1), 2200 / max(original.rect.height, 1), 3)
-                data = original.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False).tobytes('png')
+            data = render_original(store.read(source['id']),suffix,page)
             if len(cache) >= 8:
                 cache.pop(next(iter(cache)))
             cache[key] = data
@@ -34,7 +31,10 @@ def render_source(st, source, store, index, detail_rows=None):
     sid = source['id']
     readings = st.session_state.setdefault('_review_amount_readings', {})
     if sid not in readings:
-        readings[sid] = read_amounts(source['name'], store.read(sid), st.session_state.get('_review_metadata', {}))
+        try:
+            readings[sid] = read_amounts(source['name'], store.read(sid), st.session_state.get('_review_metadata', {}))
+        except ValueError:
+            readings[sid] = {'net_total':None,'tax':None,'gross_total':None,'tax_basis':'税抜','tax_rate':.10,'conflicts':[],'evidence':[],'page':1,'read_failed':True}
     reading = readings[sid]
     source['amount_reading'] = reading
     defaults = st.session_state.setdefault('_review_amount_defaults', {})
@@ -53,6 +53,14 @@ def render_source(st, source, store, index, detail_rows=None):
             st.session_state['review_tax_exists_' + sid] = reading['tax'] is not None or reading['gross_total'] is not None
     checked = bool(st.session_state.get('review_source_ok_' + sid))
     with st.expander(f"{index}. {source['name']} ｜ {'確認済み' if checked else '原本を確認する'}", expanded=not checked):
+        rows = [r for r in (detail_rows or []) if r.get('原本ID') == sid]
+        if detail_rows is not None and not rows:
+            source.update(tax_basis='税抜',tax_rate=.10,net_total=None,tax=None,gross_total=None,confirmed=False)
+            st.warning('このファイルに見積の品目が見つかりませんでした。表紙だけではなく、品目・数量・単価が載った見積書を選んでください。原本は下で確認できます。')
+            with st.expander('原本を大きく見る',expanded=True):preview(st,source,store)
+            st.session_state['review_source_ok_'+sid]=False
+            st.checkbox('この見積の金額・品名・数量は合っています',key='review_source_ok_'+sid,disabled=True)
+            return
         st.markdown('**読み取った金額**')
         if st.session_state.get('review_net_' + sid) is None:
             st.info('原本の合計を読み取れませんでした。この金額だけ教えてください。')
@@ -84,6 +92,7 @@ def render_source(st, source, store, index, detail_rows=None):
             col.metric(label, f'{value:,}円' if value is not None else '読み取り待ち')
         rows = [r for r in (detail_rows or []) if r.get('原本ID') == sid]
         problems=[]
+        if reading.get('read_failed'):problems.append('この原本を読み取れませんでした。画像として保存した原本を読み込んでください。他の原本は保持しています。')
         if detail_rows is not None and not rows:
             problems.append('この原本の品目を読み取れませんでした。原本が見積書かを確認し、このファイルをもう一度読み込んでください。')
         if source.get('read_errors'):

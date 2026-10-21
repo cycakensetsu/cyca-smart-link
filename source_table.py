@@ -3,6 +3,8 @@
 Scans and unsupported tables keep the OCR path; partial native tables never
 replace an entire document's details. No company or project is hard coded.
 """
+from pdf_worker import isolated_pdf
+
 import re
 import unicodedata
 from collections import Counter
@@ -18,6 +20,7 @@ def number(value):
     return float(text) if re.fullmatch(r"-?\d+(?:\.\d+)?", text) else None
 
 
+@isolated_pdf
 def read_native_tables(path):
     import fitz
     rows, subtotals, projects, issuers = [], [], set(), set()

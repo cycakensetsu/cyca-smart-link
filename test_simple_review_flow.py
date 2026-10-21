@@ -69,6 +69,28 @@ render_findings(st,{{'payload':{{'指摘':[item,dict(item,id='two')],'計算明�
             self.assertEqual(len(at.warning),count)
             self.assertEqual(len(at.error),0)
 
+    def test_repeated_findings_have_one_confirmation_for_the_visible_group(self):
+        at=AppTest.from_string("""
+import streamlit as st
+from review_findings_ui import render_findings
+items=[{'id':str(n),'種類':'共通費重複疑い','内容':'複数原本に足場があります','行':[],'レベル':'確認'} for n in range(4)]
+st.session_state['answers']=render_findings(st,{'payload':{'指摘':items,'計算明細':[]}},True)
+""").run()
+        self.assertEqual(len(at.text_input),1)
+        at.text_input[0].set_value('検証用・施工範囲を確認').run()
+        self.assertEqual(len(at.session_state['answers']),4)
+        self.assertTrue(all(value=='検証用・施工範囲を確認' for value in at.session_state['answers'].values()))
+
+    def test_file_without_items_does_not_ask_for_a_total_to_force_it_through(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app=self.app(temp).replace("rows=[{'原本ID':source['id'],'品名':'架空工事','数量':1,'単位':'式','原価単価':100000,'原価金額':100000}]","rows=[]")
+            at=AppTest.from_string(app).run()
+            self.assertEqual(list(at.exception),[])
+            self.assertEqual(len(at.warning),1)
+            self.assertIn('品目が見つかりません',at.warning[0].value)
+            self.assertEqual(len(at.number_input),0)
+            self.assertFalse(at.session_state['source_result']['confirmed'])
+
     def test_bottom_save_is_a_single_action_in_main(self):
         with tempfile.TemporaryDirectory() as temp:
             at=AppTest.from_string(f'''

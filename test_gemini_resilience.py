@@ -128,7 +128,7 @@ class GeminiRetryTest(unittest.TestCase):
                 pdf_file.write(b"%PDF-1.4 test")
 
             with patch.dict("sys.modules", {"fitz": fake_fitz}):
-                jobs = prepare_upload_for_gemini_pages(pdf_path, "sample.pdf")
+                jobs = prepare_upload_for_gemini_pages.__wrapped__(pdf_path, "sample.pdf")
 
         self.assertEqual(len(jobs), 1)
         self.assertTrue(jobs[0].whole_document)

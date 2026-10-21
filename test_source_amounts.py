@@ -7,7 +7,7 @@ from source_amounts import read_amounts, money, net_from_gross
 class SourceAmountsTest(unittest.TestCase):
     def read(self, lines, summary=None):
         with patch('source_amounts._lines', return_value=iter(lines)):
-            return read_amounts('a.pdf', b'synthetic', summary)
+            return read_amounts.__wrapped__('a.pdf', b'synthetic', summary)
 
     def test_standard_net_tax_and_gross(self):
         result=self.read([(1,'税抜小計 100,000円'),(1,'消費税（10%） 10,000円'),(1,'税込合計 110,000円')])
