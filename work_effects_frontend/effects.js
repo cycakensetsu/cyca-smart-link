@@ -17,7 +17,7 @@ function createEffects(root) {
     output: [[0,4,7,12,16],[0,7,12,14,19],[4,7,11,16,19],[0,4,9,12,21]],
     finish: [[12,9,7,12],[7,4,0,12],[16,12,7,12],[14,9,7,12]]
   };
-  let context, master, enabled = true, unlocked = false, unlocking, lastVoice = '', lastAnimation = '', pending, timer;
+  let context, master, enabled = true, unlocked = false, unlocking, lastVoice = '', lastAnimation = '', pending, timer, motionTimer, animationRun = 0, currentStage = '', disposed = false;
   const seen = new Set(), lastMotif = {};
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const storage = {get: () => {try{return JSON.parse(localStorage.getItem('cyca_effect_preferences') || '{}');}catch{return {};}},
@@ -65,17 +65,38 @@ function createEffects(root) {
     });
     $('card').setAttribute('data-last-sound',stage);
   }
+  function syncPageMotion(){
+    const paused=!$('motion').checked || reduced.matches || owner.hidden;
+    owner.documentElement?.style?.setProperty('--cyca-motion-play-state',paused?'paused':'running');
+    owner.documentElement?.style?.setProperty('--cyca-sweep-opacity',paused?'0':'1');
+  }
+  function stopMotion(state){
+    animationRun++;clearTimeout(motionTimer);
+    $('stage').className='stage'+(currentStage?' phase-'+currentStage:'');
+    root.querySelectorAll('.spark').forEach(p=>p.remove());
+    $('card').setAttribute('data-motion-state',state);
+  }
   function show(stage, sound=true){
-    if(!labels[stage]) return;
+    if(disposed || !labels[stage]) return;
     $('icon').textContent=labels[stage][0];$('message').textContent=labels[stage][1];
-    $('stage').className='stage';
+    currentStage=stage;
+    stopMotion('idle');
+    $('stage').className='stage phase-'+stage;
+    $('card').setAttribute('data-stage',stage);
     if($('motion').checked && !reduced.matches && !document.hidden){
-      const animation=choose(['pop','glow','slide'],lastAnimation);lastAnimation=animation;
-      requestAnimationFrame(()=>$('stage').classList.add(animation));
-      if(stage==='output') for(let i=0;i<14;i++){
+      const animation=choose(['motion-orbit','motion-trace','motion-sweep'],lastAnimation);lastAnimation=animation;
+      const run=animationRun;
+      $('card').setAttribute('data-last-animation',animation);
+      $('card').setAttribute('data-motion-state','running');
+      requestAnimationFrame(()=>{
+        if(disposed || run!==animationRun || !$('motion').checked || reduced.matches || document.hidden)return;
+        $('stage').classList.add('is-animated',animation);
+      });
+      if(stage==='output') for(let i=0;i<12;i++){
         const p=document.createElement('i');p.className='spark';p.style.left=`${15+Math.random()*70}%`;p.style.background=choose(['#71e4de','#6ba9ef','#c1f3ff'],null);p.style.setProperty('--dx',`${Math.random()*100-50}px`);$('card').appendChild(p);p.addEventListener('animationend',()=>p.remove(),{once:true});
       }
-    }
+      motionTimer=setTimeout(()=>stopMotion('idle'),1700);
+    }else $('card').setAttribute('data-motion-state',reduced.matches?'reduced':document.hidden?'hidden':'off');
     if(sound) play(stage);
   }
   $('sound').onclick=async()=>{
@@ -85,7 +106,7 @@ function createEffects(root) {
   };
   $('sample').onclick=async()=>{enabled=true;persist();if(await unlock())show('output');};
   $('volume').oninput=()=>{$('volumeValue').textContent=`${$('volume').value}%`;persist();if(!Number($('volume').value))stopSound();};
-  $('motion').onchange=()=>{persist();if(!$('motion').checked){$('stage').className='stage';root.querySelectorAll('.spark').forEach(p=>p.remove());}};
+  $('motion').onchange=()=>{persist();syncPageMotion();if(!$('motion').checked)stopMotion('off');};
   $('theme').onchange=persist;
   $('volumeValue').textContent=`${$('volume').value}%`;
   // v2 lives in the application's document (including a shadow root). Unlock
@@ -101,12 +122,17 @@ function createEffects(root) {
   };
   owner.addEventListener('pointerdown',gesture,true);
   owner.addEventListener('keydown',gesture,true);
+  const quietMotion=()=>{syncPageMotion();if(reduced.matches || owner.hidden)stopMotion(reduced.matches?'reduced':'hidden');};
+  owner.addEventListener('visibilitychange',quietMotion);
+  reduced.addEventListener?.('change',quietMotion);
+  syncPageMotion();
   updateButton();
   function receive(events){
+    if(disposed)return;
     let newest;
     for(const item of events || []){if(typeof item.id!=='string' || seen.has(item.id) || !labels[item.stage])continue;seen.add(item.id);if(Date.now()/1000-item.at<12)newest=item;}
     if(seen.size>100){const keep=Array.from(seen).slice(-40);seen.clear();keep.forEach(id=>seen.add(id));}
     if(newest){pending=newest;clearTimeout(timer);timer=setTimeout(()=>{if(pending){show(pending.stage);pending=null;}},120);}
   }
-  return {receive, card:$('card'), dispose(){stopSound();clearTimeout(timer);owner.removeEventListener('pointerdown',gesture,true);owner.removeEventListener('keydown',gesture,true);if(context)context.close().catch(()=>{});}};
+  return {receive, card:$('card'), dispose(){disposed=true;stopSound();stopMotion('disposed');clearTimeout(timer);owner.removeEventListener('visibilitychange',quietMotion);reduced.removeEventListener?.('change',quietMotion);owner.removeEventListener('pointerdown',gesture,true);owner.removeEventListener('keydown',gesture,true);if(context)context.close().catch(()=>{});}};
 }
