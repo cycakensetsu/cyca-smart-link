@@ -9,8 +9,8 @@ DUPLICATES = {'共通費重複疑い', '明細重複疑い'}
 
 def _duplicate_choice(st, payload, row_ids, key):
     answer = ''
-    if st.checkbox('施工範囲が別なので、両方使う', key=key+'_both'):
-        answer = '原本を確認し、施工範囲が別なので、両方使う'
+    if st.checkbox('施工範囲が別なので、すべて使う', key=key+'_both'):
+        answer = '原本を確認し、施工範囲が別なので、すべて使う'
     reviewed = payload.get('確認明細', [])
     available = {r['行ID']: (number, r) for number, r in enumerate(reviewed, 1)
                  if r.get('行ID') in row_ids and r.get('採用', True)}
@@ -49,19 +49,32 @@ def render_findings(st, draft, ready):
         groups.setdefault(key,[]).append(item)
     if not groups:
         return resolutions
-    st.warning(f'確認したいことが{len(groups)}件あります。該当の品目だけ確認してください。')
-    with st.expander('確認する品目と内容',expanded=True):
-        for (kind, message), items in groups.items():
+    from estimate_review import digest
+    prepared = []
+    remaining = 0
+    for (kind, message), items in groups.items():
+        warnings = [item for item in items if item['レベル'] != '停止']
+        key = 'review_resolution_group_'+digest([kind,message,[item['id'] for item in warnings]])
+        answer = (st.session_state.get(key+'_both', False) if kind in DUPLICATES
+                  else str(st.session_state.get(key, '') or '').strip())
+        if not answer or any(item['レベル'] == '停止' for item in items):
+            remaining += 1
+        prepared.append((kind, message, items, warnings, key))
+    if remaining:
+        st.warning(f'確認したいことが{remaining}件あります。該当の品目だけ確認してください。')
+    else:
+        st.caption('確認事項はすべて確認済みです')
+    # Collapsing changes only presentation. Every widget is still rendered so
+    # Streamlit retains answers and the approval checks receive all resolutions.
+    with st.expander('確認する品目と内容' if remaining else '確認した内容を見る',expanded=bool(remaining)):
+        for kind, message, items, warnings, key in prepared:
             st.markdown('**'+LABELS.get(kind,'内容の確認')+'**')
             st.write(message)
             rows=list(dict.fromkeys(row for item in items for row in item['行']))
             if rows:
                 names={row['行ID']:row['品名'] for row in draft['payload'].get('計算明細',[]) if '行ID' in row}
                 st.caption('対象：'+'、'.join(names.get(row,'該当品目') for row in rows))
-            warnings=[item for item in items if item['レベル']!='停止']
             if warnings:
-                from estimate_review import digest
-                key='review_resolution_group_'+digest([kind,message,[item['id'] for item in warnings]])
                 if kind in DUPLICATES:
                     warning_rows = list(dict.fromkeys(row for item in warnings for row in item['行']))
                     answer = _duplicate_choice(st, draft['payload'], warning_rows, key)

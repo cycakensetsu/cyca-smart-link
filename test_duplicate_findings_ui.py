@@ -34,6 +34,64 @@ st.session_state['answers']=render_findings(st,{{'payload':payload}},True)
 
 
 class DuplicateFindingsUITest(unittest.TestCase):
+    def test_only_unanswered_groups_count_and_all_answers_survive_collapsing(self):
+        at=AppTest.from_string('''
+import streamlit as st
+from review_findings_ui import render_findings
+issues=[{'id':'shared-1','種類':'共通費重複疑い','内容':'施工範囲を確認','行':[],'レベル':'確認'},
+        {'id':'shared-2','種類':'共通費重複疑い','内容':'施工範囲を確認','行':[],'レベル':'確認'},
+        {'id':'rate','種類':'税率混在','内容':'原本の税率を確認','行':[],'レベル':'確認'}]
+st.session_state['answers']=render_findings(st,{'payload':{'指摘':issues,'確認明細':[]}},True)
+''').run()
+        self.assertEqual(list(at.exception),[])
+        self.assertIn('2件',at.warning[0].value)
+        self.assertTrue(at.expander[0].proto.expanded)
+        self.assertEqual(at.checkbox[0].label,'施工範囲が別なので、すべて使う')
+        at.checkbox[0].check().run()
+        self.assertIn('1件',at.warning[0].value)
+        at.text_input[0].set_value('   ').run()
+        self.assertIn('1件',at.warning[0].value)
+        at.text_input[0].set_value('原本の税率を確認済み').run()
+        self.assertEqual(len(at.warning),0)
+        self.assertTrue(any(c.value=='確認事項はすべて確認済みです' for c in at.caption))
+        self.assertEqual(at.expander[0].label,'確認した内容を見る')
+        self.assertFalse(at.expander[0].proto.expanded)
+        expected={'shared-1':'原本を確認し、施工範囲が別なので、すべて使う',
+                  'shared-2':'原本を確認し、施工範囲が別なので、すべて使う','rate':'原本の税率を確認済み'}
+        self.assertEqual(at.session_state['answers'],expected)
+        # A later unrelated rerun still returns the answers from the collapsed
+        # section; no hidden-widget cleanup silently drops approval evidence.
+        at.run()
+        self.assertTrue(at.checkbox[0].value)
+        self.assertEqual(at.text_input[0].value,'原本の税率を確認済み')
+        self.assertEqual(at.session_state['answers'],expected)
+        self.assertEqual(len(at.warning),0)
+        at.checkbox[0].uncheck().run()
+        self.assertIn('1件',at.warning[0].value)
+        self.assertEqual(at.expander[0].label,'確認する品目と内容')
+        self.assertTrue(at.expander[0].proto.expanded)
+        self.assertEqual(at.session_state['answers']['shared-1'],'')
+        self.assertEqual(at.session_state['answers']['rate'],'原本の税率を確認済み')
+
+    def test_stop_in_an_answered_group_stays_visible_and_expanded(self):
+        at=AppTest.from_string('''
+import streamlit as st
+from estimate_review import digest
+from review_findings_ui import render_findings
+issues=[{'id':'explanation','種類':'明細検算','内容':'計算の確認','行':['r1'],'レベル':'確認'},
+        {'id':'stop','種類':'明細検算','内容':'計算の確認','行':['r1'],'レベル':'停止'}]
+key='review_resolution_group_'+digest(['明細検算','計算の確認',['explanation']])
+st.session_state.setdefault(key,'説明を書いただけでは停止を解除しない')
+st.session_state['answers']=render_findings(st,{'payload':{'指摘':issues,'確認明細':[]}},True)
+''').run()
+        self.assertEqual(list(at.exception),[])
+        self.assertIn('1件',at.warning[0].value)
+        self.assertTrue(at.expander[0].proto.expanded)
+        self.assertEqual(at.expander[0].label,'確認する品目と内容')
+        self.assertFalse(any(c.value=='確認事項はすべて確認済みです' for c in at.caption))
+        self.assertEqual(at.session_state['answers'],{'explanation':'説明を書いただけでは停止を解除しない'})
+        self.assertEqual(len(at.text_input),1)
+
     def test_no_default_choice_and_selection_alone_does_not_remove_a_row(self):
         at=AppTest.from_string(app()).run()
         self.assertEqual(list(at.exception),[])
