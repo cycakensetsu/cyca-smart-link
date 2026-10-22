@@ -2,8 +2,24 @@
 from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP
 from html import escape
+from collections import OrderedDict
 import math
 from source_amounts import read_amounts, net_from_gross
+
+_PREVIEW_CACHE_MAX_PAGES = 64
+_PREVIEW_CACHE_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _trim_preview_cache(cache):
+    # A previous session may still contain the former plain-dict cache.
+    # Oversized single images must never evict all the useful small originals.
+    for key in list(cache):
+        if len(cache[key]) > _PREVIEW_CACHE_MAX_BYTES:
+            del cache[key]
+    size = sum(len(data) for data in cache.values())
+    while cache and (len(cache) > _PREVIEW_CACHE_MAX_PAGES or size > _PREVIEW_CACHE_MAX_BYTES):
+        _, old = cache.popitem(last=False)
+        size -= len(old)
 
 
 def _turn_page(state, key, change, pages):
@@ -43,15 +59,21 @@ def _preview_body(st, source, store, *, default_page=1, large=False):
 def _preview_data(st, source, store, page):
     key = (source['id'], page, 'large-v2')
     cache = st.session_state.setdefault('_review_source_previews', {})
+    if not isinstance(cache, OrderedDict):
+        cache = OrderedDict(cache)
+        st.session_state['_review_source_previews'] = cache
+    _trim_preview_cache(cache)
     try:
-        if key not in cache:
-            from pdf_worker import render_original
-            suffix = Path(source['name']).suffix.lower().lstrip('.')
-            data = render_original(store.read(source['id']), suffix, page)
-            if len(cache) >= 8:
-                cache.pop(next(iter(cache)))
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key]
+        from pdf_worker import render_original
+        suffix = Path(source['name']).suffix.lower().lstrip('.')
+        data = render_original(store.read(source['id']), suffix, page)
+        if len(data) <= _PREVIEW_CACHE_MAX_BYTES:
             cache[key] = data
-        return cache[key]
+            _trim_preview_cache(cache)
+        return data
     except (ValueError, RuntimeError, OSError, IndexError):
         return None
 
