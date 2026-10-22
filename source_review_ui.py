@@ -18,7 +18,7 @@ def _preview_body(st, source, store, *, default_page=1, large=False):
     page = max(1, min(pages, st.session_state[page_key]))
     data = _preview_data(st, source, store, page)
     if pages > 1:
-        nav='source_navigation_'+source['id']
+        nav=('source_large_navigation_' if large else 'source_navigation_')+source['id']
         st.html(f'<style>.st-key-{nav} [data-testid="stHorizontalBlock"]{{flex-wrap:nowrap!important}}'
                 f'.st-key-{nav} [data-testid="stColumn"]{{min-width:0!important;flex:1 1 0!important}}'
                 f'.st-key-{nav} p{{font-size:13px;text-align:center}}</style>')
@@ -26,15 +26,15 @@ def _preview_body(st, source, store, *, default_page=1, large=False):
             previous, position, following = st.columns([1, 1.2, 1],vertical_alignment='center',gap='small')
             previous.button('← 前へ', key=page_key+'_previous', disabled=page == 1, on_click=_turn_page,
                             args=(st.session_state, page_key, -1, pages), width='stretch')
-            position.markdown(f'**{page} / 全{pages}ページ**')
+            position.markdown(f'**{page}ページ目 / 全{pages}ページ**')
             following.button('次へ →', key=page_key+'_next', disabled=page == pages, on_click=_turn_page,
                              args=(st.session_state, page_key, 1, pages), width='stretch')
     else:
-        st.caption('1 / 全1ページ')
+        st.caption('1ページ目 / 全1ページ')
     if data is not None:
         # Changing this container's identity also replaces the old image node,
         # so a new page number cannot briefly label the previous bitmap.
-        with st.container(key='source_image_'+source['id']+'_'+str(page)):
+        with st.container(key=('source_large_image_' if large else 'source_image_')+source['id']+'_'+str(page)):
             st.image(data, width='stretch')
     else:
         st.info('原本を表示できませんでした。元のファイルを開いて確認してください。')
@@ -62,12 +62,24 @@ def preview(st, source, store, *, default_page=1, large=False):
     return fragment(_preview_body)(st, source, store, default_page=default_page, large=large)
 
 
+def _large_preview(st, source, store):
+    """An explicit enlarging action, without leaving the verification form."""
+    @st.dialog('元の見積書を大きく確認', width='large')
+    def show():
+        st.caption(source['name'])
+        page = st.session_state.get('review_source_page_' + source['id'], 1)
+        preview(st, source, store, default_page=page, large=True)
+    show()
+
+
 def source_title(source, metadata, source_count):
     names = list(dict.fromkeys(str(item.get('工事名称') or '').strip()
                   for item in metadata.get('summary_sources', [])
                   if item.get('元ファイル') == source['name'] and str(item.get('工事名称') or '').strip()))
     if len(names) == 1:
         return names[0]
+    if len(names)>1:
+        return ' ／ '.join(names)+f'（{len(names)}件）'
     if not names and source_count == 1:
         return str(metadata.get('工事名称') or '').strip()
     return ''
@@ -98,19 +110,32 @@ def _items_html(rows):
         context = part if part and part != str(row.get('工事種別') or '') else ''
         spec = escape(' ｜ '.join(v for v in (context, str(row.get('仕様') or '')) if v))
         quantity = escape(_number(row.get('数量')) + ' ' + str(row.get('単位') or ''))
-        table.append(f'<tr><td><b>{number}. {name}</b><small>{spec}</small></td><td>{quantity}</td>'
-                     f'<td>{escape(_number(row.get("原価単価")))}円</td><td>{escape(_number(row.get("原価金額")))}円</td></tr>')
-    return ('<style>.cyca-source-items{width:100%;border-collapse:collapse;font-size:14px;table-layout:fixed}'
-            '.cyca-source-items th,.cyca-source-items td{padding:10px 5px;border-bottom:1px solid #d9e4eb;overflow-wrap:anywhere;text-align:right}'
-            '.cyca-source-items th:first-child,.cyca-source-items td:first-child{text-align:left;width:43%}'
-            '.cyca-source-items small{display:block;font-size:12px;color:#647687;margin-top:4px}'
-            '@media(max-width:600px){.cyca-source-items{font-size:12px}.cyca-source-items th:first-child,.cyca-source-items td:first-child{width:36%}}</style>'
-            '<table class="cyca-source-items"><thead><tr><th>品目・仕様</th><th>数量</th><th>単価</th><th>金額</th></tr></thead><tbody>'
-            + ''.join(table) + '</tbody></table>')
+        table.append(f'<tr><td class="item-name"><b>{number}. {name}</b><small>{spec}</small></td>'
+                     f'<td data-label="数量">{quantity}</td>'
+                     f'<td data-label="単価">{escape(_number(row.get("原価単価")))}円</td>'
+                     f'<td data-label="金額">{escape(_number(row.get("原価金額")))}円</td></tr>')
+    return ('<style>.cyca-source-list{container-type:inline-size}'
+            '.cyca-source-items{width:100%;border-collapse:collapse;font-size:16px;table-layout:fixed}'
+            '.cyca-source-items th,.cyca-source-items td{padding:13px 8px;border-bottom:1px solid #d9e4eb;text-align:right;vertical-align:top}'
+            '.cyca-source-items th:first-child,.cyca-source-items td:first-child{text-align:left;width:43%;overflow-wrap:anywhere}'
+            '.cyca-source-items th:nth-child(2){width:13%}'
+            '.cyca-source-items th:nth-child(3),.cyca-source-items th:nth-child(4){width:22%}'
+            '.cyca-source-items td:not(:first-child){white-space:nowrap;font-variant-numeric:tabular-nums}'
+            '.cyca-source-items small{display:block;font-size:14px;line-height:1.6;color:#4d6373;margin-top:5px;font-weight:400}'
+            '@container(max-width:680px){.cyca-source-items,.cyca-source-items tbody{display:block}'
+            '.cyca-source-items thead{display:none}.cyca-source-items tr{display:grid;grid-template-columns:1fr 1.2fr 1.3fr;gap:8px 12px;padding:16px 0;border-bottom:1px solid #d9e4eb}'
+            '.cyca-source-items td{border:0;padding:0;font-size:15px;min-width:0}'
+            '.cyca-source-items td:first-child{width:auto;grid-column:1/-1;font-size:16px}'
+            '.cyca-source-items td[data-label]::before{content:attr(data-label);display:block;font-size:12px;color:#4d6373;margin-bottom:3px}'
+            '.cyca-source-items td:nth-child(2){text-align:left}}'
+            '@container(max-width:360px){.cyca-source-items tr{grid-template-columns:1fr 1fr}'
+            '.cyca-source-items td:last-child{grid-column:1/-1;font-weight:600}}</style>'
+            '<div class="cyca-source-list"><table class="cyca-source-items" aria-label="読み取った品目の一覧"><thead><tr><th>品目・仕様</th><th>数量</th><th>単価</th><th>金額</th></tr></thead><tbody>'
+            + ''.join(table) + '</tbody></table></div>')
 
 
 def _render_items(st, rows, sid):
-    st.subheader('② 読み取った品目',anchor=False)
+    st.subheader(f'② 読み取った品目（{len(rows)}件）',anchor=False)
     table_slot = st.container()
     with st.expander('品目の読み取りが違うときだけ直す'):
         import pandas as pd
@@ -140,6 +165,7 @@ def render_source(st, source, store, index, detail_rows=None):
             readings[sid] = {'net_total':None,'tax':None,'gross_total':None,'tax_basis':'税抜','tax_rate':.10,'conflicts':[],'evidence':[],'page':1,'read_failed':True}
     reading = readings[sid]
     source['amount_reading'] = reading
+    source['source_notes'] = reading.get('source_notes',[])
     defaults = st.session_state.setdefault('_review_amount_defaults', {})
     names = {'tax_basis':'review_basis_', 'tax_rate':'review_tax_', 'net_total':'review_net_', 'tax':'review_tax_amount_', 'gross_total':'review_gross_'}
     if sid not in defaults:
@@ -160,21 +186,40 @@ def render_source(st, source, store, index, detail_rows=None):
     # Do not auto-collapse a confirmed source: that used to move the page.
     with st.expander(f"{index}. {vendor} ｜ {title or '工事名なし（無題）'}", expanded=True):
         st.caption('元ファイル：' + source['name'])
+        if source.get('duplicate_count', 1) > 1:
+            st.info(f"同じ原本が{source['duplicate_count']}回選ばれています。内容は1件として表示しています。")
         st.subheader('① 元の見積書',anchor=False)
-        st.caption('原本を先に確認してください。右上の拡大ボタンで大きく見られます。')
+        if st.button('原本を大きく見る', key='review_enlarge_' + sid):
+            _large_preview(st, source, store)
         preview(st, source, store)
         rows = [r for r in (detail_rows or []) if r.get('原本ID') == sid]
         if detail_rows is not None and not rows:
             source.update(tax_basis='税抜',tax_rate=.10,net_total=None,tax=None,gross_total=None,confirmed=False)
-            st.warning('品目を読み取れませんでした。表紙だけでなく、品目・数量・単価が載った見積書を選んでください。')
+            reference = st.checkbox('このファイルは参考資料として使う（見積金額に含めない）',
+                                    key='review_reference_only_' + sid)
+            source.update(reference_only=reference, reference_confirmed=reference, confirmed=reference)
             st.session_state['review_source_ok_'+sid] = False
-            st.checkbox('原本と品目・数量・金額が合っています',key='review_source_ok_'+sid,disabled=True)
+            if reference:
+                st.caption('参考資料として原本を残します。このファイルの金額は見積に含めません。')
+            else:
+                st.warning('品目を読み取れませんでした。見積書なら、品目・数量・単価が載ったページを追加してください。図面・デザインなどは、上で参考資料に指定できます。')
             return detail_rows
+        # A file with extracted priced rows cannot silently become a reference
+        # attachment through old UI state or a restored source dictionary.
+        source.update(reference_only=False, reference_confirmed=False)
         if rows:
             rows = _render_items(st, rows, sid)
             changes = {r['行ID']:r for r in rows}
             detail_rows = [changes.get(r['行ID'], r) for r in detail_rows]
+        if source['source_notes']:
+            with st.expander('原本の備考・施工範囲を見る（社内用）'):
+                st.caption('原本の条件です。お客様向け備考には自動では載せません。')
+                for note in source['source_notes']:st.write(note)
         st.subheader('③ 合計金額',anchor=False)
+        if reading.get('quote_sections'):
+            st.info(f"このPDFには{len(reading['quote_sections'])}件の見積が入っています。各見積の金額を分けて保持し、下に合計を表示しています。")
+            for section in reading['quote_sections']:
+                st.write(f"{section['page']}ページ：{section['name'] or '無題'} ／ 工事金額 {section['net_total']:,}円（税抜）")
         if st.session_state.get('review_net_' + sid) is None:
             st.info('原本の最後にある合計だけ教えてください。')
             missing = st.number_input('原本の最後にある合計金額（円）', value=None, min_value=0, step=1, key='review_missing_gross_' + sid)
@@ -208,7 +253,7 @@ def render_source(st, source, store, index, detail_rows=None):
         if reading.get('read_failed'): problems.append('原本を読み取れませんでした。画像として保存した原本をもう一度読み込んでください。')
         if source.get('read_errors'): problems.append('読み取れていないページがあります。この見積をもう一度読み込んでください。')
         try:
-            from estimate_review import integer
+            from estimate_review import integer,section_tax_matches
             actual = sum(integer(r['原価金額']) for r in rows) if rows else None
         except (ValueError, TypeError, OverflowError):
             actual = None
@@ -247,7 +292,7 @@ def render_source(st, source, store, index, detail_rows=None):
             st.caption(f'品目の合計：{actual:,}円 ／ 原本の工事金額：{net:,}円')
         if net is not None and show_tax is not None and source['gross_total'] is not None and net+show_tax != source['gross_total']:
             problems.append('工事金額＋消費税が原本の合計と合いません。「原本の合計と違うときだけ直す」で確認してください。')
-        if source['tax'] is not None and calc_tax is not None and abs(source['tax']-calc_tax)>1:
+        if source['tax'] is not None and calc_tax is not None and abs(source['tax']-calc_tax)>1 and not section_tax_matches(source):
             problems.append(f'消費税が{rate}の計算と合いません。原本の金額を確認してください。')
         if reading['conflicts'] and not st.session_state.get('review_resolve_totals_' + sid):
             problems.append('原本に複数の合計があります。「原本の合計と違うときだけ直す」で最後の合計を確認してください。')

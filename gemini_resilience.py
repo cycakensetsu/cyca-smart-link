@@ -189,7 +189,7 @@ def call_gemini_with_retry(
                     last_code,
                     page_number,
                     source_name,
-                    exc,
+                    type(exc).__name__,
                 )
                 if last_error_was_model_unavailable:
                     LOGGER.warning(
@@ -231,7 +231,7 @@ def call_gemini_with_retry(
         last_code,
         page_number,
         source_name,
-        last_error,
+        type(last_error).__name__ if last_error else None,
     )
     if last_error_was_model_unavailable and last_error is not None:
         raise last_error
@@ -283,6 +283,11 @@ def prepare_upload_for_gemini_pages(path: str, source_name: str) -> List[GeminiP
 
             with fitz.open(path) as doc:
                 total_pages = len(doc)
+                scanned = any(len(page.get_text().strip()) < 20 for page in doc)
+            if scanned:
+                # Image-only estimates need every physical page, including a
+                # second quotation hidden behind the first valid total.
+                return _render_pdf_pages_as_images(path,source_name)
             with open(path, "rb") as pdf_file:
                 pdf_part = types.Part.from_bytes(data=pdf_file.read(), mime_type="application/pdf")
             return [
@@ -295,7 +300,7 @@ def prepare_upload_for_gemini_pages(path: str, source_name: str) -> List[GeminiP
                 )
             ]
         except Exception as exc:
-            LOGGER.error("pdf_preprocess_failed source=%s error=%s", source_name, exc)
+            LOGGER.error("pdf_preprocess_failed source=%s error_type=%s", source_name, type(exc).__name__)
             raise
 
     from PIL import Image
@@ -316,7 +321,7 @@ def build_page_prompt(page: GeminiPage, n_files: int) -> str:
         return f"""
         あなたは建設見積書のOCR兼明細抽出AIです。
         添付PDFは、アップロードされた{n_files}件のファイルのうち「{page.source_name}」です。
-        全{page.total_pages}ページを最初から最後まで一括で読み取り、この見積書1件分を1つのJSONオブジェクトにまとめてください。
+        全{page.total_pages}ページを最初から最後まで一括で読み取り、1つのJSONオブジェクトにまとめてください。1つのPDFに別々の見積書が同梱されている場合は、summary_dataを配列にして各見積の表紙の物理ページ番号・工事名・合計を別々に保持してください。勝手に先頭の見積だけにまとめないでください。
 
         ページは横向き・縦向き・90度回転・傾きがある可能性があります。文字の向きを自動判断してください。
 

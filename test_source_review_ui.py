@@ -1,11 +1,70 @@
 from pathlib import Path
 import tempfile
 import unittest
+from html.parser import HTMLParser
 import fitz
 from streamlit.testing.v1 import AppTest
 
 
 class SourceReviewUITest(unittest.TestCase):
+    def reference_app(self, temp, *, with_rows=False):
+        return f'''
+import streamlit as st
+from estimate_review import OriginalVault
+from source_review_ui import render_source
+store=OriginalVault({str(Path(temp)/'vault')!r},'reference-original-test')
+source=store.preserve('design.pdf',b'synthetic reference attachment')
+source.update(pages=1, read_errors=[{{'page':1,'reason':'no priced items'}}],
+              duplicate_count=3, duplicate_names=['design.pdf','design-copy.pdf','same-design.pdf'],
+              reference_only=True, reference_confirmed=True)
+if {with_rows!r}: source['read_errors']=[]
+sid=source['id']
+st.session_state['_review_amount_readings']={{sid:{{'net_total':100000,'tax':10000,'gross_total':110000,'conflicts':[],'page':1}}}}
+rows={"[dict(行ID='priced',原本ID=sid,品名='原本記載の工事',数量=1,単位='式',原価単価=100000,原価金額=100000,ページ=1)]" if with_rows else '[]'}
+st.session_state['checked_rows']=render_source(st,source,store,1,rows)
+st.session_state['checked_source']=source
+'''
+
+    def test_empty_original_needs_explicit_reference_choice_and_can_be_unchecked(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=AppTest.from_string(self.reference_app(temp)).run()
+            self.assertEqual(list(at.exception),[])
+            source=at.session_state['checked_source'];sid=source['id']
+            self.assertFalse(source['reference_only'])
+            self.assertFalse(source['reference_confirmed'])
+            self.assertFalse(source['confirmed'])
+            self.assertEqual(len(at.number_input),0)
+            at.checkbox(key='review_reference_only_'+sid).check().run()
+            source=at.session_state['checked_source']
+            self.assertTrue(source['reference_only'])
+            self.assertTrue(source['reference_confirmed'])
+            self.assertTrue(source['confirmed'])
+            self.assertEqual(source['read_errors'],[{'page':1,'reason':'no priced items'}])
+            self.assertEqual(at.session_state['checked_rows'],[])
+            self.assertFalse(any('品目を読み取れません' in w.value for w in at.warning))
+            from estimate_review import OriginalVault
+            self.assertEqual(OriginalVault(Path(temp)/'vault','reference-original-test').read(sid),b'synthetic reference attachment')
+            at.checkbox(key='review_reference_only_'+sid).uncheck().run()
+            self.assertFalse(at.session_state['checked_source']['confirmed'])
+            self.assertFalse(at.session_state['checked_source']['reference_only'])
+            self.assertFalse(at.session_state['checked_source']['reference_confirmed'])
+
+    def test_priced_original_cannot_be_hidden_as_reference_and_duplicate_notice_is_plain(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=AppTest.from_string(self.reference_app(temp,with_rows=True)).run()
+            self.assertEqual(list(at.exception),[])
+            source=at.session_state['checked_source']
+            self.assertFalse(source['reference_only'])
+            self.assertFalse(source['reference_confirmed'])
+            self.assertEqual(len(at.session_state['checked_rows']),1)
+            self.assertNotIn('review_reference_only_'+source['id'],[c.key for c in at.checkbox])
+            self.assertTrue(any('同じ原本が3回選ばれています。内容は1件として表示しています。' == i.value for i in at.info))
+            # A duplicated priced original still needs its ordinary human check.
+            self.assertFalse(source['confirmed'])
+            self.assertFalse(at.checkbox(key='review_source_ok_'+source['id']).disabled)
+            at.checkbox(key='review_source_ok_'+source['id']).check().run()
+            self.assertTrue(at.session_state['checked_source']['confirmed'])
+
     def test_page_preview_changes_without_mutating_original_or_confirming_it(self):
         with tempfile.TemporaryDirectory() as temp:
             document=fitz.open()
@@ -36,3 +95,67 @@ st.session_state['checked_source']=source
             self.assertEqual(len(at.session_state['_review_source_previews']),2)
             from estimate_review import OriginalVault
             self.assertEqual(OriginalVault(Path(temp)/'vault','synthetic-test').read(sid),original)
+
+    def test_explicit_large_original_has_independent_navigation_and_does_not_approve(self):
+        with tempfile.TemporaryDirectory() as temp:
+            document=fitz.open()
+            for number in range(3):
+                document.new_page().insert_text((30,40),f'SYNTHETIC PAGE {number+1}')
+            original=document.tobytes();document.close()
+            path=Path(temp)/'source.pdf';path.write_bytes(original)
+            at=AppTest.from_string(f'''
+import streamlit as st
+from estimate_review import OriginalVault
+from source_review_ui import render_source
+store=OriginalVault({str(Path(temp)/'vault')!r},'large-original-test')
+source=store.preserve('source.pdf',__import__('pathlib').Path({str(path)!r}).read_bytes())
+source['pages']=3
+render_source(st,source,store,1)
+st.session_state['checked_source']=source
+''').run()
+            sid=at.session_state['checked_source']['id']
+            at.button(key='review_source_page_'+sid+'_next').click().run()
+            at.button(key='review_enlarge_'+sid).click().run()
+            self.assertEqual(list(at.exception),[])
+            self.assertEqual(at.session_state['review_source_large_page_'+sid],2)
+            at.button(key='review_source_large_page_'+sid+'_next').click().run()
+            self.assertEqual(list(at.exception),[])
+            self.assertEqual(at.session_state['review_source_large_page_'+sid],3)
+            self.assertEqual(at.session_state['review_source_page_'+sid],2)
+            # AppTest reruns the full app when a fragment button is clicked, so
+            # reopen the dialog to inspect its final-page controls.
+            at.button(key='review_enlarge_'+sid).click().run()
+            self.assertTrue(at.button(key='review_source_large_page_'+sid+'_next').disabled)
+            self.assertFalse(at.session_state['checked_source']['confirmed'])
+            self.assertTrue(any('3ページ目 / 全3ページ' in m.value for m in at.markdown))
+            from estimate_review import OriginalVault
+            self.assertEqual(OriginalVault(Path(temp)/'vault','large-original-test').read(sid),original)
+
+    def test_long_items_and_discount_have_complete_numeric_cells_and_safe_text(self):
+        from source_review_ui import _items_html
+        class Cells(HTMLParser):
+            def __init__(self):
+                super().__init__();self.cells=[];self.current=None
+            def handle_starttag(self,tag,attrs):
+                if tag=='td': self.current=[]
+            def handle_data(self,data):
+                if self.current is not None:self.current.append(data)
+            def handle_endtag(self,tag):
+                if tag=='td':self.cells.append(''.join(self.current));self.current=None
+        name='高性能空調機の本体・既設撤去および取付工事' * 3
+        specification='品番TEST-A-123456789 / 室内外機セット <原本の記載> '+('施工条件の詳細。' * 8)
+        rows=[{'品名':name,'部位':'屋上・東側','工事種別':'空調工事','仕様':specification,
+               '数量':2.5,'単位':'台','原価単価':12345678,'原価金額':30864195},
+              {'品名':'原本記載の値引き','仕様':'価格調整','数量':1,'単位':'式','原価単価':-1234,'原価金額':-1234}]
+        parser=Cells();parser.feed(_items_html(rows))
+        self.assertEqual(len(parser.cells),8)
+        self.assertIn(name,parser.cells[0])
+        self.assertIn(specification,parser.cells[0])
+        self.assertIn('屋上・東側',parser.cells[0])
+        self.assertEqual(parser.cells[1:4],['2.5 台','12,345,678円','30,864,195円'])
+        self.assertEqual(parser.cells[5:8],['1 式','-1,234円','-1,234円'])
+        # Larger imports retain every row in their original order, without a hidden
+        # editor, summary-only preview, or arbitrary short-list limit.
+        parser=Cells();parser.feed(_items_html(rows*35))
+        self.assertEqual(len(parser.cells),280)
+        self.assertIn('70. 原本記載の値引き',parser.cells[-4])

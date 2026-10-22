@@ -139,6 +139,8 @@ class LineItem:
     section: str = ""
     source_page: int = 0
     row_id: str = ''
+    source_id: str = ''  # Internal boundary identity; never printed.
+    source_project: str = ''  # Customer-safe source context, without issuer/file names.
 
 
 @dataclass
@@ -575,6 +577,33 @@ def ensure_template(path: Path = TEMPLATE_PATH) -> Path:
 # 流し込み
 # ---------------------------------------------------------------------------
 
+def detail_context(item: LineItem, category: Category) -> str:
+    section = str(item.section or '').strip()
+    section = section if section != category.name else ''
+    project = str(item.source_project or '').strip()
+    if project and section and project not in section and section not in project:
+        combined = project + '／' + section
+        if len(combined) <= 24:
+            return combined
+    return section or project
+
+
+def _detail_item_rows(category: Category, no: int = 0):
+    """Close a prior scope even when the next original has no named part."""
+    rows = []
+    last_context = ''
+    last_source = None
+    for item in category.items:
+        context = detail_context(item, category)
+        source_changed = last_source is not None and item.source_id != last_source
+        if context != last_context or source_changed:
+            rows.append({'kind': 'section', 'label': context or category.name})
+        last_context, last_source = context, item.source_id
+        no += 1
+        rows.append({'kind': 'item', 'no': no, 'item': item, 'category': category})
+    return rows, no
+
+
 def _build_detail_rows(estimate: Estimate) -> List[Dict]:
     """分類見出し・明細・分類小計を、印刷用の論理行へ展開する。"""
     rows: List[Dict] = []
@@ -583,13 +612,8 @@ def _build_detail_rows(estimate: Estimate) -> List[Dict]:
         if category.summary_only:
             continue
         rows.append({"kind": "category", "index": category_index, "category": category})
-        last_section = None
-        for item in category.items:
-            if item.section and item.section != category.name and item.section != last_section:
-                rows.append({'kind': 'section', 'label': item.section})
-            last_section = item.section
-            no += 1
-            rows.append({"kind": "item", "no": no, "item": item, 'category': category})
+        item_rows, no = _detail_item_rows(category, no)
+        rows.extend(item_rows)
         rows.append({"kind": "subtotal", "category": category})
     return rows
 

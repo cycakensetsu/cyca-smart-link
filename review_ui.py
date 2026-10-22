@@ -56,21 +56,35 @@ def render_backup_download(st, key, auto=False):
 def preserve_uploads(st, uploads):
     st.session_state.pop('_vault_archive', None)
     store = vault(st)
-    sources = [store.preserve(f.name, f.getbuffer()) for f in uploads]
-    for source, upload in zip(sources, uploads):
-        if Path(source["name"]).suffix.lower() == '.pdf':
+    sources = []
+    prepared = []
+    by_id = {}
+    used_names = set()
+    for upload in uploads:
+        source = store.preserve(upload.name, upload.getbuffer())
+        if source['id'] in by_id:
+            first=by_id[source['id']]
+            first['duplicate_count'] = first.get('duplicate_count',1)+1
+            first.setdefault('duplicate_names',[first.get('original_name',first['name'])]).append(upload.name)
+            continue
+        source['original_name']=upload.name
+        if source['name'] in used_names:
+            suffix=Path(upload.name).suffix
+            stem=upload.name[:-len(suffix)] if suffix else upload.name
+            number=2
+            while f'{stem}（同名{number}）{suffix}' in used_names:number+=1
+            source['name']=f'{stem}（同名{number}）{suffix}'
+        used_names.add(source['name']);by_id[source['id']]=source
+        if Path(source['name']).suffix.lower() == '.pdf':
             from pdf_worker import page_count
-            try:
-                source['pages'] = page_count(bytes(upload.getbuffer()))
+            try:source['pages']=page_count(bytes(upload.getbuffer()))
             except Exception:
-                raise ValueError("原本PDFを開けません。保全した原本を確認してください。") from None
-        else:
-            source['pages'] = 1
-    if len({s["id"] for s in sources}) != len(sources):
-        raise ValueError("同一原本が複数回選択されています。重複を外してください。")
-    if len({s["name"] for s in sources}) != len(sources):
-        raise ValueError("同名の原本があります。異なるファイル名で取り込み直してください。")
-    st.session_state["_review_sources"] = sources
+                source['pages']=1
+                source['prepare_error']=True
+        else:source['pages']=1
+        sources.append(source);prepared.append((source,upload))
+    st.session_state['_review_sources']=sources
+    return prepared
 
 
 def capture_extraction(st, detail, summaries, records, read_errors=()):
@@ -189,7 +203,8 @@ def _render_review_plan(st,api_key,original,rows,sources):
     missing_names=[label for field,label in [('宛名','お客様名'),('工事名称','工事名')] if not metadata[field].strip()]
     if missing_names:
         st.info('・'.join(missing_names)+'を入れると、完成イメージを見られます。')
-    preview_ready = render_preview(st, draft, valid)
+    from estimate_review import preview_allowed
+    preview_ready = render_preview(st, draft, preview_allowed(draft) and not missing_names)
     agree = st.checkbox("内容とページ分けは、これでOKです", disabled=not preview_ready,
                         key="review_agree_"+draft["fingerprint"])
     if st.button("この内容で見積書を作成", disabled=not (valid and agree and preview_ready), key="review_approve"):

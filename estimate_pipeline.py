@@ -94,6 +94,11 @@ def normalize_text(value) -> str:
     return text.strip()
 
 
+
+def source_identity(value):
+    """File identity is opaque: never collapse whitespace or Unicode."""
+    return "" if value is None else str(value)
+
 def parse_money(value) -> Optional[float]:
     text = normalize_text(value)
     if not text:
@@ -149,7 +154,7 @@ def _record_vendor(record: Dict) -> str:
 
 
 def _record_source_pdf(record: Dict) -> str:
-    return normalize_text(_first_present(record, ["__source_name", "source_pdf", "元ファイル", "source"], ""))
+    return source_identity(_first_present(record, ["__source_name", "source_pdf", "元ファイル", "source"], ""))
 
 
 def _record_text_range(record: Dict) -> str:
@@ -299,8 +304,8 @@ def split_extraction_payload(payload, source_name: str = "", page_number: Option
         for item in payload:
             if not isinstance(item,dict):continue
             record=dict(item)
-            if source_name:record.setdefault('__source_name',source_name)
-            if page_number is not None:record.setdefault('__page_number',page_number)
+            if source_name:record['__source_name']=source_name
+            if page_number is not None:record['__page_number']=page_number
             records.append(record)
         return [], records
     if not isinstance(payload, dict):
@@ -311,21 +316,29 @@ def split_extraction_payload(payload, source_name: str = "", page_number: Option
 
     page_role = normalize_text(_first_present(payload, ["page_role", "role", "ページ種別"]))
     summary_data = _first_present(payload, ["summary_data", "summary", "見積表紙", "一式表", "工事費内訳"], None)
-    if isinstance(summary_data, dict):
+    if isinstance(summary_data,list):
+        for item in summary_data:
+            if not isinstance(item,dict):continue
+            summary=dict(item)
+            if source_name:summary['__source_name']=source_name
+            if page_number is not None:summary['__page_number']=page_number
+            summary.setdefault('__page_role','cover_summary_page')
+            summary_sources.append(summary)
+    elif isinstance(summary_data, dict):
         summary_data = dict(summary_data)
         if page_role:
             summary_data.setdefault("__page_role", page_role)
         if source_name:
-            summary_data.setdefault("__source_name", source_name)
+            summary_data["__source_name"] = source_name
         if page_number is not None:
-            summary_data.setdefault("__page_number", page_number)
+            summary_data["__page_number"] = page_number
         summary_sources.append(summary_data)
     elif page_role in ("cover_summary_page", "summary_page") and payload:
         summary_source = dict(payload)
         if source_name:
-            summary_source.setdefault("__source_name", source_name)
+            summary_source["__source_name"] = source_name
         if page_number is not None:
-            summary_source.setdefault("__page_number", page_number)
+            summary_source["__page_number"] = page_number
         summary_sources.append(summary_source)
 
     for key in ("detail_data", "details", "明細データ", "工事明細", "records"):
@@ -336,9 +349,9 @@ def split_extraction_payload(payload, source_name: str = "", page_number: Option
                     continue
                 record = dict(item)
                 if source_name:
-                    record.setdefault("__source_name", source_name)
+                    record["__source_name"] = source_name
                 if page_number is not None:
-                    record.setdefault("__page_number", page_number)
+                    record["__page_number"] = page_number
                 detail_records.append(record)
 
     return summary_sources, detail_records
@@ -386,7 +399,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
         from source_sections import reconcile_printed_totals
         source = reconcile_printed_totals(source)
         source_vendor = _source_vendor(source)
-        source_name = normalize_text(source.get("__source_name", ""))
+        source_name = source_identity(source.get("__source_name", ""))
         page_number = source.get("__page_number")
         role = normalize_text(_first_present(source, ["__page_role", "page_role", "role", "ページ種別"]))
         if role:
@@ -411,6 +424,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                 "元ファイル": source_name,
                 "ページ": page_number,
                 "ページ種別": role,
+                "見積区分確認": bool(source.get("__quote_scope_verified")),
                 "工事名称": normalize_text(_first_present(source, ["工事名称", "工事名", "件名", "project_name"], "")),
                 "工事項目": source_items,
                 "小計": parse_money(_first_present(source, ["小計", "subtotal"])),
@@ -440,20 +454,65 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
     }
 
 
+def _assign_unique_source_heading(records, summary_sources):
+    """Reuse a sole printed heading, never infer a trade from its price/title."""
+    output=[dict(r) for r in records]
+    for source in {_record_source_pdf(r) for r in output}:
+        summaries=[s for s in summary_sources if isinstance(s,dict)
+                   and source_identity(s.get('__source_name',''))==source]
+        scoped=[s for s in summaries if s.get('__page_role')=='cover_summary_page'
+                or (s.get('__page_role')=='summary_page' and s.get('__quote_scope_verified'))]
+        pages=sorted({int(p) for s in scoped for p in [parse_money(s.get('__page_number'))]
+                      if p is not None and p>=1 and float(p).is_integer()})
+        groups=[]
+        if len(pages)>1:
+            for index,page in enumerate(pages):
+                end=pages[index+1] if index+1<len(pages) else float('inf')
+                rows=[r for r in output if _record_source_pdf(r)==source
+                      and (p:=parse_money(r.get('__page_number'))) is not None
+                      and float(p).is_integer() and page<=p<end]
+                selected=[s for s in scoped if parse_money(s.get('__page_number'))==page]
+                groups.append((rows,selected))
+        else:
+            groups.append(([r for r in output if _record_source_pdf(r)==source],summaries))
+        for rows,selected in groups:
+            headings={normalize_text(_first_present(item,['工事項目','品名','工事品目','名称']))
+                      for s in selected for key in SUMMARY_ITEM_KEYS
+                      for item in (s.get(key) if isinstance(s.get(key),list) else [])
+                      if isinstance(item,dict)}
+            headings.discard('')
+            if len(headings)!=1 or not rows:continue
+            heading=next(iter(headings))
+            if heading in ('工事','一式','明細','小計','合計','未分類','不明'):continue
+            if not all(heading in normalize_text(r.get('品名','')) for r in rows):continue
+            for row in rows:
+                if normalize_text(row.get('工事種別','')) in ('','未分類','不明'):
+                    row['工事種別']=heading
+                    row['__assigned_trade_from_summary']=True
+    return output
+
+
 def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
     """同一PDF内に会社名付き見積がある場合、不明明細をその業者の明細として扱う。"""
     named_by_pdf: Dict[str, List[str]] = {}
     summary_named_by_pdf: Dict[str, List[str]] = {}
     final_summary_named_by_pdf: Dict[str, List[str]] = {}
+    scoped_vendors: Dict[str, Dict[int, List[str]]] = {}
 
     for source in summary_sources or []:
         if not isinstance(source, dict):
             continue
         from source_sections import reconcile_printed_totals
         source = reconcile_printed_totals(source)
-        source_pdf = normalize_text(source.get("__source_name", ""))
-        vendor = _source_vendor(source)
+        source_pdf = source_identity(source.get("__source_name", ""))
+        # A filename is useful as a display fallback, never as an issuer name.
+        vendor = _record_vendor(source)
         role = normalize_text(_first_present(source, ["__page_role", "page_role", "role", "ページ種別"]))
+        page=parse_money(source.get('__page_number'))
+        if (source_pdf and page is not None and page>=1 and float(page).is_integer()
+                and (role=='cover_summary_page' or (role=='summary_page' and source.get('__quote_scope_verified')))):
+            page_vendors=scoped_vendors.setdefault(source_pdf,{}).setdefault(int(page),[])
+            if not _is_unknown_vendor(vendor) and vendor not in page_vendors:page_vendors.append(vendor)
         if source_pdf and vendor and not _is_unknown_vendor(vendor):
             named_by_pdf.setdefault(source_pdf, [])
             if vendor not in named_by_pdf[source_pdf]:
@@ -500,15 +559,26 @@ def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: L
         summary_candidates = summary_named_by_pdf.get(source_pdf, [])
         final_summary_candidates = final_summary_named_by_pdf.get(source_pdf, [])
         assigned_vendor = original_vendor
-        if _is_unknown_vendor(original_vendor) and len(final_summary_candidates) == 1:
+        boundaries=scoped_vendors.get(source_pdf,{})
+        page=parse_money(out.get('__page_number'))
+        preceding=[p for p in boundaries if page is not None and float(page).is_integer() and p<=page]
+        scope_page=max(preceding) if preceding else None
+        scope_candidates=boundaries.get(scope_page,[])
+        scope_blocks_global=len(boundaries)>1 and scope_page is not None
+        if _is_unknown_vendor(original_vendor) and len(scope_candidates)==1:
+            assigned_vendor=scope_candidates[0]
+            out['見積元']=assigned_vendor
+            out['__assigned_vendor_from_pdf']=True
+            out['__assigned_vendor_scope_page']=scope_page
+        elif _is_unknown_vendor(original_vendor) and not scope_blocks_global and len(final_summary_candidates) == 1:
             assigned_vendor = final_summary_candidates[0]
             out["見積元"] = assigned_vendor
             out["__assigned_vendor_from_pdf"] = True
-        elif _is_unknown_vendor(original_vendor) and len(summary_candidates) == 1:
+        elif _is_unknown_vendor(original_vendor) and not scope_blocks_global and len(summary_candidates) == 1:
             assigned_vendor = summary_candidates[0]
             out["見積元"] = assigned_vendor
             out["__assigned_vendor_from_pdf"] = True
-        elif _is_unknown_vendor(original_vendor) and len(candidates) == 1:
+        elif _is_unknown_vendor(original_vendor) and not scope_blocks_global and len(candidates) == 1:
             assigned_vendor = candidates[0]
             out["見積元"] = assigned_vendor
             out["__assigned_vendor_from_pdf"] = True
@@ -521,7 +591,7 @@ def assign_unknown_vendors_to_pdf_vendor(records: List[Dict], summary_sources: L
             "抽出元テキスト範囲": _record_text_range(out),
         })
 
-    return reassigned, debug_rows
+    return _assign_unique_source_heading(reassigned,summary_sources or []), debug_rows
 
 
 def _detail_vendor_totals(detail_df: pd.DataFrame) -> Dict[Tuple[str, str], int]:
@@ -533,7 +603,7 @@ def _detail_vendor_totals(detail_df: pd.DataFrame) -> Dict[Tuple[str, str], int]
     totals: Dict[Tuple[str, str], int] = {}
     for (_, row) in source.iterrows():
         vendor = normalize_text(row.get("見積元", "")) or "不明"
-        source_pdf = normalize_text(row.get("元ファイル", ""))
+        source_pdf = source_identity(row.get("元ファイル", ""))
         amount = parse_money(row.get("原価金額")) or 0
         totals[(source_pdf, vendor)] = totals.get((source_pdf, vendor), 0) + int(round(amount))
     return totals
@@ -548,7 +618,7 @@ def _detail_items_for_vendor(detail_df: pd.DataFrame, source_pdf: str, vendor: s
     items: List[Dict] = []
     for (_, row) in source.iterrows():
         row_vendor = normalize_text(row.get("見積元", ""))
-        row_pdf = normalize_text(row.get("元ファイル", ""))
+        row_pdf = source_identity(row.get("元ファイル", ""))
         if row_vendor != vendor:
             continue
         if source_pdf and row_pdf and row_pdf != source_pdf:
@@ -581,7 +651,7 @@ def _dedupe_vendor_summaries(candidates: List[Dict], detail_totals: Dict[Tuple[s
     grouped: Dict[Tuple[str, str], List[Dict]] = {}
     order: List[Tuple[str, str]] = []
     for candidate in candidates:
-        key = (normalize_text(candidate.get("元ファイル", "")), normalize_text(candidate.get("見積元", "")))
+        key = (source_identity(candidate.get("元ファイル", "")), normalize_text(candidate.get("見積元", "")))
         if key not in grouped:
             grouped[key] = []
             order.append(key)
@@ -623,7 +693,7 @@ def _prefer_final_summaries_per_pdf(candidates: List[Dict]) -> List[Dict]:
     order: List[str] = []
     without_source: List[Dict] = []
     for candidate in candidates:
-        source_pdf = normalize_text(candidate.get("元ファイル", ""))
+        source_pdf = source_identity(candidate.get("元ファイル", ""))
         if not source_pdf:
             without_source.append(candidate)
             continue
@@ -657,7 +727,7 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
     for source in summary_sources:
         if not isinstance(source, dict):
             continue
-        source_pdf = normalize_text(source.get("元ファイル", ""))
+        source_pdf = source_identity(source.get("元ファイル", ""))
         page_role = normalize_text(source.get("ページ種別", ""))
         # 内訳ページ末尾の「内訳合計」はPDF全体の見積小計ではない。
         # 表紙・まとめページがないPDFだけ、後段の明細合計フォールバックで扱う。
@@ -713,7 +783,7 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
     final_summary_candidates = _prefer_final_summaries_per_pdf(summary_candidates)
     for summary in _dedupe_vendor_summaries(final_summary_candidates, detail_totals):
         vendor_summaries.append(summary)
-        represented_pdf = normalize_text(summary.get("元ファイル", ""))
+        represented_pdf = source_identity(summary.get("元ファイル", ""))
         represented_keys.add((represented_pdf, normalize_text(summary.get("見積元", ""))))
         if represented_pdf:
             represented_pdfs.add(represented_pdf)
@@ -1015,7 +1085,7 @@ def build_vendor_work_summary_dataframe(vendor_summaries: List[Dict], cost_df: p
         subtotal_total += subtotal
         tax = int(round(subtotal * tax_rate))
         total = subtotal + tax
-        rows.append({"No": "", "工事品目": f"【{vendor} まとめ】", "仕様": normalize_text(summary.get("元ファイル", "")), "数量": "", "単位": "", "単価": "", "金額": "", "備考": summary.get("集計根拠", "")})
+        rows.append({"No": "", "工事品目": f"【{vendor} まとめ】", "仕様": source_identity(summary.get("元ファイル", "")), "数量": "", "単位": "", "単価": "", "金額": "", "備考": summary.get("集計根拠", "")})
         items = [dict(item) for item in summary.get("工事項目", []) if isinstance(item, dict)]
         if not items:
             items = [{"工事項目": f"{vendor} 工事一式", "仕様": "", "数量": 1, "単位": "式", "単価": subtotal, "金額": subtotal, "備考": ""}]
@@ -1151,7 +1221,7 @@ def build_intermediate_dataframe(records: List[Dict]) -> Tuple[pd.DataFrame, Dic
                 "見積単価": unit_price if unit_price is not None else pd.NA,
                 "見積金額": amount if amount is not None else pd.NA,
                 "備考": " / ".join(note_parts),
-                "元ファイル": normalize_text(record.get("__source_name", "")),
+                "元ファイル": source_identity(record.get("__source_name", "")),
                 "ページ": record.get("__page_number", ""),
             }
         )

@@ -8,11 +8,13 @@ def _chunk(rows):
     while rows:
         prefix = []
         if rows[0]['kind'] == 'item':
+            from template_fill_test_v2 import detail_context
             item = rows[0]['item']
             category = rows[0].get('category')
             label = (category.name if category else '工事内容') + '（続き）'
-            if item.section and (not category or item.section != category.name):
-                label += '／' + item.section
+            context = detail_context(item, category) if category else item.section
+            if context:
+                label += '／' + context
             prefix = [{'kind': 'section', 'label': label}]
         take = min(20 - len(prefix), len(rows))
         if take < len(rows) and rows[take]['kind'] == 'subtotal' and take > 1:
@@ -35,7 +37,7 @@ def summary_chunks(categories):
 
 
 def plan(estimate):
-    from template_fill_test_v2 import _build_detail_rows
+    from template_fill_test_v2 import _build_detail_rows, _detail_item_rows
     normal = [c for c in estimate.categories if not c.summary_only]
     all_items = ([i for c in normal for i in c.items]
                  + [i for c in estimate.categories if c.summary_only for i in c.items])
@@ -45,13 +47,8 @@ def plan(estimate):
     for index,category in enumerate(ordered,1):
         if len(normal)>1:
             compact_rows.append({'kind':'category','index':index,'category':category})
-        last_section=None
-        for item in category.items:
-            if item.section and item.section!=category.name and item.section!=last_section:
-                compact_rows.append({'kind':'section','label':item.section})
-            last_section=item.section
-            number+=1
-            compact_rows.append({'kind':'item','no':number,'item':item,'category':category})
+        item_rows, number = _detail_item_rows(category, number)
+        compact_rows.extend(item_rows)
     compact = (estimate.source_count == 1 and bool(normal) and len(compact_rows) + 4 <= 20 and not estimate.page_breaks)
     if compact:
         rows = compact_rows

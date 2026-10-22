@@ -84,6 +84,9 @@ def read_amounts(name, data, summaries=None):
                     item = {'value':value, 'priority':priority, 'page':page, 'text':raw[:200], 'method':'原本の文字'}
                     candidates[field].append(item)
                     break
+    note_indices={i for i,(_,text) in enumerate(lines) if re.search('上記に含|別途|対象外|見積範囲|施工範囲|含まれ|条件|※',text)}
+    source_notes=list(dict.fromkeys(lines[i][1] for pos in sorted(note_indices)
+        for i in range(max(0,pos-1),min(len(lines),pos+2))))
     # The application's eight-column original contains a validated final net
     # total and separate summary-only fees. Read those cells directly instead
     # of allowing an OCR subtotal or section total to override them.
@@ -96,8 +99,25 @@ def read_amounts(name, data, summaries=None):
                 'page':quote.summary[0]['__page_number'],'text':'原本の小計・値引き・合計を照合','method':'原本の集計表'})
         except (ValueError,RuntimeError,AttributeError,OSError):
             pass
+    from document_scopes import printed_scopes
+    scoped_totals=printed_scopes((summaries or {}).get('summary_sources',[]),name)
+    if scoped_totals:
+        combined={'net_total':sum(s['net_total'] for s in scoped_totals),
+                'tax':sum(s['tax'] for s in scoped_totals),
+                'gross_total':sum(s['gross_calculated'] for s in scoped_totals),
+                'tax_basis':'税抜','tax_rate':.10,'conflicts':[],
+                'evidence':[{'field':'net_total','value':s['net_total'],'page':s['page'],
+                             'method':'原本の個別見積合計','text':s['name']} for s in scoped_totals],
+                'quote_sections':scoped_totals,'source_notes':source_notes,'amount_notes':[],'page':scoped_totals[0]['page']}
+        from source_variants import find_amount_notes
+        combined['amount_notes']=find_amount_notes(lines,(summaries or {}).get('summary_sources',[]),name,combined)
+        return combined
     # OCR summaries are scoped to this exact original, never to another vendor.
-    for item in (summaries or {}).get('summary_sources', []):
+    source_summaries=[s for s in (summaries or {}).get('summary_sources',[]) if s.get('元ファイル')==name]
+    has_cover=any(s.get('ページ種別')=='cover_summary_page' for s in source_summaries)
+    for item in source_summaries:
+        if has_cover and item.get('ページ種別') not in ('cover_summary_page','summary_page'):
+            continue
         if item.get('元ファイル') != name:
             continue
         for field, keys in {'net_total':('改小計','小計'), 'tax':('消費税',), 'gross_total':('工事費計',)}.items():
@@ -106,7 +126,7 @@ def read_amounts(name, data, summaries=None):
                 if value is not None and value >= 0:
                     candidates[field].append({'value':value, 'priority':2 if key == '改小計' else 0, 'page':item.get('ページ') or 1, 'text':key, 'method':'AIの読み取り'})
                     break
-    result = {'net_total':None, 'tax':None, 'gross_total':None, 'tax_basis':'税抜', 'tax_rate':.10, 'conflicts':[], 'evidence':evidence}
+    result = {'net_total':None, 'tax':None, 'gross_total':None, 'tax_basis':'税抜', 'tax_rate':.10, 'conflicts':[], 'evidence':evidence, 'source_notes':source_notes}
     chosen = {}
     for field, items in candidates.items():
         if not items:

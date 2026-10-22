@@ -39,6 +39,19 @@ class SourceExtractionTest(unittest.TestCase):
             extract_job(None,job,'native.pdf',1,primary_model='fake',fallback_models=[])
         fallback.assert_not_called()
 
+    def test_a_matching_first_quote_total_cannot_hide_a_later_pdf_page(self):
+        job=GeminiPage(source_name='two-quotes.pdf',page_number=1,total_pages=2,parts=['pdf'],whole_document=True)
+        images=[GeminiPage(source_name=job.source_name,page_number=p,total_pages=2,parts=['image']) for p in (1,2)]
+        def quote(value):return {'page_role':'cover_summary_page','summary_data':{'改小計':value,'消費税':value//10,'工事費計':value+value//10,'__page_number':1},
+            'detail_data':[{'品名':'施工','数量':1,'単位':'式','単価':value,'金額':value,'__page_number':1}]}
+        replies=[quote(100),quote(100),quote(200)]
+        with patch('source_extraction.call_gemini_with_retry',side_effect=[SimpleNamespace(text=json.dumps(r),model_name='fake') for r in replies]) as call,patch('source_extraction._render_pdf_pages_as_images',return_value=images) as fallback,patch('source_extraction.reconcile_native_pdf',side_effect=lambda p,r,s:(r,s)):
+            summaries,rows,_,_=extract_job(None,job,'file.pdf',1,primary_model='fake',fallback_models=[])
+        fallback.assert_called_once()
+        self.assertEqual(call.call_count,3)
+        self.assertEqual([r['金額'] for r in rows],[100,200])
+        self.assertEqual([r['__page_number'] for r in rows],[1,2])
+
     def test_validated_original_template_preserves_summary_expense_and_discount(self):
         estimate=Estimate('','架空確認先','架空工事','2026/10/21','30日',[Category('防水工事',[LineItem('架空防水'+str(i),'仕様',.25,'㎡',4000,1000) for i in range(3)]),Category('運搬費',[LineItem('運搬費','原本の費目',1,'式',10000,10000)],True)],-1000,.1,True)
         _,pdf,_=build_reference_outputs(estimate)

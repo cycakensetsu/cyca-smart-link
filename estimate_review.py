@@ -280,6 +280,18 @@ def _price_rounded_source(group, total):
     return result
 
 
+
+def section_tax_matches(source):
+    """A PDF with several quotes retains each printed tax rounding separately."""
+    sections=source.get('amount_reading',{}).get('quote_sections',[])
+    if len(sections)<2:return False
+    try:
+        return (len({integer(s['page']) for s in sections})==len(sections)
+            and sum(integer(s['net_total']) for s in sections)==integer(source['net_total'])
+            and sum(integer(s['tax']) for s in sections)==integer(source['tax'])
+            and all(abs(Decimal(integer(s['tax']))-Decimal(integer(s['net_total']))*Decimal(str(source['tax_rate'])))<=1 for s in sections))
+    except (ValueError,KeyError,TypeError):return False
+
 def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, metadata=None, resolutions=None):
     """Return a complete reviewable snapshot. Corrections never change raw data."""
     metadata = dict(metadata or {})
@@ -328,6 +340,12 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
             issue("原本参照", [row["行ID"]], "原本とページの対応が必要です。", "停止")
         accepted.append(dict(row))
     for s in sources:
+        source_rows=[r for r in edited_rows if r['原本ID']==s['id']]
+        if s.get('reference_only'):
+            if source_rows or not s.get('reference_confirmed') or not s.get('confirmed'):
+                issue('参考資料の確認', [], '品目のある原本は参考資料として除外できません。原本の内容を確認してください。', '停止')
+            else:
+                continue
         if s.get('amount_reading',{}).get('amount_notes') and not str(s.get('amount_notes_resolution') or '').strip():
             issue('原本金額の選択', [], 'NET金額・税込後の値引きがあります。原本の記載と採用する金額を確認してください。', '停止')
         if s.get("read_errors"):
@@ -353,13 +371,13 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
         if s.get("tax") is not None and s.get("gross_total") is not None and s.get("net_total") is not None:
             if integer(s["net_total"]) + integer(s["tax"]) != integer(s["gross_total"]):
                 issue("税合計", [], "原本の税抜小計＋税額と税込総額が一致しません。", "停止")
-            if s.get("tax_rate") in (0, 0.08, 0.10) and abs(integer(s["tax"]) - integer(s["net_total"]) * s["tax_rate"]) > 1:
+            if s.get("tax_rate") in (0, 0.08, 0.10) and abs(integer(s["tax"]) - integer(s["net_total"]) * s["tax_rate"]) > 1 and not section_tax_matches(s):
                 issue("税率不一致", [], "原本の税額と選択税率が一致しません。", "停止")
         elif s.get('gross_total') is not None and s.get('net_total') is not None and s.get('tax_rate') in (0,.08,.10):
             expected_tax = int((Decimal(str(s['net_total'])) * Decimal(str(s['tax_rate']))).quantize(Decimal(1),rounding=ROUND_HALF_UP))
             if integer(s['net_total']) + expected_tax != integer(s['gross_total']):
                 issue('税合計', [], '原本の合計と、工事金額に消費税を足した金額が一致しません。', '停止')
-    rates = {s.get("tax_rate") for s in sources}
+    rates = {s.get("tax_rate") for s in sources if not s.get("reference_only")}
     if len(rates) > 1:
         issue("税率混在", [], "仕入の税率が混在しています。顧客向け税率との対応を確認してください。")
     try:
@@ -451,14 +469,31 @@ def build_approved_estimate(draft, approval):
     return fill_estimate_v2(estimate_for_output(draft), save_to_disk=False)
 
 
+def _customer_source_project(source, rows):
+    """Use a short work title only when it cannot identify the source issuer."""
+    import unicodedata
+    title = str(source.get('project_name') or '').strip()
+    normalized = re.sub(r'\s+', '', unicodedata.normalize('NFKC', title).casefold())
+    if (not title or len(title) > 24 or re.search(r'株式会社|有限会社|合同会社|会社|御中|見積書|\(株\)|\(有\)|\.(?:pdf|png|jpe?g)', normalized)):
+        return ''
+    vendors = [source.get('vendor_name')] + [r.get('見積元') for r in rows if r.get('原本ID') == source['id']]
+    for vendor in vendors:
+        name = re.sub(r'\s+|株式会社|有限会社|合同会社|\(株\)|\(有\)', '', unicodedata.normalize('NFKC', str(vendor or '')).casefold())
+        if name and name not in ('不明', 'unknown', '業者名の記載なし') and name in normalized:
+            return ''
+    return title
+
+
 def estimate_for_output(draft):
     from template_fill_test_v2 import Category, Estimate, LineItem
     p = draft["payload"]
     categories = []
+    source_projects = {s['id']: _customer_source_project(s, p['計算明細']) for s in p['原本']}
     for r in p["計算明細"]:
         item = LineItem(name=r["品名"], spec=r.get("仕様", ""), qty=float(r["数量"]), unit=r["単位"],
                         unit_price=float(r["見積単価"]), amount=integer(r["見積金額"]),
-                        remark=str(r.get("顧客備考", "")), section=r.get("部位", ""), row_id=r['行ID'])
+                        remark=str(r.get("顧客備考", "")), section=r.get("部位", ""), row_id=r['行ID'],
+                        source_id=r.get('原本ID', ''), source_project=source_projects.get(r.get('原本ID'), ''))
         summary_only = bool(r.get("集計のみ", False))
         if summary_only:
             categories.append(Category(item.name, [item], summary_only=True))
@@ -473,13 +508,19 @@ def estimate_for_output(draft):
         raise ValueError("宛名と工事名称を入力してください。")
     estimate = Estimate("", m["宛名"], m["工事名称"], m.get("見積日", ""), m.get("有効期限", "30日"),
                         categories, p["値引き"], m.get("顧客税率", .10), reference_layout=False,
-                        pour_layout=True, source_count=len(p['原本']), page_breaks=tuple(m.get('改ページ', [])),
+                        pour_layout=True, source_count=sum(not s.get('reference_only') for s in p['原本']), page_breaks=tuple(m.get('改ページ', [])),
                         requested_pages=m.get('希望ページ', {}))
     return estimate
 
 
+def preview_allowed(draft):
+    # A suspected duplicate is a review choice, not a reason to hide the draft.
+    return all(i['種類'] in ('明細重複疑い','共通費重複疑い') and i['レベル']!='停止'
+               for i in draft['unresolved'])
+
+
 def build_preview(draft):
-    if draft['unresolved']:
+    if not preview_allowed(draft):
         raise ValueError('原本・金額・確認事項を先に確認してください。')
     from template_fill_test_v2 import fill_estimate_v2
     result = fill_estimate_v2(estimate_for_output(draft), save_to_disk=False)
