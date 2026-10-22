@@ -81,7 +81,7 @@ st.session_state['answers']=render_findings(st,{'payload':{'指摘':items,'計�
         self.assertTrue(all(value=='' for value in at.session_state['answers'].values()))
         at.checkbox[0].check().run()
         self.assertEqual(len(at.session_state['answers']),4)
-        self.assertTrue(all(value=='原本を確認し、施工範囲が別なので、両方使う' for value in at.session_state['answers'].values()))
+        self.assertTrue(all(value=='原本を確認し、施工範囲が別なので、すべて使う' for value in at.session_state['answers'].values()))
         at.checkbox[0].uncheck().run()
         self.assertTrue(all(value=='' for value in at.session_state['answers'].values()))
 

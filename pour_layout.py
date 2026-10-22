@@ -257,8 +257,13 @@ def build_outputs(estimate, template_path):
                 _set(summary,22,6,'全体小計')
                 _set(summary,21,1,'合計欄は、まとめ全ページを合わせた金額です。')
     cover['C13'] = "='明細1'!G24" if layout['compact'] else "='工事品目集計'!G26"
+    from print_layout import fit_numbers_text_rows
     for n, ws in enumerate(wb, 1):
         ws.oddFooter.right.text = f'{n} / {len(wb.worksheets)}'
+        if ws.title.startswith(SUMMARY_SHEET):
+            fit_numbers_text_rows(ws, 3, 18)
+        elif ws.title.startswith('明細'):
+            fit_numbers_text_rows(ws, 3, 22)
     wb.calculation.calcMode = 'auto'
     wb.calculation.fullCalcOnLoad = True
     output = BytesIO()
