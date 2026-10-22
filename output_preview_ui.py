@@ -34,6 +34,8 @@ def page_controls(st, rows, metadata):
 def render_preview(st, draft, valid):
     st.markdown('### 4. 完成イメージを見て、ページ分けを確認')
     st.caption('まだ確定しません。実際の流し込みデザインで、表紙から最後の明細まで確認できます。')
+    if draft['unresolved'] and valid:
+        st.info('重複の可能性がある品目を含む確認用です。仕上がりは先に見られます。提出用の確定前に、上の重複確認で採用する内容を決めてください。')
     if st.button('完成イメージを見る', key='review_preview', disabled=not valid):
         st.session_state.pop('_review_preview', None)
         try:

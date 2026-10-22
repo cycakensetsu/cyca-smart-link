@@ -10,7 +10,13 @@ from source_sections import reconcile_sections, reconcile_printed_totals
 def _total_mismatch(records, summaries, source_name):
     from source_amounts import money
     scoped = [s for s in summaries if s.get('__source_name') == source_name]
-    finals = [money(s.get('改小計',s.get('税抜合計'))) for s in scoped]
+    from document_scopes import printed_scopes
+    sections=printed_scopes(scoped,source_name)
+    if sections:
+        values=[money(r.get('金額')) for r in records if r.get('__source_name')==source_name]
+        return any(v is None for v in values) or sum(values)!=sum(s['net_total'] for s in sections)
+    finals = [money(s.get('改小計',s.get('税抜合計'))) for s in scoped if s.get('__page_role') in ('cover_summary_page','summary_page')]
+    if not finals: finals = [money(s.get('改小計',s.get('税抜合計'))) for s in scoped]
     finals = [n for n in finals if n is not None]
     if not finals:
         finals = [money(s['工事費計']) - money(s['消費税']) for s in scoped
@@ -103,8 +109,10 @@ def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
 
     summaries,records,ok=read(page)
     errors=[]
+    native_reconciled=False
     if page.whole_document and records:
         records,summaries=reconcile_native_pdf(path,records,summaries)
+        native_reconciled=True
     records=reconcile_sections(records,summaries,page.source_name)
     records=include_printed_discount(records,summaries,page.source_name,page.total_pages)
     frame,_=build_intermediate_dataframe(records)
@@ -119,8 +127,12 @@ def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
         except (TypeError,ValueError):
             return False
     missing_pages = any(not valid_page(row) for row in records)
+    covered={int(float(r['__page_number'])) for r in records+summaries
+             if r.get('__page_number') not in (None,'') and valid_page(r)}
+    incomplete_coverage=page.total_pages>1 and covered != set(range(1,page.total_pages+1))
     mismatched = _total_mismatch(records,summaries,page.source_name)
-    if page.whole_document and (not records or incomplete or missing_pages or mismatched):
+    if page.whole_document and (not records or incomplete or missing_pages or mismatched or incomplete_coverage):
+        native_reconciled=False
         whole_summaries=summaries
         # No partial PDF rows are combined with another reading. This avoids
         # doubling details when the image retry sees the same printed item.
@@ -136,8 +148,10 @@ def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
     if page.whole_document:
         if not records:
             errors.append({'source':page.source_name,'page':None,'reason':'no_details'})
-        else:
+        elif not native_reconciled:
             records,summaries=reconcile_native_pdf(path,records,summaries)
     records=reconcile_sections(records,summaries,page.source_name)
     records=include_printed_discount(records,summaries,page.source_name,page.total_pages)
+    from document_scopes import retain_scope_context
+    records=retain_scope_context(records,summaries,page.source_name)
     return summaries,records,models,errors

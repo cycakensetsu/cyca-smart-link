@@ -76,10 +76,14 @@ from review_findings_ui import render_findings
 items=[{'id':str(n),'種類':'共通費重複疑い','内容':'複数原本に足場があります','行':[],'レベル':'確認'} for n in range(4)]
 st.session_state['answers']=render_findings(st,{'payload':{'指摘':items,'計算明細':[]}},True)
 """).run()
-        self.assertEqual(len(at.text_input),1)
-        at.text_input[0].set_value('検証用・施工範囲を確認').run()
+        self.assertEqual(len(at.text_input),0)
+        self.assertEqual(len(at.checkbox),1)
+        self.assertTrue(all(value=='' for value in at.session_state['answers'].values()))
+        at.checkbox[0].check().run()
         self.assertEqual(len(at.session_state['answers']),4)
-        self.assertTrue(all(value=='検証用・施工範囲を確認' for value in at.session_state['answers'].values()))
+        self.assertTrue(all(value=='原本を確認し、施工範囲が別なので、両方使う' for value in at.session_state['answers'].values()))
+        at.checkbox[0].uncheck().run()
+        self.assertTrue(all(value=='' for value in at.session_state['answers'].values()))
 
     def test_file_without_items_does_not_ask_for_a_total_to_force_it_through(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -2,6 +2,8 @@
 from html import escape
 
 STYLE = '''<style>
+.cyca-received{margin:14px 0 18px;padding:18px 22px;background:#f3f7fa;border:1px solid #d8e4eb;border-radius:14px;color:#183248}.cyca-received-heading{display:flex;justify-content:space-between;align-items:center;font-size:17px;font-weight:700}.cyca-received-heading b{font-size:13px;background:#e0edf2;padding:3px 10px;border-radius:20px}.cyca-file-list{list-style:none;padding:0!important;margin:12px 0!important}.cyca-file-list li{display:flex;align-items:baseline;gap:12px;padding:10px 0;border-top:1px solid #dce6ed;font-size:14px;line-height:1.6;overflow-wrap:anywhere}.cyca-file-number{font-size:12px;color:#527589;flex:0 0 24px;font-variant-numeric:tabular-nums}.cyca-received p{font-size:13px;color:#526879;margin:8px 0 0}.cyca-file-list li span:last-child{white-space:pre-wrap}
+[data-testid="stFileUploaderFile"]{width:100%!important;min-width:0!important}[data-testid="stFileUploaderFileName"]{white-space:normal!important;overflow-wrap:anywhere;max-width:none!important}[data-testid="stFileUploaderFileNames"]{max-height:none!important;overflow:visible!important}
 .cyca-scan{position:relative;isolation:isolate;overflow:hidden;display:flex;align-items:center;gap:24px;padding:26px 30px;margin:16px 0;border:1px solid #24516b;border-radius:16px;background:radial-gradient(ellipse at 5% 10%,#0f4957aa,transparent 65%),#091727;color:#edf8ff;box-shadow:0 12px 32px #08223824}
 .cyca-scan:after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.2;background:linear-gradient(#4ccbd011 1px,transparent 1px),linear-gradient(90deg,#4ccbd011 1px,transparent 1px);background-size:24px 24px;z-index:-1}
 .cyca-ring{position:relative;flex:0 0 62px;width:62px;height:62px;border:1px solid #35798966;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:750;letter-spacing:.1em;color:#7ee9e6}
@@ -25,4 +27,7 @@ def loading_panel(count, page=None):
 
 
 def ready_panel(names, action_label='見積書を読み取る'):
-    return f'''<div class="cyca-scan cyca-ready"><div class="cyca-ring">LINK</div><div><div class="eyebrow">CYCA SMART LINK / READY</div><div class="headline">{len(names)}件の見積書を受け取りました。</div><div class="detail">{escape(' ／ '.join(names))}</div><div class="detail">次は「{escape(action_label)}」を押してください。読み取りが終わったら、元の見積書と見比べられます。</div></div></div>'''
+    rows = ''.join(f'<li><span class="cyca-file-number">{i:02}</span><span>{escape(name)}</span></li>'
+                   for i,name in enumerate(names,1))
+    return f'''<section class="cyca-received"><div class="cyca-received-heading"><span>受け取った見積書</span><b>{len(names)}件</b></div>
+<ol class="cyca-file-list">{rows}</ol><p>内容を確認する準備ができました。下の「{escape(action_label)}」を押してください。</p></section>'''

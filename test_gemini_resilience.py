@@ -120,6 +120,9 @@ class GeminiRetryTest(unittest.TestCase):
             def __len__(self):
                 return 3
 
+            def __iter__(self):
+                return iter([standard_types.SimpleNamespace(get_text=lambda: "十分な文字層を持つ元のPDFのページです。"*3)]*3)
+
         fake_fitz = standard_types.SimpleNamespace(open=lambda _: _FakePdfDocument())
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -138,6 +141,18 @@ class GeminiRetryTest(unittest.TestCase):
         prompt = build_page_prompt(jobs[0], 1)
         self.assertIn("全3ページ", prompt)
         self.assertIn("内訳合計", prompt)
+
+    def test_scanned_pdf_prepares_every_page_before_any_total_is_trusted(self):
+        class Scanned:
+            def __enter__(self):return self
+            def __exit__(self,*args):return False
+            def __len__(self):return 5
+            def __iter__(self):return iter([standard_types.SimpleNamespace(get_text=lambda:'')]*5)
+        expected=[standard_types.SimpleNamespace(page_number=p,total_pages=5,whole_document=False) for p in range(1,6)]
+        with patch.dict('sys.modules',{'fitz':standard_types.SimpleNamespace(open=lambda _:Scanned())}),patch('gemini_resilience._render_pdf_pages_as_images',return_value=expected):
+            jobs=prepare_upload_for_gemini_pages.__wrapped__('scan.pdf','scan.pdf')
+        self.assertEqual([j.page_number for j in jobs],[1,2,3,4,5])
+        self.assertTrue(all(not j.whole_document for j in jobs))
 
     def test_default_retry_budget_is_two_attempts_per_model(self):
         client = _FakeClient({"gemini-3.5-flash-lite": 2, "gemini-3.6-flash": 0})

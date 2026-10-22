@@ -65,6 +65,104 @@ class SourceSectionsTest(unittest.TestCase):
         for bad in ({**s,'消費税':9000},{**s,'端数調整':-5000},{**s,'抽出元テキスト範囲':'合計100,000'}):
             self.assertEqual(reconcile_printed_totals(bad),bad)
 
+    def test_printed_discounted_net_without_inclusive_text_does_not_invent_gross(self):
+        from source_sections import reconcile_printed_totals
+        source={'小計':110000,'端数調整':-10000,'改小計':None,'消費税':10000,'工事費計':100000,
+                '抽出元テキスト範囲':'小 計 110,000 調整値引き -10,000 合 計 100,000'}
+        original=copy.deepcopy(source)
+        fixed=reconcile_printed_totals(source)
+        self.assertEqual(fixed['改小計'],100000)
+        self.assertEqual(fixed['工事費計'],100000)
+        self.assertEqual(source,original)
+        for bad in ({**source,'端数調整':-9999},
+                    {**source,'抽出元テキスト範囲':'小計110000 値引き10000 合計100000'},
+                    {**source,'抽出元テキスト範囲':'小計110000 値引き-10000 合計100001'}):
+            self.assertEqual(reconcile_printed_totals(bad),bad)
+
+    def test_detail_summary_can_preserve_printed_net_and_normalize_discount_ledger(self):
+        from source_sections import reconcile_printed_totals
+        summary={'__source_name':'a.pdf','__page_number':1,'__page_role':'detail_page',
+                 '小計':30000,'端数調整':-1000,'消費税':2900,'工事費計':31900,
+                 '抽出元テキスト範囲':'小 計30,000 値 引 △1,000 合 計29,000 消 費 税2,900 合 計31,900'}
+        fixed=reconcile_printed_totals(summary)
+        self.assertEqual(fixed['改小計'],29000)
+        rows=[dict(品名='本体',数量=1,単位='台',単価=30000,金額=30000,__source_name='a.pdf',__page_number=1),
+              dict(品名='値引き',数量=None,単位='',単価=None,金額=-1000,
+                   抽出元テキスト範囲='値 引 △1,000',__source_name='a.pdf',__page_number=1)]
+        out=reconcile_sections(rows,[summary],'a.pdf')
+        self.assertEqual(len(out),2)
+        self.assertEqual((out[1]['数量'],out[1]['単位'],out[1]['単価']),(1,'式',-1000))
+        self.assertEqual(sum(r['金額'] for r in out),29000)
+        self.assertTrue(out[1]['__summary_only'])
+
+    def multi_cover_fixture(self):
+        def row(name,amount,page,**extra):
+            return dict(品名=name,数量=1,単位='式',単価=amount,金額=amount,
+                        見積元='確認用施工会社',__source_name='a.pdf',__page_number=page,**extra)
+        rows=[row('工事一式',110000,1),row('値引き',-10000,1),
+              row('本体',80000,2),row('施工',20000,2),row('荷揚げ',10000,3),
+              row('工事一式',20000,4),row('別本体',15000,5),row('別施工',5000,5)]
+        rows[1].update(数量=None,単位='',単価=None,抽出元テキスト範囲='調整値引き -10,000')
+        summaries=[]
+        for page,before,discount,after,tax in ((1,110000,-10000,100000,10000),(4,20000,-1000,19000,1900)):
+            summaries.append({'__source_name':'a.pdf','__page_number':page,'__page_role':'cover_summary_page',
+                '工事項目':[{'工事項目':'工事一式','金額':before}], '小計':before,'端数調整':discount,
+                '改小計':None,'消費税':tax,'工事費計':after,'見積元':'確認用施工会社',
+                '抽出元テキスト範囲':f'小計{before} 調整値引き {discount} 合計{after} 消費税{tax} 税込{after+tax}'})
+        return rows,summaries
+
+    def test_multiple_covers_bound_details_and_recover_only_printed_missing_discount(self):
+        rows,summaries=self.multi_cover_fixture();original=copy.deepcopy(rows)
+        out=reconcile_sections(rows,summaries,'a.pdf')
+        self.assertEqual(rows,original)
+        self.assertFalse(any(r['品名']=='工事一式' for r in out))
+        self.assertEqual(len(out),7)
+        self.assertEqual(sum(r['金額'] for r in out),119000)
+        discounts=[r for r in out if r['金額']<0]
+        self.assertEqual(sorted((r['__page_number'],r['金額']) for r in discounts),[(1,-10000),(4,-1000)])
+        self.assertTrue(all(r['数量']==1 and r['単位']=='式' and r['単価']==r['金額'] for r in discounts))
+        again=reconcile_sections(out,summaries,'a.pdf')
+        self.assertEqual(again,out,'reconciliation must not duplicate an already recovered ledger entry')
+
+    def test_next_cover_details_cannot_prove_previous_cover_aggregate(self):
+        rows,summaries=self.multi_cover_fixture()
+        rows[0].update(金額=130000,単価=130000)
+        summaries[0]['工事項目'][0]['金額']=130000
+        out=reconcile_sections(rows,summaries,'a.pdf')
+        self.assertTrue(any(r['品名']=='工事一式' and r['__page_number']==1 for r in out))
+
+    def test_unique_full_detail_pages_can_prove_broadly_classified_cover_headings(self):
+        summary={'__source_name':'a.pdf','__page_number':1,'__page_role':'cover_summary_page',
+                 '工事項目':[{'工事項目':'外壁改修工事費','金額':30000},
+                              {'工事項目':'屋上改修工事','金額':40000}]}
+        rows=[dict(品名='外壁改修工事',数量=1,単位='式',単価=30000,金額=30000,__source_name='a.pdf',__page_number=1),
+              dict(品名='屋上改修工事',数量=1,単位='式',単価=40000,金額=40000,__source_name='a.pdf',__page_number=1)]
+        for page,values in ((2,(10000,20000)),(3,(15000,25000))):
+            for value in values:
+                rows.append(dict(品名='原本にある施工',数量=1,単位='式',単価=value,金額=value,
+                                 工事種別='改修工事',__source_name='a.pdf',__page_number=page))
+        out=reconcile_sections(rows,[summary],'a.pdf')
+        self.assertEqual(out,rows[2:])
+        duplicate_page=[dict(r,__page_number=4) for r in rows[2:4]]
+        ambiguous=reconcile_sections(rows+duplicate_page,[summary],'a.pdf')
+        self.assertTrue(any(r['品名']=='外壁改修工事' for r in ambiguous))
+        partial=[dict(rows[2],金額=30000,単価=30000)]+rows[3:]
+        ambiguous=reconcile_sections(rows[:2]+partial,[summary],'a.pdf')
+        self.assertTrue(any(r['品名']=='外壁改修工事' for r in ambiguous),
+                        'a matching subset on a page is insufficient when the full page total differs')
+
+    def test_missing_discount_is_never_filled_from_an_unverified_residual(self):
+        for mutation in ('no_text','positive_text','wrong_before','wrong_discount','no_page','wrong_source'):
+            rows,summaries=self.multi_cover_fixture();second=summaries[1]
+            if mutation=='no_text':second['抽出元テキスト範囲']=''
+            elif mutation=='positive_text':second['抽出元テキスト範囲']=second['抽出元テキスト範囲'].replace('-1000','1000')
+            elif mutation=='wrong_before':second['小計']=20001
+            elif mutation=='wrong_discount':second['端数調整']=-999
+            elif mutation=='no_page':second['__page_number']=None
+            elif mutation=='wrong_source':second['__source_name']='different.pdf'
+            out=reconcile_sections(rows,summaries,'a.pdf')
+            self.assertFalse(any(r['__page_number']==4 and r['金額']<0 for r in out),mutation)
+
     def fixture(self):
         source={'id':'source-a','name':'a.pdf','pages':1,'net_total':110095,'tax_basis':'税抜','tax_rate':.1,'confirmed':True}
         records=[dict(品名='測定数量の工事',仕様='原本仕様',数量=10.1,単位='㎡',単価=1000,金額=10095,見積元='検証社',工事種別='取付工事',抽出元テキスト範囲='測定数量の工事 10.1㎡ 単価1,000 金額10,095',__source_name='a.pdf',__page_number=1),
@@ -108,3 +206,14 @@ class SourceSectionsTest(unittest.TestCase):
         self.assertIn('明細検算',[i['種類'] for i in draft['unresolved']])
         row=copy.deepcopy(rows[0]);row['原価金額']=9000
         self.assertIsNone(printed_rounding(row))
+
+
+class PrintedTotalLabelRegression(unittest.TestCase):
+    def test_two_printed_totals_separated_by_discount_are_retained_without_inventing_a_fee(self):
+        from source_sections import reconcile_printed_totals
+        source={'小計':1100,'端数調整':-100,'工事費計':1000,'消費税':100,
+                '抽出元テキスト範囲':'合計 1,100 / 調整値引き -100 / 合計 1,000 / 消費税 100'}
+        result=reconcile_printed_totals(source)
+        self.assertEqual(result['改小計'],1000)
+        self.assertEqual(result['工事費計'],1000)
+        self.assertNotIn('改小計',source)

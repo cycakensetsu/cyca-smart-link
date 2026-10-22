@@ -647,13 +647,12 @@ if uploaded_files:
             st.error("APIキーが設定されていません。環境変数 GOOGLE_API_KEY または .streamlit/secrets.toml に GOOGLE_API_KEY を設定してください。")
         else:
                 try:
-                    preserve_uploads(st, uploaded_files)
+                    prepared_uploads = preserve_uploads(st, uploaded_files)
                     configure_gemini_logging()
-                    client = genai.Client(api_key=MY_API_KEY)
                     all_extracted_data = []
                     summary_sources = []
                     analysis_errors = []
-                    n_files = len(uploaded_files)
+                    n_files = len(prepared_uploads)
 
                     progress_bar = st.progress(0, text="原本を読み取りに送る準備をしています…")
                     status_area = st.empty()
@@ -663,7 +662,10 @@ if uploaded_files:
                     page_jobs = []
                     temp_paths = []
                     source_paths = {}
-                    for i, uploaded_file in enumerate(uploaded_files):
+                    for i, (source, uploaded_file) in enumerate(prepared_uploads):
+                        if source.get('prepare_error'):
+                            analysis_errors.append({'source':source['name'],'page':None,'reason':'prepare_failed'})
+                            continue
                         progress_bar.progress(int((i / n_files) * 30), text=f"📄 PDF/画像をページ単位に準備中... ({i+1}/{n_files})")
                         file_extension = os.path.splitext(uploaded_file.name)[1].lower() or ".pdf"
                         if not file_extension.startswith("."):
@@ -675,7 +677,11 @@ if uploaded_files:
                         with open(temp_file_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
 
-                        jobs = prepare_upload_for_gemini_pages(temp_file_path, uploaded_file.name)
+                        try:
+                            jobs = prepare_upload_for_gemini_pages(temp_file_path, source['name'])
+                        except Exception:
+                            analysis_errors.append({'source':source['name'],'page':None,'reason':'prepare_failed'})
+                            continue
                         for job in jobs:
                             source_paths[id(job)] = temp_file_path
                         page_jobs.extend(jobs)
@@ -686,57 +692,64 @@ if uploaded_files:
 
                     primary_model, fallback_models = get_configured_gemini_models(st.secrets)
                     successful_models = []
+                    from extraction_batch import extract_batch
+                    finished = 0
+                    timing_rows = []
+                    for event in extract_batch(page_jobs, source_paths, n_files,
+                            client_factory=lambda: genai.Client(api_key=MY_API_KEY, http_options={"timeout":90000}),
+                            primary_model=primary_model, fallback_models=fallback_models,
+                            cache=st.session_state.setdefault('_extraction_cache', {})):
+                        kind = event['kind']
+                        if kind == 'done':
+                            finished += 1
+                            timing_rows.append({k:event[k] for k in ('index','cached','seconds')})
+                            progress_bar.progress(30 + int(finished / max(len(page_jobs),1) * 55),
+                                text=f"{finished} / {len(page_jobs)}ページの読み取りが終わりました")
+                        elif kind == 'reading':
+                            status_area.markdown(loading_panel(n_files), unsafe_allow_html=True)
+                            status_label = event['source']
+                            if event.get('page'): status_label += f"（{event['page']}ページ）"
+                            st.session_state['_reading_status'] = status_label
+                            progress_bar.progress(30 + int(finished / max(len(page_jobs),1) * 55),
+                                text=f"{finished} / {len(page_jobs)}ページ完了 ｜ 読み取り中：{status_label}")
+                        elif kind == 'retry':
+                            status_area.info(f"「{event['source']}」を再確認しています。他の見積の読み取りも進めています。")
+                        elif kind == 'result':
+                            for summaries, records, models, errors in event['results']:
+                                summary_sources.extend(summaries)
+                                all_extracted_data.extend(records)
+                                successful_models.extend(models)
+                                analysis_errors.extend(errors)
+                    st.session_state['_extraction_timings'] = timing_rows
 
-                    def _on_gemini_model_start(model_name, page_number):
-                        status_area.markdown(loading_panel(n_files, page_number), unsafe_allow_html=True)
-
-                    def _on_gemini_retry(model_name, attempt, delay, error_code, page_number):
-                        status_area.warning(f"AIが混み合っています。{int(delay)}秒後に自動で再試行します。入力した原本はそのままです。")
-
-                    total_pages = max(len(page_jobs), 1)
-                    for page_idx, page in enumerate(page_jobs, start=1):
-                        analysis_label = (
-                            f"{page.source_name} 全{page.total_pages}ページを一括解析中..."
-                            if page.whole_document
-                            else f"{page.source_name} {page.page_number}/{page.total_pages}ページを解析中..."
-                        )
-                        analysis_page_number = None if page.whole_document else page.page_number
-                        progress = 30 + int((page_idx - 1) / total_pages * 50)
-                        progress_bar.progress(
-                            progress,
-                            text=f"🔍 {analysis_label}"
-                        )
-                        status_area.markdown(loading_panel(n_files), unsafe_allow_html=True)
-
-                        from source_extraction import extract_job
-                        page_summaries,page_records,page_models,page_errors = extract_job(
-                            client,page,source_paths[id(page)],n_files,
-                            primary_model=primary_model,fallback_models=fallback_models,
-                            on_retry=_on_gemini_retry,on_model_start=_on_gemini_model_start)
-                        successful_models.extend(page_models)
-                        summary_sources.extend(page_summaries)
-                        all_extracted_data.extend(page_records)
-                        analysis_errors.extend(page_errors)
-
+                    from extraction_batch import reconcile_document_results
+                    all_extracted_data,summary_sources=reconcile_document_results(
+                        st.session_state['_review_sources'],all_extracted_data,summary_sources)
                     if successful_models:
                         log_gemini_analysis_complete(successful_models, len(page_jobs))
-                        st.toast("原本の読み取りが完了しました。内容を確認しましょう。", icon=":material/check_circle:")
+
 
                     _cleanup_temp_paths(temp_paths)
                     progress_bar.progress(80, text="📊 データを整理しています...")
 
-                    progress_bar.progress(100, text="読み取り完了。原本との確認へ進みます。")
+                    progress_bar.progress(90, text="原本と品目の対応・金額を確認しています…")
                     status_area.empty()
-                    time.sleep(0.3)
 
                     if not all_extracted_data:
-                        st.warning("読み取れたデータがありませんでした。ファイル形式（PDF・JPG・PNG）と内容をご確認ください。")
+                        from extraction_batch import extraction_notice
+                        st.info(extraction_notice(analysis_errors))
                     else:
                         all_extracted_data, vendor_assign_debug_rows = assign_unknown_vendors_to_pdf_vendor(all_extracted_data, summary_sources)
                         summary_data = normalize_summary_data(summary_sources)
                         detail_df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
                         cost_df, vendor_summaries = build_cost_basis_dataframe(summary_data, detail_df)
                         capture_extraction(st, detail_df, summary_data, all_extracted_data, analysis_errors)
+                        progress_bar.progress(100, text="読み取り結果を下に表示しました。")
+                        if analysis_errors:
+                            from extraction_batch import extraction_notice
+                            st.info(extraction_notice(analysis_errors, empty=False))
+                        else:
+                            st.toast("読み取り結果を下に表示しました。", icon=":material/check_circle:")
                         cue(st, "read")
                         if profit_mode == REVIEW_MODE:
                             raise _CatInputNeeded()
