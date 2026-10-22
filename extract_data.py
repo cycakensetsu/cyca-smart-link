@@ -372,7 +372,7 @@ if not st.session_state.logged_in:
     else:
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
     st.markdown("---")
-    st.caption("更新 2026.10.22 / 見積の読み取り・確認を改善")
+    st.caption("更新 2026.10.22 / 5ステップ・原本との左右比較")
     st.subheader("🔐 ログイン")
     if not load_users():
         st.info("管理者によるログイン設定が必要です。設定完了後にご利用いただけます。")
@@ -393,7 +393,7 @@ if not st.session_state.logged_in:
 if "username" not in st.session_state:
     st.session_state.username = ""
 with st.sidebar:
-    st.caption("更新 2026.10.22 / 見積の読み取り・確認を改善")
+    st.caption("更新 2026.10.22 / 5ステップ・原本との左右比較")
     from markup_rules import RULE_DESCRIPTION, RULE_VERSION
     with st.expander(f"配分ルール（{RULE_VERSION}）"):
         st.write(RULE_DESCRIPTION)
