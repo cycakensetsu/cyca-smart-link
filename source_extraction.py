@@ -1,5 +1,7 @@
 """Read one upload; retry an empty PDF response as page images once."""
 import json
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from gemini_resilience import (call_gemini_with_retry, build_page_prompt,
                                parse_gemini_json_payload, _render_pdf_pages_as_images)
 from estimate_pipeline import split_extraction_payload, build_intermediate_dataframe, validate_intermediate
@@ -88,26 +90,33 @@ def include_printed_discount(records, summaries, source_name, total_pages):
 
 
 def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
-                on_retry=None, on_model_start=None):
+                on_retry=None, on_model_start=None, client_factory=None,
+                network_gate=None, max_network_workers=4):
     models=[]
+    if network_gate is None:
+        from extraction_batch import _NETWORK_GATE
+        network_gate=_NETWORK_GATE
 
-    def read(job):
-        result=call_gemini_with_retry(client,job.parts+[build_page_prompt(job,n_files)],
-            primary_model=primary_model,fallback_models=fallback_models,
-            page_number=None if job.whole_document else job.page_number,
-            source_name=job.source_name,on_retry=on_retry,on_model_start=on_model_start)
-        models.append(result.model_name)
+    def read(job, reader_client, *, gate_held=False):
+        # Only network work takes this shared gate. Native PDF parsing retains
+        # its separate one-process limit and cannot deadlock network readers.
+        with (nullcontext() if gate_held else network_gate):
+            result=call_gemini_with_retry(reader_client,job.parts+[build_page_prompt(job,n_files)],
+                primary_model=primary_model,fallback_models=fallback_models,
+                page_number=None if job.whole_document else job.page_number,
+                source_name=job.source_name,on_retry=on_retry,on_model_start=on_model_start)
         if not result.text:
-            return [],[],False
+            return [],[],False,result.model_name
         try:
             summaries,records=split_extraction_payload(parse_gemini_json_payload(result.text),
                 source_name=job.source_name,page_number=None if job.whole_document else job.page_number)
             summaries=[reconcile_printed_totals(s) for s in summaries]
-            return summaries,records,True
+            return summaries,records,True,result.model_name
         except json.JSONDecodeError:
-            return [],[],False
+            return [],[],False,result.model_name
 
-    summaries,records,ok=read(page)
+    summaries,records,ok,model=read(page,client)
+    models.append(model)
     errors=[]
     native_reconciled=False
     if page.whole_document and records:
@@ -137,11 +146,40 @@ def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
         # No partial PDF rows are combined with another reading. This avoids
         # doubling details when the image retry sees the same printed item.
         summaries,records=[],[]
-        for image_page in _render_pdf_pages_as_images(path,page.source_name):
-            page_summaries,page_records,page_ok=read(image_page)
-            summaries.extend(page_summaries);records.extend(page_records)
-            if not page_ok:
-                errors.append({'source':page.source_name,'page':image_page.page_number})
+        image_pages=_render_pdf_pages_as_images(path,page.source_name)
+        def read_image(image_page):
+            reader_client=None
+            try:
+                # Do not construct many SDK/TLS clients while waiting for a
+                # network slot. Only active page readers own an extra client.
+                with network_gate:
+                    try:
+                        reader_client=client_factory()
+                        ss,rr,success,used_model=read(image_page,reader_client,gate_held=True)
+                        failed=[] if success else [{'source':page.source_name,'page':image_page.page_number,'reason':'read_failed'}]
+                        return ss,rr,used_model,failed
+                    finally:
+                        if reader_client is not None and callable(getattr(reader_client,'close',None)):
+                            try:reader_client.close()
+                            except Exception:pass
+            except Exception as error:
+                from extraction_batch import extraction_failure_reason
+                return [],[],None,[{'source':page.source_name,'page':image_page.page_number,
+                                   'reason':extraction_failure_reason(error)}]
+        if client_factory is not None and len(image_pages)>1:
+            with ThreadPoolExecutor(max_workers=max(1,min(max_network_workers,4,len(image_pages)))) as executor:
+                futures=[executor.submit(read_image,image_page) for image_page in image_pages]
+                # Gather in physical-page order, irrespective of completion order.
+                for future in futures:
+                    ss,rr,used_model,failed=future.result()
+                    summaries.extend(ss);records.extend(rr);errors.extend(failed)
+                    if used_model:models.append(used_model)
+        else:
+            for image_page in image_pages:
+                page_summaries,page_records,page_ok,used_model=read(image_page,client)
+                summaries.extend(page_summaries);records.extend(page_records);models.append(used_model)
+                if not page_ok:
+                    errors.append({'source':page.source_name,'page':image_page.page_number})
         summaries=_reread_summaries(whole_summaries,summaries)
     elif not ok:
         errors.append({'source':page.source_name,'page':page.page_number})

@@ -26,8 +26,9 @@ def loading_panel(count, page=None):
     return f'''<div class="cyca-scan" role="status"><div class="cyca-ring">AI</div><div style="flex:1"><div class="eyebrow">CYCA SMART LINK / ANALYZING</div><div class="headline">{int(count)}件の原本から、見積の構成を読み解く。</div><div class="detail">{detail}</div><div class="cyca-track"><i></i></div></div></div>'''
 
 
-def ready_panel(names, action_label='見積書を読み取る'):
+def ready_panel(names, action_label='見積書を読み取る', *, read=False):
     rows = ''.join(f'<li><span class="cyca-file-number">{i:02}</span><span>{escape(name)}</span></li>'
                    for i,name in enumerate(names,1))
+    message = ('読み取り済みです。下のステップ2で原本と品目を確認してください。' if read else f'下の「{escape(action_label)}」を押すと、読み取りが始まります。')
     return f'''<section class="cyca-received"><div class="cyca-received-heading"><span>受け取った見積書</span><b>{len(names)}件</b></div>
-<ol class="cyca-file-list">{rows}</ol><p>内容を確認する準備ができました。下の「{escape(action_label)}」を押してください。</p></section>'''
+<ol class="cyca-file-list">{rows}</ol><p>{message}</p></section>'''

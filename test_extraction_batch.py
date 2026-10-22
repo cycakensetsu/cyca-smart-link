@@ -24,7 +24,7 @@ class BatchTest(unittest.TestCase):
                 with lock:active-=1
                 return [],[{'__source_name':job.source_name,'__page_number':1,'name':job.source_name,'品名':'検証品目','数量':1,'単位':'式','単価':100,'金額':100}],['fake'],[]
             cache={}
-            kwargs=dict(client_factory=factory,primary_model='fake',fallback_models=[],cache=cache,extractor=read)
+            kwargs=dict(client_factory=factory,primary_model='fake',fallback_models=[],cache=cache,extractor=read,max_workers=2)
             events=list(extract_batch(jobs,paths,4,**kwargs))
             self.assertEqual(peak,2)
             self.assertEqual([r[1][0]['name'] for r in events[-1]['results']],[j.source_name for j in jobs])

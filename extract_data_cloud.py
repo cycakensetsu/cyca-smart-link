@@ -185,7 +185,7 @@ def check_login(username: str, password: str) -> bool:
 # ==========================================
 # 🎨 CYCA ブランドデザイン（ロゴに合わせたモダン・高揚感）
 # ==========================================
-st.set_page_config(page_title="CYCA smart Link（ベータ版）", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="CYCA smart Link（ベータ版）", page_icon="🏗️", layout="wide", initial_sidebar_state="collapsed")
 
 # ロゴパス（実行ディレクトリ基準）
 LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "cyca_logo.png")
@@ -372,7 +372,7 @@ if not st.session_state.logged_in:
     else:
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
     st.markdown("---")
-    st.caption("更新 2026.10.22 / 見積の読み取り・確認を改善")
+    st.caption("更新 2026.10.22 / 5ステップ・原本との左右比較")
     st.subheader("🔐 ログイン")
     if not load_users():
         st.info("管理者によるログイン設定が必要です。設定完了後にご利用いただけます。")
@@ -393,7 +393,7 @@ if not st.session_state.logged_in:
 if "username" not in st.session_state:
     st.session_state.username = ""
 with st.sidebar:
-    st.caption("更新 2026.10.22 / 見積の読み取り・確認を改善")
+    st.caption("更新 2026.10.22 / 5ステップ・原本との左右比較")
     from markup_rules import RULE_DESCRIPTION, RULE_VERSION
     with st.expander(f"配分ルール（{RULE_VERSION}）"):
         st.write(RULE_DESCRIPTION)
@@ -486,7 +486,9 @@ with st.expander("従来の利益設定・出力形式を使う", expanded=False
 
 st.markdown("---")
 effects_slot = st.container()
-st.markdown('<div class="sub-header">業者の見積書を入れる</div>', unsafe_allow_html=True)
+workflow_slot = st.empty()
+from workflow_steps_ui import render_step_heading, render_workflow_status
+render_step_heading(st, 1)
 st.caption("PDF・写真を選べます。複数の業者分もまとめて選べます（1ファイル20MBまで）。")
 st.caption("見積を読み込んだ後は、マイクで今回の要望を伝えて相談できます。")
 
@@ -518,6 +520,9 @@ if st.session_state.get("_upload_signature") != upload_signature:
     if uploaded_files:
         cue(st, "upload")
 
+if profit_mode == REVIEW_MODE:
+    with workflow_slot.container():
+        render_workflow_status(st)
 
 if format_choice == HORIZONTAL_FORMAT and profit_mode != REVIEW_MODE:
     st.text_input("宛名（出力用・敬称まで入力）", key="output_customer", placeholder="例：塚本 様")
@@ -635,7 +640,8 @@ if uploaded_files:
         "✨ 新しい見積書を解析してNumbers用に流し込む ✨"
         if format_choice == HORIZONTAL_FORMAT else "✨ AIでデータを解析 ＆ 利益計算を実行する ✨"
     )
-    st.markdown(ready_panel([f.name for f in uploaded_files], analyze_label), unsafe_allow_html=True)
+    intake_panel = st.empty()
+    intake_panel.markdown(ready_panel([f.name for f in uploaded_files], analyze_label, read=bool(st.session_state.get("_review_original_rows"))), unsafe_allow_html=True)
     analyze_clicked = st.button(analyze_label)
     horizontal_output_slot = st.empty()
     if st.session_state.pop("_force_analyze", False):
@@ -647,6 +653,8 @@ if uploaded_files:
             st.error("APIキーが設定されていません。環境変数 GOOGLE_API_KEY または .streamlit/secrets.toml に GOOGLE_API_KEY を設定してください。")
         else:
                 try:
+                    read_started = time.monotonic()
+                    intake_panel.empty()
                     prepared_uploads = preserve_uploads(st, uploaded_files)
                     configure_gemini_logging()
                     all_extracted_data = []
@@ -662,11 +670,30 @@ if uploaded_files:
                     page_jobs = []
                     temp_paths = []
                     source_paths = {}
+                    primary_model, fallback_models = get_configured_gemini_models(st.secrets)
+                    from complete_document_cache import get_document, put_document
+                    document_cache = st.session_state.setdefault('_complete_document_cache', {})
+                    successful_models = []
+                    document_models = {}
+                    cached_pages = 0
+                    reparse_source = st.session_state.pop('_review_reparse_source', None)
+                    total_pages = sum(source.get('pages', 1) for source, _ in prepared_uploads)
                     for i, (source, uploaded_file) in enumerate(prepared_uploads):
                         if source.get('prepare_error'):
                             analysis_errors.append({'source':source['name'],'page':None,'reason':'prepare_failed'})
                             continue
-                        progress_bar.progress(int((i / n_files) * 30), text=f"📄 PDF/画像をページ単位に準備中... ({i+1}/{n_files})")
+                        cached = (None if source['id'] == reparse_source else
+                            get_document(document_cache, source,
+                                primary_model=primary_model, fallback_models=fallback_models))
+                        if cached is not None:
+                            summaries, records, models, errors = cached
+                            summary_sources.extend(summaries)
+                            all_extracted_data.extend(records)
+                            successful_models.extend(models)
+                            document_models[source['name']] = models
+                            cached_pages += source['pages']
+                            continue
+                        progress_bar.progress(int((i / n_files) * 25), text=f"ステップ1：見積の準備 {i+1}/{n_files}件 ｜ {int(time.monotonic()-read_started)}秒")
                         file_extension = os.path.splitext(uploaded_file.name)[1].lower() or ".pdf"
                         if not file_extension.startswith("."):
                             file_extension = "." + file_extension
@@ -686,51 +713,69 @@ if uploaded_files:
                             source_paths[id(job)] = temp_file_path
                         page_jobs.extend(jobs)
 
-                    progress_bar.progress(30, text=f"🔍 AI が{len(page_jobs)}件を解析中...")
-
+                    prepared_seconds = time.monotonic() - read_started
                     status_area.markdown(loading_panel(n_files), unsafe_allow_html=True)
-
-                    primary_model, fallback_models = get_configured_gemini_models(st.secrets)
-                    successful_models = []
                     from extraction_batch import extract_batch
-                    finished = 0
+                    finished_pages = cached_pages
                     timing_rows = []
+                    active_label = '読み取りを始めています'
+                    def show_read_progress():
+                        elapsed = int(time.monotonic() - read_started)
+                        progress_bar.progress(25 + int(finished_pages / max(total_pages, 1) * 60),
+                            text=f"ステップ1：{finished_pages}/{total_pages}ページ処理済み ｜ {elapsed}秒 ｜ {active_label}")
+                    show_read_progress()
                     for event in extract_batch(page_jobs, source_paths, n_files,
                             client_factory=lambda: genai.Client(api_key=MY_API_KEY, http_options={"timeout":90000}),
                             primary_model=primary_model, fallback_models=fallback_models,
                             cache=st.session_state.setdefault('_extraction_cache', {})):
                         kind = event['kind']
                         if kind == 'done':
-                            finished += 1
+                            job = page_jobs[event['index']]
+                            finished_pages += job.total_pages if job.whole_document else 1
                             timing_rows.append({k:event[k] for k in ('index','cached','seconds')})
-                            progress_bar.progress(30 + int(finished / max(len(page_jobs),1) * 55),
-                                text=f"{finished} / {len(page_jobs)}ページの読み取りが終わりました")
+                            show_read_progress()
                         elif kind == 'reading':
-                            status_area.markdown(loading_panel(n_files), unsafe_allow_html=True)
-                            status_label = event['source']
-                            if event.get('page'): status_label += f"（{event['page']}ページ）"
-                            st.session_state['_reading_status'] = status_label
-                            progress_bar.progress(30 + int(finished / max(len(page_jobs),1) * 55),
-                                text=f"{finished} / {len(page_jobs)}ページ完了 ｜ 読み取り中：{status_label}")
+                            active_label = event['source']
+                            if event.get('page'): active_label += f"（{event['page']}ページ）"
+                            st.session_state['_reading_status'] = active_label
+                            show_read_progress()
+                        elif kind == 'waiting':
+                            show_read_progress()
                         elif kind == 'retry':
-                            status_area.info(f"「{event['source']}」を再確認しています。他の見積の読み取りも進めています。")
+                            active_label = '読み直し中：' + event['source']
+                            show_read_progress()
                         elif kind == 'result':
-                            for summaries, records, models, errors in event['results']:
+                            for job, (summaries, records, models, errors) in zip(page_jobs, event['results']):
                                 summary_sources.extend(summaries)
                                 all_extracted_data.extend(records)
                                 successful_models.extend(models)
+                                document_models.setdefault(job.source_name, []).extend(models)
                                 analysis_errors.extend(errors)
                     st.session_state['_extraction_timings'] = timing_rows
+                    st.session_state['_extraction_elapsed_seconds'] = time.monotonic() - read_started
+                    st.session_state['_extraction_preparation_seconds'] = prepared_seconds
+                    st.session_state['_extraction_reused_pages'] = cached_pages
 
+                    source_order = {source['name']: index for index, (source, _) in enumerate(prepared_uploads)}
+                    all_extracted_data.sort(key=lambda row: source_order.get(row.get('__source_name'), n_files))
+                    summary_sources.sort(key=lambda row: source_order.get(row.get('__source_name'), n_files))
                     from extraction_batch import reconcile_document_results
                     all_extracted_data,summary_sources=reconcile_document_results(
                         st.session_state['_review_sources'],all_extracted_data,summary_sources)
+                    for source, _ in prepared_uploads:
+                        source_result = (
+                            [r for r in summary_sources if r.get('__source_name') == source['name']],
+                            [r for r in all_extracted_data if r.get('__source_name') == source['name']],
+                            document_models.get(source['name'], []),
+                            [e for e in analysis_errors if e.get('source') == source['name']])
+                        put_document(document_cache, source, source_result,
+                            primary_model=primary_model, fallback_models=fallback_models)
                     if successful_models:
                         log_gemini_analysis_complete(successful_models, len(page_jobs))
 
 
                     _cleanup_temp_paths(temp_paths)
-                    progress_bar.progress(80, text="📊 データを整理しています...")
+                    progress_bar.progress(86, text="品目と金額を整理しています…")
 
                     progress_bar.progress(90, text="原本と品目の対応・金額を確認しています…")
                     status_area.empty()
@@ -744,7 +789,8 @@ if uploaded_files:
                         detail_df, pdf_totals = build_intermediate_dataframe(all_extracted_data)
                         cost_df, vendor_summaries = build_cost_basis_dataframe(summary_data, detail_df)
                         capture_extraction(st, detail_df, summary_data, all_extracted_data, analysis_errors)
-                        progress_bar.progress(100, text="読み取り結果を下に表示しました。")
+                        st.session_state['_extraction_elapsed_seconds'] = time.monotonic() - read_started
+                        progress_bar.progress(100, text=f"読み取り完了 ｜ {int(st.session_state['_extraction_elapsed_seconds'])}秒。ステップ2で内容を確認してください。")
                         if analysis_errors:
                             from extraction_batch import extraction_notice
                             st.info(extraction_notice(analysis_errors, empty=False))
@@ -1161,6 +1207,8 @@ if uploaded_files and format_choice == HORIZONTAL_FORMAT:
 
 if profit_mode == REVIEW_MODE:
     render_review(st, api_key=MY_API_KEY)
+    with workflow_slot.container():
+        render_workflow_status(st)
 
 if profit_mode != REVIEW_MODE:
     render_draft_exports(st, legacy_export_signature())

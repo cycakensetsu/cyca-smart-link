@@ -5,6 +5,11 @@ from pathlib import Path
 from queue import Queue, Empty
 from concurrent.futures import ThreadPoolExecutor
 from time import monotonic
+import threading
+
+MAX_NETWORK_WORKERS = 4
+# Preserve the same gate when coordinated source reloads overlap old workers.
+_NETWORK_GATE = globals().get('_NETWORK_GATE') or threading.BoundedSemaphore(MAX_NETWORK_WORKERS)
 
 
 def extraction_failure_reason(error):
@@ -45,22 +50,22 @@ def extraction_notice(errors, *, empty=True):
 def pipeline_version():
     digest=hashlib.sha256()
     for name in ('extraction_batch','source_extraction','source_table','source_sections',
-                 'document_scopes','estimate_pipeline','gemini_resilience','cyca_reference','source_amounts','markup_rules','pdf_worker'):
+                 'document_scopes','estimate_pipeline','gemini_resilience','cyca_reference','source_amounts','markup_rules','pdf_worker','complete_document_cache'):
         digest.update((Path(__file__).parent/(name+'.py')).read_bytes())
     return digest.hexdigest()
 
 
 def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
-                  fallback_models, cache=None, max_workers=2, extractor=None):
+                  fallback_models, cache=None, max_workers=4, extractor=None):
     """Yield UI-safe progress events; complete payloads in original input order.
 
     Results stay in the caller's authenticated session, keyed by original bytes,
     exact filename, model settings and parser revision. Failed reads are retried.
     Each network worker owns its client. Native PDF work stays process-isolated.
     """
-    if extractor is None:
-        from source_extraction import extract_job
-        extractor=extract_job
+    from source_extraction import extract_job
+    production_extractor = extractor is None or extractor is extract_job
+    if extractor is None:extractor=extract_job
     cache=cache if cache is not None else {}
     version=pipeline_version()
     events=Queue();results={};pending=[];keys={}
@@ -81,6 +86,8 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
             client=client_factory()
             result=extractor(client,job,paths[id(job)],n_files,
                 primary_model=primary_model,fallback_models=fallback_models,
+                **({'client_factory':client_factory,'network_gate':_NETWORK_GATE,
+                    'max_network_workers':max(1,min(max_workers,MAX_NETWORK_WORKERS))} if production_extractor else {}),
                 on_retry=lambda model,attempt,delay,code,page:events.put(
                     {'kind':'retry','index':index,'source':job.source_name,'seconds':delay,'page':page}),
                 on_model_start=lambda model,page:events.put(
@@ -95,13 +102,21 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
         events.put({'kind':'done','index':index,'source':job.source_name,
                     'cached':False,'seconds':monotonic()-started,'result':result})
 
-    yield {'kind':'started','total':len(jobs),'cached':len(results),'workers':min(max_workers,len(pending))}
-    with ThreadPoolExecutor(max_workers=max(1,min(max_workers,2))) as executor:
+    workers=max(1,min(max_workers,MAX_NETWORK_WORKERS))
+    batch_started=monotonic();last_wait=batch_started
+    yield {'kind':'started','total':len(jobs),'cached':len(results),'workers':min(workers,len(pending))}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         futures=[executor.submit(work,index,job) for index,job in pending]
         completed=0
         while completed<len(pending):
             try:event=events.get(timeout=.2)
-            except Empty:continue
+            except Empty:
+                now=monotonic()
+                if now-last_wait>=1:
+                    yield {'kind':'waiting','seconds':now-batch_started,
+                           'active':sum(f.running() for f in futures),'completed':len(results)}
+                    last_wait=now
+                continue
             if event['kind']=='done':
                 index=event['index'];result=event.pop('result');results[index]=result;completed+=1
                 from estimate_pipeline import build_intermediate_dataframe,validate_intermediate
@@ -120,6 +135,11 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
                     if len(cache)>=20:cache.pop(next(iter(cache)))
                     cache[keys[index]]=copy.deepcopy(result)
             yield event
+            now=monotonic()
+            if now-last_wait>=1 and completed<len(pending):
+                yield {'kind':'waiting','seconds':now-batch_started,
+                       'active':sum(f.running() for f in futures),'completed':len(results)}
+                last_wait=now
         # Surface unexpected executor errors instead of silently waiting forever.
         for future in futures:future.result()
     yield {'kind':'result','results':[results[index] for index in range(len(jobs))]}
