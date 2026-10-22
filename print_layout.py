@@ -8,6 +8,51 @@ from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.worksheet.page import PageMargins
 
 
+def fit_numbers_text_rows(sheet, start, end):
+    """Reserve real height for wrapped text; Numbers cannot auto-fit XLSX rows.
+
+    Keep the original page height when unused grid rows can supply the space.
+    Text, formulas, fonts and the existing print-page boundaries are unchanged.
+    """
+    import math
+    import unicodedata
+    before = {r: sheet.row_dimensions[r].height or 20 for r in range(start, end + 1)}
+    blank = []
+    for row in range(start, end + 1):
+        if not any(sheet.cell(row, col).value not in (None, '') for col in range(1, 9)):
+            blank.append(row)
+            continue
+        required = before[row]
+        for col in (2, 3, 8):
+            cell = sheet.cell(row, col)
+            if not isinstance(cell.value, str) or cell.data_type == 'f' or not cell.value:
+                continue
+            alignment = copy(cell.alignment)
+            alignment.wrap_text = True
+            alignment.shrink_to_fit = False
+            cell.alignment = alignment
+            size = float(cell.font.sz or 9)
+            width = sheet.column_dimensions[get_column_letter(col)].width or 13
+            # XLSX widths use default-font character units, not points. Reserve
+            # a little extra for Numbers' imported cell padding and font metrics.
+            available = max(size, (width * 7 + 5) * .75 - 12)
+            lines = 0
+            for line in cell.value.split('\n'):
+                units = sum(0 if unicodedata.combining(char) else
+                            (1 if unicodedata.east_asian_width(char) in ('W', 'F', 'A') else .6)
+                            for char in line)
+                lines += max(1, math.ceil(units * size / available))
+            if lines > 1:
+                required = max(required, math.ceil(lines * size * 4 / 3 + 8))
+        sheet.row_dimensions[row].height = required
+    extra = sum((sheet.row_dimensions[r].height or before[r]) - before[r] for r in before)
+    for index, row in enumerate(blank):
+        share = max(0, extra) / (len(blank) - index)
+        take = min(max(0, before[row] - 8), share)
+        sheet.row_dimensions[row].height = before[row] - take
+        extra -= take
+
+
 def split_print_pages(wb, estimate):
     """Numbers ignores Excel manual breaks and imports hidden sheets as visible.
 
