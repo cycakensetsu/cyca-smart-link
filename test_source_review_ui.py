@@ -19,7 +19,7 @@ source.update(pages=1, read_errors=[{{'page':1,'reason':'no priced items'}}],
               reference_only=True, reference_confirmed=True)
 if {with_rows!r}: source['read_errors']=[]
 sid=source['id']
-st.session_state['_review_amount_readings']={{sid:{{'net_total':100000,'tax':10000,'gross_total':110000,'conflicts':[],'page':1}}}}
+st.session_state['_review_amount_readings']={{sid:{{'net_total':{100000 if with_rows else None!r},'tax':{10000 if with_rows else None!r},'gross_total':{110000 if with_rows else None!r},'conflicts':[],'page':1}}}}
 rows={"[dict(行ID='priced',原本ID=sid,品名='原本記載の工事',数量=1,単位='式',原価単価=100000,原価金額=100000,ページ=1)]" if with_rows else '[]'}
 st.session_state['checked_rows']=render_source(st,source,store,1,rows)
 st.session_state['checked_source']=source
@@ -64,6 +64,18 @@ st.session_state['checked_source']=source
             self.assertFalse(at.checkbox(key='review_source_ok_'+source['id']).disabled)
             at.checkbox(key='review_source_ok_'+source['id']).check().run()
             self.assertTrue(at.session_state['checked_source']['confirmed'])
+
+    def test_unknown_unit_price_is_blank_in_editor_without_becoming_zero_or_reference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app=self.reference_app(temp,with_rows=True).replace('原価単価=100000','原価単価=None')
+            at=AppTest.from_string(app).run()
+            self.assertEqual(list(at.exception),[])
+            self.assertTrue(at.dataframe[0].value['原価単価'].isna().all())
+            self.assertEqual(at.session_state['checked_rows'][0]['原価単価'],'')
+            self.assertEqual(at.session_state['checked_rows'][0]['原価金額'],100000)
+            source=at.session_state['checked_source']
+            self.assertNotIn('review_reference_only_'+source['id'],[c.key for c in at.checkbox])
+            self.assertTrue(at.checkbox(key='review_source_ok_'+source['id']).disabled)
 
     def test_page_preview_changes_without_mutating_original_or_confirming_it(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -292,6 +292,31 @@ def section_tax_matches(source):
             and all(abs(Decimal(integer(s['tax']))-Decimal(integer(s['net_total']))*Decimal(str(source['tax_rate'])))<=1 for s in sections))
     except (ValueError,KeyError,TypeError):return False
 
+def _unknown_price(value):
+    return clean(value) in ('', None)
+
+
+def reference_material_allowed(original_rows, source):
+    """Only originally unpriced content may be explicitly kept as reference.
+
+    Zero is a printed price. Editing a known price away never qualifies.
+    The raw source totals/notes remain evidence even if UI totals were cleared.
+    """
+    rows = [r for r in original_rows if r.get('原本ID') == source['id']]
+    if any(not _unknown_price(r.get(field)) for r in rows for field in ('原価単価', '原価金額')):
+        return False
+    reading = source.get('amount_reading', {})
+    if any(not _unknown_price(data.get(field)) for data in (source, reading)
+           for field in ('net_total', 'tax', 'gross_total')):
+        return False
+    if reading.get('amount_notes') or reading.get('conflicts'):
+        return False
+    if any(not _unknown_price(part.get(field)) for part in reading.get('quote_sections', [])
+           for field in ('net_total', 'tax', 'gross_total')):
+        return False
+    return True
+
+
 def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, metadata=None, resolutions=None):
     """Return a complete reviewable snapshot. Corrections never change raw data."""
     metadata = dict(metadata or {})
@@ -342,8 +367,12 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
     for s in sources:
         source_rows=[r for r in edited_rows if r['原本ID']==s['id']]
         if s.get('reference_only'):
-            if source_rows or not s.get('reference_confirmed') or not s.get('confirmed'):
-                issue('参考資料の確認', [], '品目のある原本は参考資料として除外できません。原本の内容を確認してください。', '停止')
+            excluded = all(not r.get('採用', True) and str(r.get('除外理由') or '').strip()
+                           and all(_unknown_price(r.get(field)) for field in ('原価単価', '原価金額'))
+                           for r in source_rows)
+            if (not reference_material_allowed(original_rows, s) or not excluded
+                    or not s.get('reference_confirmed') or not s.get('confirmed')):
+                issue('参考資料の確認', [], '金額のある原本は参考資料として除外できません。原本の金額と参考資料の指定を確認してください。', '停止')
             else:
                 continue
         if s.get('amount_reading',{}).get('amount_notes') and not str(s.get('amount_notes_resolution') or '').strip():

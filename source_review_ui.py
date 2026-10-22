@@ -3,6 +3,7 @@ from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP
 from html import escape
 from collections import OrderedDict
+import copy
 import math
 from source_amounts import read_amounts, net_from_gross
 
@@ -163,18 +164,91 @@ def _render_items(st, rows, sid):
         import pandas as pd
         from estimate_review import clean
         st.caption('原本を見ながら直してください。訂正理由も残します。合計に合わせるための架空の品目は追加できません。')
-        columns = ['品名','仕様','数量','単位','原価単価','原価金額','訂正理由','ページ','見積元','工事種別','部位','顧客備考','集計のみ','採用','除外理由','行ID']
-        edited = st.data_editor(pd.DataFrame(rows).reindex(columns=columns), hide_index=True, num_rows='fixed',
+        columns = ['品名','仕様','数量','単位','原価単価','原価金額','訂正理由','行ID']
+        frame = pd.DataFrame(rows).reindex(columns=columns)
+        config = {'行ID':None, '原価単価':st.column_config.NumberColumn('仕入単価', format='localized'),
+                  '原価金額':st.column_config.NumberColumn('仕入金額', format='localized'),'訂正理由':'直した理由'}
+        for field in ('数量','原価単価','原価金額'):
+            try:
+                values = [None if clean(value)=='' else value for value in frame[field]]
+                frame[field] = pd.to_numeric(pd.Series(values),errors='raise').astype('Float64')
+            except (ValueError, TypeError):
+                # Preserve an unreadable original value instead of making it 0.
+                config.pop(field,None)
+        edited = st.data_editor(frame, hide_index=True, num_rows='fixed',
             key='review_source_items_'+sid+'_'+str(st.session_state.get('_review_editor_epoch',0)), width='stretch',
-            disabled=['行ID'], column_config={'行ID':None, '原価単価':st.column_config.NumberColumn('単価', format='localized'),
-                                             '原価金額':st.column_config.NumberColumn('金額', format='localized')})
+            disabled=['行ID'], column_config=config)
         by_id = {r['行ID']:dict(r) for r in rows}
         for change in edited.to_dict('records'):
             by_id[change['行ID']].update({k:clean(v) for k,v in change.items()})
         updated = list(by_id.values())
+        with st.expander('詳しい設定（必要なときだけ）'):
+            advanced_columns = ['品名','工事種別','部位','ページ','見積元','顧客備考','集計のみ','採用','除外理由','行ID']
+            advanced_frame = pd.DataFrame(updated).reindex(columns=advanced_columns)
+            for field, default in [('集計のみ',False),('採用',True)]:
+                advanced_frame[field] = pd.Series([default if clean(value)=='' else bool(value)
+                                                   for value in advanced_frame[field]],dtype='boolean')
+            advanced = st.data_editor(advanced_frame, hide_index=True, num_rows='fixed',
+                key='review_source_advanced_'+sid+'_'+str(st.session_state.get('_review_editor_epoch',0)), width='stretch',
+                disabled=['行ID','品名'], column_config={'行ID':None,'工事種別':'工事の種類','部位':'施工場所・部位',
+                    'ページ':'原本のページ','見積元':'見積書の業者名','顧客備考':'お客様向け備考',
+                    '集計のみ':st.column_config.CheckboxColumn('一式まとめに載せる費用'),
+                    '採用':st.column_config.CheckboxColumn('見積に含める'),'除外理由':'含めない理由'})
+            for change in advanced.to_dict('records'):
+                by_id[change['行ID']].update({k:clean(v) for k,v in change.items() if k != '品名'})
+            updated = list(by_id.values())
     with table_slot:
         st.html(_items_html(updated))
     return updated
+
+
+_REFERENCE_REASON = '金額のない参考資料として、見積金額から除外'
+
+
+def _apply_reference_choice(st, sid, detail_rows, reference):
+    previous_key = '_review_reference_applied_' + sid
+    previous = bool(st.session_state.get(previous_key, False))
+    if previous == reference:
+        return detail_rows
+    updated = copy.deepcopy(detail_rows)
+    selected = [r for r in updated if r.get('原本ID') == sid]
+    saved_key = '_review_reference_previous_rows_' + sid
+    if reference:
+        st.session_state[saved_key] = {r['行ID']:{'採用':r.get('採用',True),'除外理由':r.get('除外理由','')} for r in selected}
+        for row in selected:
+            row.update(採用=False, 除外理由=_REFERENCE_REASON)
+    else:
+        saved = st.session_state.pop(saved_key, {})
+        for row in selected:
+            row.update(saved.get(row['行ID'], {'採用':True,'除外理由':''}))
+    st.session_state[previous_key] = reference
+    st.session_state['_review_assistant_rows'] = updated
+    st.session_state['_review_editor_epoch'] = st.session_state.get('_review_editor_epoch', 0) + 1
+    st.session_state['review_source_ok_' + sid] = False
+    st.session_state.pop('_review_source_signature_' + sid, None)
+    for key in ('_review_preview','_review_approval','_review_result','_vault_archive','_review_proposal'):
+        st.session_state.pop(key, None)
+    st.session_state['_review_export_ready'] = False
+    return updated
+
+
+def _render_reference_material(st, source, store, detail_rows):
+    sid = source['id']
+    st.info('見積書ではないと思われます。ご確認ください。')
+    with st.expander('元の資料を見る'):
+        if st.button('原本を大きく見る', key='review_enlarge_' + sid):
+            _large_preview(st, source, store)
+        preview(st, source, store)
+    st.caption('図面や看板デザインなどは、見積金額に含めず原本を残せます。')
+    reference = st.checkbox('参考資料として残す', key='review_reference_only_' + sid)
+    detail_rows = _apply_reference_choice(st, sid, detail_rows, reference)
+    source.update(tax_basis='税抜',tax_rate=.10,net_total=None,tax=None,gross_total=None,
+                  reference_only=reference,reference_confirmed=reference,confirmed=reference)
+    if st.button('見積書として読み直す', key='review_reparse_' + sid):
+        st.session_state['_force_analyze'] = True
+        st.session_state['_review_reparse_source'] = sid
+        st.rerun()
+    return detail_rows
 
 
 def render_source(st, source, store, index, detail_rows=None):
@@ -205,130 +279,154 @@ def render_source(st, source, store, index, detail_rows=None):
     source['project_name'] = title
     vendor = source_vendor(source, st.session_state.get('_review_metadata', {}), detail_rows or [])
     source['vendor_name'] = vendor
+    from estimate_review import reference_material_allowed
+    originals = st.session_state.get('_review_original_rows', detail_rows or [])
+    reference_candidate = (detail_rows is not None and reference_material_allowed(originals, source)
+                           and reference_material_allowed(detail_rows, source))
+    heading = (f"{index}. {title or source['name']}" if reference_candidate else
+               f"{index}. {vendor} ｜ {title or '工事名なし（無題）'}")
+    st.html(f'<div id="cyca-source-{sid}" style="scroll-margin-top:5rem"></div>')
     # Do not auto-collapse a confirmed source: that used to move the page.
-    with st.expander(f"{index}. {vendor} ｜ {title or '工事名なし（無題）'}", expanded=True):
+    with st.expander(heading, expanded=True):
         st.caption('元ファイル：' + source['name'])
         if source.get('duplicate_count', 1) > 1:
             st.info(f"同じ原本が{source['duplicate_count']}回選ばれています。内容は1件として表示しています。")
-        st.subheader('① 元の見積書',anchor=False)
-        if st.button('原本を大きく見る', key='review_enlarge_' + sid):
-            _large_preview(st, source, store)
-        preview(st, source, store)
         rows = [r for r in (detail_rows or []) if r.get('原本ID') == sid]
+        if reference_candidate:
+            return _render_reference_material(st, source, store, detail_rows)
         if detail_rows is not None and not rows:
-            source.update(tax_basis='税抜',tax_rate=.10,net_total=None,tax=None,gross_total=None,confirmed=False)
-            reference = st.checkbox('このファイルは参考資料として使う（見積金額に含めない）',
-                                    key='review_reference_only_' + sid)
-            source.update(reference_only=reference, reference_confirmed=reference, confirmed=reference)
-            st.session_state['review_source_ok_'+sid] = False
-            if reference:
-                st.caption('参考資料として原本を残します。このファイルの金額は見積に含めません。')
-            else:
-                st.warning('品目を読み取れませんでした。見積書なら、品目・数量・単価が載ったページを追加してください。図面・デザインなどは、上で参考資料に指定できます。')
-            return detail_rows
-        # A file with extracted priced rows cannot silently become a reference
-        # attachment through old UI state or a restored source dictionary.
-        source.update(reference_only=False, reference_confirmed=False)
-        if rows:
-            rows = _render_items(st, rows, sid)
-            changes = {r['行ID']:r for r in rows}
-            detail_rows = [changes.get(r['行ID'], r) for r in detail_rows]
-        if source['source_notes']:
-            with st.expander('原本の備考・施工範囲を見る（社内用）'):
-                st.caption('原本の条件です。お客様向け備考には自動では載せません。')
-                for note in source['source_notes']:st.write(note)
-        st.subheader('③ 合計金額',anchor=False)
-        if reading.get('quote_sections'):
-            st.info(f"このPDFには{len(reading['quote_sections'])}件の見積が入っています。各見積の金額を分けて保持し、下に合計を表示しています。")
-            for section in reading['quote_sections']:
-                st.write(f"{section['page']}ページ：{section['name'] or '無題'} ／ 工事金額 {section['net_total']:,}円（税抜）")
-        if st.session_state.get('review_net_' + sid) is None:
-            st.info('原本の最後にある合計だけ教えてください。')
-            missing = st.number_input('原本の最後にある合計金額（円）', value=None, min_value=0, step=1, key='review_missing_gross_' + sid)
-            if missing is not None:
-                st.session_state['review_net_' + sid] = net_from_gross(missing)
-                st.session_state['review_gross_' + sid] = missing
-                st.session_state['review_tax_amount_' + sid] = missing - st.session_state['review_net_' + sid]
-                st.session_state['review_tax_exists_' + sid] = True
-                st.session_state['review_resolve_totals_' + sid] = True
-        with st.expander('原本の合計と違うときだけ直す'):
-            st.caption('普段は明細が税抜・消費税10%です。原本の記載に合わせるときだけ変更します。')
-            source['tax_basis'] = st.selectbox('明細の金額の扱い', ['税抜', '税込', '非課税', '不明'], key='review_basis_' + sid)
-            rate = st.selectbox('消費税率を変更', ['10%', '8%', '0%', '不明'], key='review_tax_' + sid)
-            source['tax_rate'] = {'10%':.10,'8%':.08,'0%':0}.get(rate)
-            source['net_total'] = st.number_input('工事金額（税抜・円）', min_value=0, value=None, step=1, key='review_net_' + sid, format='%d')
-            check_tax = st.checkbox('原本に消費税と合計の記載がある', key='review_tax_exists_' + sid)
-            tax = st.number_input('原本の消費税（円）', min_value=0, value=None, step=1, key='review_tax_amount_' + sid)
-            gross = st.number_input('原本の合計金額（円）', min_value=0, value=None, step=1, key='review_gross_' + sid)
-            source['tax'] = tax if check_tax else None
-            source['gross_total'] = gross if check_tax else None
-            if reading['conflicts']:
-                st.checkbox('原本の最後の合計を見て、この金額に修正しました', key='review_resolve_totals_' + sid)
-        net = source['net_total']
-        calc_tax = int((Decimal(net) * Decimal(str(source['tax_rate'] or 0))).quantize(Decimal(1), rounding=ROUND_HALF_UP)) if net is not None else None
-        show_tax = source['tax'] if source['tax'] is not None else calc_tax
-        show_gross = source['gross_total'] if source['gross_total'] is not None else (net + show_tax if net is not None else None)
-        # Full-width amounts do not truncate in a narrow Safari window.
-        for label, value in zip(['工事金額（税抜）', '消費税', '合計（税込）'], [net, show_tax, show_gross]):
-            st.markdown(f'**{label}　{value:,}円**' if value is not None else f'**{label}　未確認**')
-        problems=[]
-        if reading.get('read_failed'): problems.append('原本を読み取れませんでした。画像として保存した原本をもう一度読み込んでください。')
-        if source.get('read_errors'): problems.append('読み取れていないページがあります。この見積をもう一度読み込んでください。')
-        try:
-            from estimate_review import integer,section_tax_matches
-            actual = sum(integer(r['原価金額']) for r in rows) if rows else None
-        except (ValueError, TypeError, OverflowError):
-            actual = None
-        if rows:
-            bad=[]
-            for number,row in enumerate(rows,1):
-                fields=[]
-                for field,label in [('数量','数量'),('原価単価','単価'),('原価金額','金額')]:
-                    try:
-                        if row.get(field) in ('',None) or not math.isfinite(float(row[field])): fields.append(label)
-                    except (ValueError,TypeError): fields.append(label)
-                if fields: bad.append(f"{number}番目の{'・'.join(fields)}")
-                if not str(row.get('品名') or '').strip(): bad.append(f'{number}番目の品名')
-            if any(not r.get('ページ') for r in rows) and source.get('pages',1)>1:
-                problems.append('品目の原本ページが分かりません。品目の修正欄でページを指定してください。')
-            if bad: problems.append('未確認：'+'、'.join(bad)+'。上の「品目の読み取りが違うときだけ直す」で直せます。')
-        from source_rounding import printed_rounding
-        rounded=[r for r in rows if printed_rounding(r) is not None]
-        source['rounding_rows']=[r['行ID'] for r in rounded]
-        if rounded:
-            st.info('原本の数量表示の丸めによる計算差がある品目です：'+
-                    '、'.join(str(rows.index(r)+1)+'番目' for r in rounded)+
-                    '。仕入金額は原本どおりに保持します。お客様向けは、同じ数量で単価と金額の計算が合うよう別に設定します。')
-        if reading.get('amount_notes'):
-            from source_variants import notes_message
-            st.info('明細とは別の金額が書かれています：'+notes_message(reading['amount_notes'])+'。自動では差し引きません。')
-            with st.expander('この金額をどう扱うか確認する'):
-                st.caption('NET金額が税込か税抜か、値引きがどの金額に対するものかを原本・業者に確認してください。必要なら上の合計・品目を訂正し、根拠を残します。')
-                source['amount_notes_resolution']=st.text_input('採用する金額と確認した内容',key='review_amount_notes_'+sid,
-                    placeholder='例：業者に確認済み。今回は明細記載の金額を採用する')
-            if not str(source.get('amount_notes_resolution') or '').strip():
-                problems.append('NET金額・税込後の値引きの扱いが未確認です。上の「この金額をどう扱うか確認する」を開いてください。')
-        if net is None: problems.append('原本の合計金額を入力すると確認できます。')
-        if actual is not None and net is not None and actual != net:
-            problems.append(f'品目の合計と原本が{abs(actual-net):,}円違います。原本の値引き・諸経費や品目を確認し、上の修正欄で直してください。合計だけを合わせる変更はしません。')
-            st.caption(f'品目の合計：{actual:,}円 ／ 原本の工事金額：{net:,}円')
-        if net is not None and show_tax is not None and source['gross_total'] is not None and net+show_tax != source['gross_total']:
-            problems.append('工事金額＋消費税が原本の合計と合いません。「原本の合計と違うときだけ直す」で確認してください。')
-        if source['tax'] is not None and calc_tax is not None and abs(source['tax']-calc_tax)>1 and not section_tax_matches(source):
-            problems.append(f'消費税が{rate}の計算と合いません。原本の金額を確認してください。')
-        if reading['conflicts'] and not st.session_state.get('review_resolve_totals_' + sid):
-            problems.append('原本に複数の合計があります。「原本の合計と違うときだけ直す」で最後の合計を確認してください。')
-        if source['tax_basis'] not in ('税抜','非課税') or source['tax_rate'] is None:
-            problems.append('通常と異なる見積です。原本の税の扱いを確認してください。')
-        from estimate_review import digest
-        signature = digest([source.get(k) for k in ('tax_basis','tax_rate','net_total','tax','gross_total','amount_notes_resolution')] + [rows])
-        last = st.session_state.get('_review_source_signature_' + sid)
-        if problems or (last is not None and last != signature):
+            source.update(reference_only=False, reference_confirmed=False, confirmed=False)
+            st.warning('品目を読み取れませんでした。品目・数量・単価のあるページを選び、もう一度読み取ってください。')
             st.session_state['review_source_ok_' + sid] = False
-        st.session_state['_review_source_signature_' + sid] = signature
-        if problems:
-            st.warning('まだ確認できない理由\n\n'+'\n\n'.join(dict.fromkeys(problems)))
-        else:
-            st.caption('原本と上の品目・数量・金額を見比べ、合っていればチェックしてください。')
-        source['confirmed'] = st.checkbox('原本と品目・数量・金額が合っています', key='review_source_ok_' + sid, disabled=bool(problems)) and not problems
+            st.checkbox('原本と品目・数量・金額が合っています',key='review_source_ok_'+sid,disabled=True)
+            return detail_rows
+        compare = 'source_compare_' + sid
+        original_pane = 'source_original_' + sid
+        columns_css = f'.st-key-{compare} > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"]'
+        st.html(f'<style>.st-key-{compare}{{container-type:inline-size;min-width:0}}'
+                f'{columns_css}{{align-items:stretch}}'
+                f'{columns_css} > [data-testid="stColumn"]{{min-width:0}}'
+                f'@container(min-width:851px){{{columns_css} > [data-testid="stColumn"]:first-child{{position:sticky;top:3.5rem;align-self:flex-start}}}}'
+                f'@container(max-width:850px){{{columns_css}{{flex-direction:column}}'
+                f'{columns_css} > [data-testid="stColumn"]{{width:100%!important;flex:1 1 100%!important}}}}'
+                '</style>')
+        with st.container(key=compare):
+            original, reading_column = st.columns([1,1.1],gap='large')
+            with original:
+                with st.container(key=original_pane):
+                    st.subheader('① 元の見積書',anchor=False)
+                    if st.button('原本を大きく見る', key='review_enlarge_' + sid):
+                        _large_preview(st, source, store)
+                    preview(st, source, store)
+            with reading_column:
+                return _render_source_details(st, source, reading, rows, detail_rows)
+
+
+def _render_source_details(st, source, reading, rows, detail_rows):
+    sid = source['id']
+    # A file with extracted priced rows cannot silently become a reference
+    # attachment through old UI state or a restored source dictionary.
+    source.update(reference_only=False, reference_confirmed=False)
+    if rows:
+        rows = _render_items(st, rows, sid)
+        changes = {r['行ID']:r for r in rows}
+        detail_rows = [changes.get(r['行ID'], r) for r in detail_rows]
+    if source['source_notes']:
+        with st.expander('原本の備考・施工範囲を見る（社内用）'):
+            st.caption('原本の条件です。お客様向け備考には自動では載せません。')
+            for note in source['source_notes']:st.write(note)
+    st.subheader('③ 合計金額',anchor=False)
+    if reading.get('quote_sections'):
+        st.info(f"このPDFには{len(reading['quote_sections'])}件の見積が入っています。各見積の金額を分けて保持し、下に合計を表示しています。")
+        for section in reading['quote_sections']:
+            st.write(f"{section['page']}ページ：{section['name'] or '無題'} ／ 工事金額 {section['net_total']:,}円（税抜）")
+    if st.session_state.get('review_net_' + sid) is None:
+        st.info('原本の最後にある合計だけ教えてください。')
+        missing = st.number_input('原本の最後にある合計金額（円）', value=None, min_value=0, step=1, key='review_missing_gross_' + sid)
+        if missing is not None:
+            st.session_state['review_net_' + sid] = net_from_gross(missing)
+            st.session_state['review_gross_' + sid] = missing
+            st.session_state['review_tax_amount_' + sid] = missing - st.session_state['review_net_' + sid]
+            st.session_state['review_tax_exists_' + sid] = True
+            st.session_state['review_resolve_totals_' + sid] = True
+    with st.expander('原本の合計と違うときだけ直す'):
+        st.caption('普段は明細が税抜・消費税10%です。原本の記載に合わせるときだけ変更します。')
+        source['tax_basis'] = st.selectbox('明細の金額の扱い', ['税抜', '税込', '非課税', '不明'], key='review_basis_' + sid)
+        rate = st.selectbox('消費税率を変更', ['10%', '8%', '0%', '不明'], key='review_tax_' + sid)
+        source['tax_rate'] = {'10%':.10,'8%':.08,'0%':0}.get(rate)
+        source['net_total'] = st.number_input('工事金額（税抜・円）', min_value=0, value=None, step=1, key='review_net_' + sid, format='%d')
+        check_tax = st.checkbox('原本に消費税と合計の記載がある', key='review_tax_exists_' + sid)
+        tax = st.number_input('原本の消費税（円）', min_value=0, value=None, step=1, key='review_tax_amount_' + sid)
+        gross = st.number_input('原本の合計金額（円）', min_value=0, value=None, step=1, key='review_gross_' + sid)
+        source['tax'] = tax if check_tax else None
+        source['gross_total'] = gross if check_tax else None
+        if reading['conflicts']:
+            st.checkbox('原本の最後の合計を見て、この金額に修正しました', key='review_resolve_totals_' + sid)
+    net = source['net_total']
+    calc_tax = int((Decimal(net) * Decimal(str(source['tax_rate'] or 0))).quantize(Decimal(1), rounding=ROUND_HALF_UP)) if net is not None else None
+    show_tax = source['tax'] if source['tax'] is not None else calc_tax
+    show_gross = source['gross_total'] if source['gross_total'] is not None else (net + show_tax if net is not None else None)
+    # Full-width amounts do not truncate in a narrow Safari window.
+    for label, value in zip(['工事金額（税抜）', '消費税', '合計（税込）'], [net, show_tax, show_gross]):
+        st.markdown(f'**{label}　{value:,}円**' if value is not None else f'**{label}　未確認**')
+    problems=[]
+    if reading.get('read_failed'): problems.append('原本を読み取れませんでした。画像として保存した原本をもう一度読み込んでください。')
+    if source.get('read_errors'): problems.append('読み取れていないページがあります。この見積をもう一度読み込んでください。')
+    try:
+        from estimate_review import integer,section_tax_matches
+        actual = sum(integer(r['原価金額']) for r in rows) if rows else None
+    except (ValueError, TypeError, OverflowError):
+        actual = None
+    if rows:
+        bad=[]
+        for number,row in enumerate(rows,1):
+            fields=[]
+            for field,label in [('数量','数量'),('原価単価','単価'),('原価金額','金額')]:
+                try:
+                    if row.get(field) in ('',None) or not math.isfinite(float(row[field])): fields.append(label)
+                except (ValueError,TypeError): fields.append(label)
+            if fields: bad.append(f"{number}番目の{'・'.join(fields)}")
+            if not str(row.get('品名') or '').strip(): bad.append(f'{number}番目の品名')
+        if any(not r.get('ページ') for r in rows) and source.get('pages',1)>1:
+            problems.append('品目の原本ページが分かりません。品目の修正欄でページを指定してください。')
+        if bad: problems.append('未確認：'+'、'.join(bad)+'。上の「品目の読み取りが違うときだけ直す」で直せます。')
+    from source_rounding import printed_rounding
+    rounded=[r for r in rows if printed_rounding(r) is not None]
+    source['rounding_rows']=[r['行ID'] for r in rounded]
+    if rounded:
+        st.info('原本の数量表示の丸めによる計算差がある品目です：'+
+                '、'.join(str(rows.index(r)+1)+'番目' for r in rounded)+
+                '。仕入金額は原本どおりに保持します。お客様向けは、同じ数量で単価と金額の計算が合うよう別に設定します。')
+    if reading.get('amount_notes'):
+        from source_variants import notes_message
+        st.info('明細とは別の金額が書かれています：'+notes_message(reading['amount_notes'])+'。自動では差し引きません。')
+        with st.expander('この金額をどう扱うか確認する'):
+            st.caption('NET金額が税込か税抜か、値引きがどの金額に対するものかを原本・業者に確認してください。必要なら上の合計・品目を訂正し、根拠を残します。')
+            source['amount_notes_resolution']=st.text_input('採用する金額と確認した内容',key='review_amount_notes_'+sid,
+                placeholder='例：業者に確認済み。今回は明細記載の金額を採用する')
+        if not str(source.get('amount_notes_resolution') or '').strip():
+            problems.append('NET金額・税込後の値引きの扱いが未確認です。上の「この金額をどう扱うか確認する」を開いてください。')
+    if net is None: problems.append('原本の合計金額を入力すると確認できます。')
+    if actual is not None and net is not None and actual != net:
+        problems.append(f'品目の合計と原本が{abs(actual-net):,}円違います。原本の値引き・諸経費や品目を確認し、上の修正欄で直してください。合計だけを合わせる変更はしません。')
+        st.caption(f'品目の合計：{actual:,}円 ／ 原本の工事金額：{net:,}円')
+    if net is not None and show_tax is not None and source['gross_total'] is not None and net+show_tax != source['gross_total']:
+        problems.append('工事金額＋消費税が原本の合計と合いません。「原本の合計と違うときだけ直す」で確認してください。')
+    if source['tax'] is not None and calc_tax is not None and abs(source['tax']-calc_tax)>1 and not section_tax_matches(source):
+        problems.append(f'消費税が{rate}の計算と合いません。原本の金額を確認してください。')
+    if reading['conflicts'] and not st.session_state.get('review_resolve_totals_' + sid):
+        problems.append('原本に複数の合計があります。「原本の合計と違うときだけ直す」で最後の合計を確認してください。')
+    if source['tax_basis'] not in ('税抜','非課税') or source['tax_rate'] is None:
+        problems.append('通常と異なる見積です。原本の税の扱いを確認してください。')
+    from estimate_review import digest
+    signature = digest([source.get(k) for k in ('tax_basis','tax_rate','net_total','tax','gross_total','amount_notes_resolution')] + [rows])
+    last = st.session_state.get('_review_source_signature_' + sid)
+    if problems or (last is not None and last != signature):
+        st.session_state['review_source_ok_' + sid] = False
+    st.session_state['_review_source_signature_' + sid] = signature
+    if problems:
+        st.warning('まだ確認できない理由\n\n'+'\n\n'.join(dict.fromkeys(problems)))
+    else:
+        st.caption('原本と上の品目・数量・金額を見比べ、合っていればチェックしてください。')
+    source['confirmed'] = st.checkbox('原本と品目・数量・金額が合っています', key='review_source_ok_' + sid, disabled=bool(problems)) and not problems
     return detail_rows

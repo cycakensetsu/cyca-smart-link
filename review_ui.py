@@ -113,6 +113,7 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
 def render_review(st, api_key=None):
     st.session_state['_review_export_ready'] = False
     original = st.session_state.get("_review_original_rows")
+    st.session_state['_review_workflow_step'] = 2 if original else 1
     if not original:
         return
     from conversation_ui import apply_pending, working_context, render_conversation
@@ -124,6 +125,7 @@ def render_review(st, api_key=None):
     rows,sources=render_inputs(st,original,sources,vault(st))
     ready=bool(sources) and all(source.get('confirmed') for source in sources)
     if ready:
+        st.session_state['_review_workflow_step'] = 3
         _render_review_plan(st,api_key,original,rows,sources)
 
 
@@ -138,7 +140,7 @@ def customer_default(metadata):
 def _render_review_plan(st,api_key,original,rows,sources):
     from conversation_ui import working_context, render_conversation
     conversation_slot = st.container()
-    st.markdown('### 3. 見積金額を確認する')
+    st.markdown('#### 見積金額と宛名を確認する')
     st.caption('出力先：アプリ既存の横型流し込みデザイン。通常は工種ごとに明細を分け、2行程度の小工種は同じページにまとめます。少量の1社見積は一式まとめを省きます。')
     m = st.session_state.get('_review_metadata', {})
     with st.container(border=True):
@@ -205,8 +207,15 @@ def _render_review_plan(st,api_key,original,rows,sources):
         st.info('・'.join(missing_names)+'を入れると、完成イメージを見られます。')
     from estimate_review import preview_allowed
     preview_ready = render_preview(st, draft, preview_allowed(draft) and not missing_names)
+    if preview_ready:
+        st.session_state['_review_workflow_step'] = 4
     agree = st.checkbox("内容とページ分けは、これでOKです", disabled=not preview_ready,
                         key="review_agree_"+draft["fingerprint"])
+    from workflow_steps_ui import render_step_heading
+    render_step_heading(st, 5)
+    st.caption('確認した内容でPDFとNumbers用ファイルを作ります。作成後に保存ボタンが出ます。')
+    if preview_ready and agree:
+        st.session_state['_review_workflow_step'] = 5
     if st.button("この内容で見積書を作成", disabled=not (valid and agree and preview_ready), key="review_approve"):
         try:
             approval = approve(draft, st.session_state["username"])

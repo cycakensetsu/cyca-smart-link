@@ -79,9 +79,11 @@ def change_description(c, context):
 
 
 def render_conversation(st, api_key, context):
+    from workflow_steps_ui import render_step_heading
     st.session_state['_review_working'] = context
-    st.markdown('### 2. お客様に出す金額を決める')
+    render_step_heading(st, 3)
     st.caption('確保したい利益や値引きを、話すか文字で伝えてください。例：「利益を10万円確保したい」「値引きは1万円にして」。AIの提案を見てから反映します。ページ分けの相談もできます。')
+    st.caption('金額が決まったら、下の「完成イメージを見る」へ進みます。')
     checked = bool(context['sources']) and all(s.get('confirmed') for s in context['sources'])
     ready = bool(api_key) and checked
     if not checked:
