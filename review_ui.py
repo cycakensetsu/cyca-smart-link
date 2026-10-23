@@ -94,6 +94,7 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
     st.session_state.pop('_vault_archive', None)
     sources = st.session_state.get("_review_sources", [])
     for source in sources:
+        source.update(confirmed=False, reference_only=False, reference_confirmed=False)
         source['read_errors'] = [e for e in read_errors if e['source'] == source['name']]
     rows = review_rows(detail, sources)
     summary_only = {(r.get('__source_name'),r.get('__page_number'),str(r.get('品名')),r.get('金額')) for r in records if r.get('__summary_only')}
@@ -106,7 +107,12 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
     st.session_state["_review_metadata"] = dict(summaries or {})
     st.session_state["_review_extraction_id"] = extraction_id
     for key in list(st.session_state):
-        if key.startswith("review_") or key in ("_review_approval", "_review_result"):
+        if key.startswith(('review_source_ok_', 'review_reference_only_', 'review_agree_', 'review_resolve_totals_')):
+            # Identical originals reuse widget IDs. Deletion resets the server
+            # but sends no value update to a browser still showing a checkmark.
+            # Explicit False also clears the browser; fresh human checks follow.
+            st.session_state[key] = False
+        elif key.startswith("review_") or key in ("_review_approval", "_review_result"):
             del st.session_state[key]
 
 

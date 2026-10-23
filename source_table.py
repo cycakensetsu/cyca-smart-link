@@ -152,6 +152,15 @@ def reconcile_native_pdf(path, records, summaries):
         if len(matches)==1:
             for field in ('工事種別','部位'):
                 if not row.get(field) and matches[0].get(field):row[field]=matches[0][field]
+        # A numeric native table may omit an OCR-readable remarks column.
+        # Restore only a unique same-original, same-physical-page row's words;
+        # printed native remarks remain authoritative and prices never change.
+        page = number(row.get('__page_number'))
+        context_matches = [r for r in matches if r.get('__source_name') == source
+                           and page is not None and page > 0
+                           and number(r.get('__page_number')) == page]
+        if len(context_matches) == 1 and not row.get('備考') and context_matches[0].get('備考'):
+            row['備考'] = context_matches[0]['備考']
         row.update({"No": idx, "見積元": vendor, "__source_name": source})
         # Native table cells are authoritative. Re-splitting them using OCR
         # specifications can erase floor numbers or vary equal-work grouping.

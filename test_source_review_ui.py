@@ -9,6 +9,16 @@ from streamlit.testing.v1 import AppTest
 
 
 class SourceReviewUITest(unittest.TestCase):
+    def test_original_line_note_is_visible_separately_from_customer_remarks(self):
+        from source_review_ui import _items_html
+        row = dict(品名='柱',部位='1階',仕様='指定塗料',数量=2,単位='本',
+                   原価単価=3000,原価金額=6000,備考='根本のみ <原文>',顧客備考='提出用の備考')
+        before = copy.deepcopy(row)
+        html = _items_html([row])
+        self.assertIn('原本の注記：根本のみ &lt;原文&gt;', html)
+        self.assertNotIn('提出用の備考', html)
+        self.assertEqual(row, before)
+
     def test_original_exclusions_are_visible_without_becoming_customer_remarks(self):
         with tempfile.TemporaryDirectory() as temp:
             script = self.reference_app(temp, with_rows=True)
