@@ -139,8 +139,10 @@ def _items_html(rows):
         part = str(row.get('部位') or '')
         context = part if part and part != str(row.get('工事種別') or '') else ''
         spec = escape(' ｜ '.join(v for v in (context, str(row.get('仕様') or '')) if v))
+        original_note = str(row.get('備考') or '').strip()
+        note_html = f'<small>原本の注記：{escape(original_note)}</small>' if original_note else ''
         quantity = escape(_number(row.get('数量')) + ' ' + str(row.get('単位') or ''))
-        table.append(f'<tr><td class="item-name"><b>{number}. {name}</b><small>{spec}</small></td>'
+        table.append(f'<tr><td class="item-name"><b>{number}. {name}</b><small>{spec}</small>{note_html}</td>'
                      f'<td data-label="数量">{quantity}</td>'
                      f'<td data-label="単価">{escape(_number(row.get("原価単価")))}円</td>'
                      f'<td data-label="金額">{escape(_number(row.get("原価金額")))}円</td></tr>')

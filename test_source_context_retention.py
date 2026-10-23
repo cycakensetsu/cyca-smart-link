@@ -149,6 +149,46 @@ class SourceContextRetentionTest(unittest.TestCase):
         self.assertEqual(result['net_total'], 100)
         self.assertEqual(result['source_notes'], ['3ページ：工程：下塗り→上塗り。材料：架空TEST-A'])
 
+    def test_native_reconciliation_keeps_six_ocr_remarks_and_printed_footer_without_changing_prices(self):
+        from source_table import reconcile_native_pdf
+        records = [dict(detail(page=3), 品名=f'架空部材{i}', 備考=f'原文の施工範囲{i}・別紙参照')
+                   for i in range(6)]
+        native = [dict(r, 備考='', 仕様='') for r in records]
+        for row in native:
+            row.pop('__source_name')
+        summaries = [{'__source_name': 'a.pdf', '__page_number': 3,
+                      '原本備考': [{'ページ': 3, '原文': '作業工程：下塗り→上塗り。使用材料：架空製品TEST-A'}]}]
+        before = copy.deepcopy((records, summaries))
+        with patch('source_table.reconcile_cyca_reference', return_value=None), \
+                patch('source_table.read_native_tables', return_value=(native, [600], '')):
+            actual, actual_summaries = reconcile_native_pdf('a.pdf', records, summaries)
+        self.assertEqual((records, summaries), before)
+        self.assertEqual([r['備考'] for r in actual], [r['備考'] for r in records])
+        for original, result in zip(records, actual):
+            for field in ('数量', '単位', '単価', '金額', '__page_number', '__source_name'):
+                self.assertEqual(result[field], original[field])
+        self.assertEqual(actual_summaries[0]['原本備考'], summaries[0]['原本備考'])
+
+    def test_native_remark_recovery_needs_unique_same_source_page_and_never_overwrites_printed_remark(self):
+        from source_table import reconcile_native_pdf
+        for variant in ('other-page', 'other-source', 'ambiguous', 'printed-native'):
+            with self.subTest(variant=variant):
+                records = [detail(page=3)]
+                native = [dict(detail(page=3), 備考='原本の表セル備考' if variant == 'printed-native' else '')]
+                if variant == 'other-page':
+                    records[0]['__page_number'] = 2
+                elif variant == 'other-source':
+                    # Source identity comes from the upload's first row, not the
+                    # differently sourced OCR row that happens to match a price.
+                    records = [dict(detail(page=3), 品名='別品目'),
+                               dict(detail(page=3), __source_name='other.pdf')]
+                elif variant == 'ambiguous':
+                    records.append(dict(detail(page=3), 備考='別施工範囲'))
+                with patch('source_table.reconcile_cyca_reference', return_value=None), \
+                        patch('source_table.read_native_tables', return_value=(native, [100], '')):
+                    actual, _ = reconcile_native_pdf('a.pdf', records, [])
+                self.assertEqual(actual[0]['備考'], '原本の表セル備考' if variant == 'printed-native' else '')
+
 
 if __name__ == '__main__':
     unittest.main()
