@@ -1,12 +1,56 @@
 from pathlib import Path
+import copy
 import tempfile
 import unittest
+import unicodedata
 from html.parser import HTMLParser
 import fitz
 from streamlit.testing.v1 import AppTest
 
 
 class SourceReviewUITest(unittest.TestCase):
+    def test_original_exclusions_are_visible_without_becoming_customer_remarks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            script = self.reference_app(temp, with_rows=True)
+            script = script.replace("'conflicts':[],'page':1", "'conflicts':[],'page':1,'source_notes':['1ページ：既存設備の撤去は含まない','1ページ：原本の連絡事項']")
+            at = AppTest.from_string(script).run()
+            self.assertEqual(list(at.exception), [])
+            self.assertTrue(any('工事範囲・除外条件' in info.value for info in at.info))
+            self.assertTrue(any('既存設備の撤去は含まない' in item.value for item in at.markdown))
+            rows = at.session_state['checked_rows']
+            self.assertFalse(any(r.get('顧客備考') for r in rows))
+            self.assertEqual(rows[0]['原価金額'], 100000)
+
+    def test_vendor_ignores_only_current_filename_fallback_without_changing_data(self):
+        from source_review_ui import source_vendor
+        source = {'id': 'synthetic', 'name': '検証ガーデン　御見積書.pdf'}
+        fallback = unicodedata.normalize('NFD', '検証ガーデン 御見積書.pdf')
+        rows = [{'原本ID': 'synthetic', '見積元': '(有)架空塗装'},
+                {'原本ID': 'another', '見積元': '別原本の会社'}]
+        metadata = {'summary_sources': [
+            {'元ファイル': source['name'], '見積元': '(有)架空塗装'},
+            {'元ファイル': source['name'], '見積元': fallback},
+            {'元ファイル': 'another.pdf', '見積元': '別原本の会社'}]}
+        before = copy.deepcopy((source, metadata, rows))
+        self.assertEqual(source_vendor(source, metadata, rows), '(有)架空塗装')
+        self.assertEqual((source, metadata, rows), before)
+
+    def test_filename_without_issuer_is_not_displayed_as_a_company(self):
+        from source_review_ui import source_vendor
+        source = {'id': 'synthetic', 'name': '架空資料 Ａ.pdf'}
+        rows = [{'原本ID': 'synthetic', '見積元': '架空資料A.pdf'}]
+        metadata = {'summary_sources': [{'元ファイル': source['name'], '見積元': source['name']}]}
+        self.assertEqual(source_vendor(source, metadata, rows), '業者名の記載なし')
+
+    def test_distinct_issuer_candidates_and_other_filenames_still_need_confirmation(self):
+        from source_review_ui import source_vendor
+        source = {'id': 'synthetic', 'name': 'original.pdf'}
+        rows = [{'原本ID': 'synthetic', '見積元': '(有)架空塗装'}]
+        for other in ('有限会社架空塗装', '(株)架空塗装', '(有)別会社', 'other.pdf'):
+            with self.subTest(other=other):
+                metadata = {'summary_sources': [{'元ファイル': source['name'], '見積元': other}]}
+                self.assertEqual(source_vendor(source, metadata, rows), '業者名を確認')
+
     def reference_app(self, temp, *, with_rows=False):
         return f'''
 import streamlit as st

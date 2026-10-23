@@ -54,6 +54,21 @@ def compact(value):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value)))
 
 
+def _unit_price_comparable(row):
+    """Compare work/product rates, not summary amounts or financial credits."""
+    if row.get("集計のみ", False):
+        return False
+    for field in ("原価単価", "原価金額", "見積単価", "見積金額"):
+        try:
+            value = Decimal(str(row.get(field)))
+        except (InvalidOperation, TypeError, ValueError):
+            # Existing numeric/source validation handles invalid values.
+            continue
+        if value.is_finite() and value < 0:
+            return False
+    return True
+
+
 class OriginalVault:
     """Private, content-addressed files; never overwrite originals or receipts.
 
@@ -446,8 +461,9 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
                 if different and word in str(left.get("品名")) and word in str(right.get("品名")):
                     issue("共通費重複疑い", ids, f"複数原本に{word}があります。範囲・負担区分を確認してください。")
     priced = [{k: clean(v) for k, v in r.items()} for r in allocated.to_dict("records")]
-    for i, left in enumerate(priced):
-        for right in priced[i+1:]:
+    unit_price_rows = [row for row in priced if _unit_price_comparable(row)]
+    for i, left in enumerate(unit_price_rows):
+        for right in unit_price_rows[i+1:]:
             same = all(compact(left.get(k, "")) == compact(right.get(k, "")) for k in ("品名", "仕様", "単位"))
             if same and left.get("見積単価") != right.get("見積単価"):
                 issue("売価単価差", [left["行ID"], right["行ID"]], "同じ品名・仕様・単位で顧客向け単価が異なります。適用範囲を確認してください。")

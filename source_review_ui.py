@@ -5,6 +5,8 @@ from html import escape
 from collections import OrderedDict
 import copy
 import math
+import re
+import unicodedata
 from source_amounts import read_amounts, net_from_gross
 
 _PREVIEW_CACHE_MAX_PAGES = 64
@@ -112,7 +114,12 @@ def source_vendor(source, metadata, rows):
     candidates=[str(r.get('見積元') or '').strip() for r in rows if r.get('原本ID')==source['id']]
     candidates += [str(s.get('見積元') or '').strip() for s in metadata.get('summary_sources',[])
                    if s.get('元ファイル')==source['name']]
-    known=list(dict.fromkeys(v for v in candidates if v and v.lower() not in ('不明','unknown','不明な会社','none','nan')))
+    # Extraction can use the original filename when no issuer was found.
+    # Ignore only that placeholder; distinct issuer candidates still conflict.
+    filename_key = ''.join(unicodedata.normalize('NFKC', str(source.get('name') or '')).split())
+    known=list(dict.fromkeys(v for v in candidates
+               if v and v.lower() not in ('不明','unknown','不明な会社','none','nan')
+               and ''.join(unicodedata.normalize('NFKC', v).split()) != filename_key))
     return known[0] if len(known)==1 else ('業者名を確認' if known else '業者名の記載なし')
 
 
@@ -332,6 +339,12 @@ def _render_source_details(st, source, reading, rows, detail_rows):
         changes = {r['行ID']:r for r in rows}
         detail_rows = [changes.get(r['行ID'], r) for r in detail_rows]
     if source['source_notes']:
+        conditions = list(dict.fromkeys(str(note) for note in source['source_notes']
+            if re.search(r'除く|除外|別途|対象外|含まれない|含まない', str(note))))
+        if conditions:
+            st.info('原本に書かれている工事範囲・除外条件です。')
+            for note in conditions:
+                st.write(note)
         with st.expander('原本の備考・施工範囲を見る（社内用）'):
             st.caption('原本の条件です。お客様向け備考には自動では載せません。')
             for note in source['source_notes']:st.write(note)
