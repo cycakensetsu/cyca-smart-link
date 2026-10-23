@@ -99,6 +99,40 @@ def source_identity(value):
     """File identity is opaque: never collapse whitespace or Unicode."""
     return "" if value is None else str(value)
 
+
+def original_source_notes(source):
+    """Keep printed conditions verbatim, with their own original and page."""
+    name = source_identity(source.get('__source_name', source.get('元ファイル', '')))
+    fallback_page = source.get('__page_number', source.get('ページ'))
+    notes = source.get('原本備考', [])
+    if isinstance(notes, str):
+        notes = [notes]
+    if not isinstance(notes, list):
+        return []
+    result = []
+    for note in notes:
+        if isinstance(note, str):
+            text, page = note, fallback_page
+        elif isinstance(note, dict):
+            if source_identity(note.get('元ファイル', name)) != name:
+                continue
+            text = note.get('原文')
+            page = note.get('ページ', note.get('__page_number', fallback_page))
+        else:
+            continue
+        if not isinstance(text, str) or not text.strip():
+            continue
+        try:
+            number = float(page)
+            page = int(number) if number.is_integer() and number > 0 else None
+        except (TypeError, ValueError, OverflowError):
+            page = None
+        item = {'元ファイル': name, 'ページ': page, '原文': text}
+        if item not in result:
+            result.append(item)
+    return result
+
+
 def parse_money(value) -> Optional[float]:
     text = normalize_text(value)
     if not text:
@@ -405,6 +439,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
         if role:
             page_roles.append(role)
         source_items: List[Dict] = []
+        source_notes = original_source_notes(source)
         for key, value in source.items():
             if str(key).startswith("__"):
                 continue
@@ -418,7 +453,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                     if coerced:
                         items.append(coerced)
                         source_items.append(coerced)
-        if source_items or any(source.get(key) not in (None, "", []) for key in ("小計", "改小計", "消費税", "工事費計", "工事名称", "工事名", "件名", "project_name")):
+        if source_items or source_notes or any(source.get(key) not in (None, "", []) for key in ("小計", "改小計", "消費税", "工事費計", "工事名称", "工事名", "件名", "project_name")):
             normalized_sources.append({
                 "見積元": source_vendor,
                 "元ファイル": source_name,
@@ -427,6 +462,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                 "見積区分確認": bool(source.get("__quote_scope_verified")),
                 "工事名称": normalize_text(_first_present(source, ["工事名称", "工事名", "件名", "project_name"], "")),
                 "工事項目": source_items,
+                "原本備考": source_notes,
                 "小計": parse_money(_first_present(source, ["小計", "subtotal"])),
                 "端数調整": parse_money(_first_present(source, ["端数調整", "端末調整", "調整額", "rounding_adjustment"])),
                 "改小計": parse_money(_first_present(source, ["改小計", "税抜合計", "revised_subtotal"])),

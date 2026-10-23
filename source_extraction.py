@@ -4,7 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from gemini_resilience import (call_gemini_with_retry, build_page_prompt,
                                parse_gemini_json_payload, _render_pdf_pages_as_images)
-from estimate_pipeline import split_extraction_payload, build_intermediate_dataframe, validate_intermediate
+from estimate_pipeline import (split_extraction_payload, build_intermediate_dataframe,
+                               validate_intermediate, original_source_notes)
 from source_table import reconcile_native_pdf
 from source_sections import reconcile_sections, reconcile_printed_totals
 
@@ -44,6 +45,22 @@ def _reread_summaries(previous, reread):
             old=next((s for s in same_source if s.get('__page_role') == summary.get('__page_role') == 'cover_summary_page'),{})
             base={k:v for k,v in old.items() if k in ('宛名','工事名称','工事名','工事場所','見積元','支払条件','有効期限')}
         result.append({**base, **{k:v for k,v in summary.items() if v not in (None,'',[])}})
+    # A reread may omit a footer or replace a page's notes. Keep the earlier
+    # printed words at their original location, without carrying over money.
+    known = [note for summary in result for note in original_source_notes(summary)]
+    for old in previous:
+        for note in original_source_notes(old):
+            if note in known:
+                continue
+            target = next((summary for summary in result
+                           if summary.get('__source_name') == note['元ファイル']
+                           and summary.get('__page_number') == note['ページ']), None)
+            if target is None:
+                target = {'__source_name': note['元ファイル'], '__page_number': note['ページ'],
+                          '__page_role': 'detail_page'}
+                result.append(target)
+            target['原本備考'] = original_source_notes(target) + [note]
+            known.append(note)
     return result
 
 

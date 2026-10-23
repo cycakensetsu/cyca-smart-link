@@ -50,6 +50,30 @@ LABELS = {
 }
 
 
+def _original_notes(name, lines, summaries):
+    from estimate_pipeline import original_source_notes
+    records = []
+    note_indices = {i for i, (_, text) in enumerate(lines)
+                    if re.search('上記に含|別途|対象外|除く|除外|含まない|含めない|見積範囲|施工範囲|含まれ|条件|工程|使用材料|使用塗料|材料|※', text)}
+    for position in sorted(note_indices):
+        page = lines[position][0]
+        for index in range(max(0, position - 1), min(len(lines), position + 2)):
+            if lines[index][0] != page:
+                continue
+            item = {'元ファイル': name, 'ページ': page, '原文': lines[index][1]}
+            if item not in records:
+                records.append(item)
+    for summary in (summaries or {}).get('summary_sources', []):
+        if summary.get('元ファイル') != name:
+            continue
+        for item in original_source_notes(summary):
+            if item not in records:
+                records.append(item)
+    display = [f"{item['ページ']}ページ：{item['原文']}" if item['ページ'] is not None
+               else 'ページ未確認：' + item['原文'] for item in records]
+    return display, records
+
+
 @isolated_pdf
 def read_amounts(name, data, summaries=None):
     candidates = {key: [] for key in LABELS}
@@ -84,9 +108,7 @@ def read_amounts(name, data, summaries=None):
                     item = {'value':value, 'priority':priority, 'page':page, 'text':raw[:200], 'method':'原本の文字'}
                     candidates[field].append(item)
                     break
-    note_indices={i for i,(_,text) in enumerate(lines) if re.search('上記に含|別途|対象外|見積範囲|施工範囲|含まれ|条件|※',text)}
-    source_notes=list(dict.fromkeys(lines[i][1] for pos in sorted(note_indices)
-        for i in range(max(0,pos-1),min(len(lines),pos+2))))
+    source_notes, source_note_records = _original_notes(name, lines, summaries)
     # The application's eight-column original contains a validated final net
     # total and separate summary-only fees. Read those cells directly instead
     # of allowing an OCR subtotal or section total to override them.
@@ -108,7 +130,8 @@ def read_amounts(name, data, summaries=None):
                 'tax_basis':'税抜','tax_rate':.10,'conflicts':[],
                 'evidence':[{'field':'net_total','value':s['net_total'],'page':s['page'],
                              'method':'原本の個別見積合計','text':s['name']} for s in scoped_totals],
-                'quote_sections':scoped_totals,'source_notes':source_notes,'amount_notes':[],'page':scoped_totals[0]['page']}
+                'quote_sections':scoped_totals,'source_notes':source_notes,
+                'source_note_records':source_note_records,'amount_notes':[],'page':scoped_totals[0]['page']}
         from source_variants import find_amount_notes
         combined['amount_notes']=find_amount_notes(lines,(summaries or {}).get('summary_sources',[]),name,combined)
         return combined
@@ -126,7 +149,7 @@ def read_amounts(name, data, summaries=None):
                 if value is not None and value >= 0:
                     candidates[field].append({'value':value, 'priority':2 if key == '改小計' else 0, 'page':item.get('ページ') or 1, 'text':key, 'method':'AIの読み取り'})
                     break
-    result = {'net_total':None, 'tax':None, 'gross_total':None, 'tax_basis':'税抜', 'tax_rate':.10, 'conflicts':[], 'evidence':evidence, 'source_notes':source_notes}
+    result = {'net_total':None, 'tax':None, 'gross_total':None, 'tax_basis':'税抜', 'tax_rate':.10, 'conflicts':[], 'evidence':evidence, 'source_notes':source_notes, 'source_note_records':source_note_records}
     chosen = {}
     for field, items in candidates.items():
         if not items:
