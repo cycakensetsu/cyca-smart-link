@@ -209,4 +209,12 @@ def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
     records=include_printed_discount(records,summaries,page.source_name,page.total_pages)
     from document_scopes import retain_scope_context
     records=retain_scope_context(records,summaries,page.source_name)
+    if ok:
+        from source_annotations import verify_scanned_annotations
+        summaries, annotation_model = verify_scanned_annotations(
+            client, page, path, summaries, primary_model=primary_model,
+            fallback_models=fallback_models, network_gate=network_gate,
+            on_retry=on_retry, on_model_start=on_model_start)
+        if annotation_model:
+            models.append(annotation_model)
     return summaries,records,models,errors

@@ -34,9 +34,11 @@ def complete(source, result):
     from estimate_pipeline import build_intermediate_dataframe,validate_intermediate
     from source_extraction import _total_mismatch
     from source_amounts import money
+    from source_annotations import annotation_cache_ready
     try:
         summaries,records,models,errors=result
         if errors or not records or not isinstance(summaries,list) or not isinstance(records,list):return False
+        if not annotation_cache_ready(summaries):return False
         pages=source['pages'];name=source['name']
         if type(pages) is not int or pages<1:return False
         covered=set()

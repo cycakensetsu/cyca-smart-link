@@ -440,6 +440,9 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
             page_roles.append(role)
         source_items: List[Dict] = []
         source_notes = original_source_notes(source)
+        annotation_review = source.get('annotation_review')
+        if not isinstance(annotation_review, dict):
+            annotation_review = None
         for key, value in source.items():
             if str(key).startswith("__"):
                 continue
@@ -453,7 +456,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                     if coerced:
                         items.append(coerced)
                         source_items.append(coerced)
-        if source_items or source_notes or any(source.get(key) not in (None, "", []) for key in ("小計", "改小計", "消費税", "工事費計", "工事名称", "工事名", "件名", "project_name")):
+        if source_items or source_notes or annotation_review or any(source.get(key) not in (None, "", []) for key in ("小計", "改小計", "消費税", "工事費計", "工事名称", "工事名", "件名", "project_name")):
             normalized_sources.append({
                 "見積元": source_vendor,
                 "元ファイル": source_name,
@@ -463,6 +466,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                 "工事名称": normalize_text(_first_present(source, ["工事名称", "工事名", "件名", "project_name"], "")),
                 "工事項目": source_items,
                 "原本備考": source_notes,
+                "annotation_review": dict(annotation_review) if annotation_review else None,
                 "小計": parse_money(_first_present(source, ["小計", "subtotal"])),
                 "端数調整": parse_money(_first_present(source, ["端数調整", "端末調整", "調整額", "rounding_adjustment"])),
                 "改小計": parse_money(_first_present(source, ["改小計", "税抜合計", "revised_subtotal"])),

@@ -336,13 +336,15 @@ def _render_source_details(st, source, reading, rows, detail_rows):
     # A file with extracted priced rows cannot silently become a reference
     # attachment through old UI state or a restored source dictionary.
     source.update(reference_only=False, reference_confirmed=False)
+    if any(review.get('status') != 'completed' for review in reading.get('annotation_reviews', [])):
+        st.info('欄外の注記は自動確認が終わっていません。左の原本で工事の範囲・除外条件も見比べてから、下の確認にチェックしてください。')
     if rows:
         rows = _render_items(st, rows, sid)
         changes = {r['行ID']:r for r in rows}
         detail_rows = [changes.get(r['行ID'], r) for r in detail_rows]
     if source['source_notes']:
         conditions = list(dict.fromkeys(str(note) for note in source['source_notes']
-            if re.search(r'除く|除外|別途|対象外|含まれない|含まない', str(note))))
+            if re.search(r'除く|除外|別途|対象外|含まれない|含まない|含みません|含んでいません|入っておりません', str(note))))
         if conditions:
             st.info('原本に書かれている工事範囲・除外条件です。')
             for note in conditions:
