@@ -8,6 +8,7 @@ from pdf_worker import isolated_pdf
 
 import re
 import unicodedata
+import hashlib
 
 
 def money(value):
@@ -54,7 +55,7 @@ def _original_notes(name, lines, summaries):
     from estimate_pipeline import original_source_notes
     records = []
     note_indices = {i for i, (_, text) in enumerate(lines)
-                    if re.search('上記に含|別途|対象外|除く|除外|含まない|含めない|見積範囲|施工範囲|含まれ|条件|工程|使用材料|使用塗料|材料|※', text)}
+                    if re.search('上記に含|別途|対象外|除く|除外|含まない|含めない|含みません|含んでいません|入っておりません|見積範囲|施工範囲|含まれ|条件|工程|使用材料|使用塗料|材料|※', text)}
     for position in sorted(note_indices):
         page = lines[position][0]
         for index in range(max(0, position - 1), min(len(lines), position + 2)):
@@ -72,6 +73,14 @@ def _original_notes(name, lines, summaries):
     display = [f"{item['ページ']}ページ：{item['原文']}" if item['ページ'] is not None
                else 'ページ未確認：' + item['原文'] for item in records]
     return display, records
+
+
+def _annotation_reviews(name, data, summaries):
+    digest = hashlib.sha256(data).hexdigest()
+    return [dict(review) for source in (summaries or {}).get('summary_sources', [])
+            if source.get('元ファイル') == name
+            and isinstance((review := source.get('annotation_review')), dict)
+            and review.get('source_name') == name and review.get('sha256') == digest]
 
 
 @isolated_pdf
@@ -109,6 +118,7 @@ def read_amounts(name, data, summaries=None):
                     candidates[field].append(item)
                     break
     source_notes, source_note_records = _original_notes(name, lines, summaries)
+    annotation_reviews = _annotation_reviews(name, data, summaries)
     # The application's eight-column original contains a validated final net
     # total and separate summary-only fees. Read those cells directly instead
     # of allowing an OCR subtotal or section total to override them.
@@ -131,7 +141,8 @@ def read_amounts(name, data, summaries=None):
                 'evidence':[{'field':'net_total','value':s['net_total'],'page':s['page'],
                              'method':'原本の個別見積合計','text':s['name']} for s in scoped_totals],
                 'quote_sections':scoped_totals,'source_notes':source_notes,
-                'source_note_records':source_note_records,'amount_notes':[],'page':scoped_totals[0]['page']}
+                'source_note_records':source_note_records,'annotation_reviews':annotation_reviews,
+                'amount_notes':[],'page':scoped_totals[0]['page']}
         from source_variants import find_amount_notes
         combined['amount_notes']=find_amount_notes(lines,(summaries or {}).get('summary_sources',[]),name,combined)
         return combined
@@ -149,7 +160,7 @@ def read_amounts(name, data, summaries=None):
                 if value is not None and value >= 0:
                     candidates[field].append({'value':value, 'priority':2 if key == '改小計' else 0, 'page':item.get('ページ') or 1, 'text':key, 'method':'AIの読み取り'})
                     break
-    result = {'net_total':None, 'tax':None, 'gross_total':None, 'tax_basis':'税抜', 'tax_rate':.10, 'conflicts':[], 'evidence':evidence, 'source_notes':source_notes, 'source_note_records':source_note_records}
+    result = {'net_total':None, 'tax':None, 'gross_total':None, 'tax_basis':'税抜', 'tax_rate':.10, 'conflicts':[], 'evidence':evidence, 'source_notes':source_notes, 'source_note_records':source_note_records, 'annotation_reviews':annotation_reviews}
     chosen = {}
     for field, items in candidates.items():
         if not items:

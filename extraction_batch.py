@@ -49,7 +49,7 @@ def extraction_notice(errors, *, empty=True):
 
 def pipeline_version():
     digest=hashlib.sha256()
-    for name in ('extraction_batch','source_extraction','source_table','source_sections',
+    for name in ('extraction_batch','source_extraction','source_annotations','source_table','source_sections',
                  'document_scopes','estimate_pipeline','gemini_resilience','cyca_reference','source_amounts','markup_rules','pdf_worker','complete_document_cache'):
         digest.update((Path(__file__).parent/(name+'.py')).read_bytes())
     return digest.hexdigest()
@@ -64,6 +64,7 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
     Each network worker owns its client. Native PDF work stays process-isolated.
     """
     from source_extraction import extract_job
+    from source_annotations import annotation_cache_ready
     production_extractor = extractor is None or extractor is extract_job
     if extractor is None:extractor=extract_job
     cache=cache if cache is not None else {}
@@ -75,6 +76,8 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
             job.page_number,job.total_pages,job.whole_document,primary_model,
             tuple(fallback_models),version)).encode()).hexdigest()
         keys[index]=key
+        if key in cache and not annotation_cache_ready(cache[key][0]):
+            cache.pop(key)
         if key in cache:
             results[index]=copy.deepcopy(cache[key])
             yield {'kind':'done','index':index,'source':job.source_name,'cached':True,'seconds':0}
@@ -122,7 +125,8 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
                 from estimate_pipeline import build_intermediate_dataframe,validate_intermediate
                 from source_extraction import _total_mismatch
                 frame,_=build_intermediate_dataframe(result[1])
-                cacheable=bool(result[1]) and not result[3] and not validate_intermediate(frame)
+                cacheable=(bool(result[1]) and not result[3] and not validate_intermediate(frame)
+                           and annotation_cache_ready(result[0]))
                 def linked(row):
                     try:
                         page=float(row.get('__page_number',1 if jobs[index].total_pages==1 else 0))
