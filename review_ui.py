@@ -102,10 +102,13 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
         r["集計のみ"] = (r['元ファイル'],r['ページ'],str(r['品名']),r['原価金額']) in summary_only
     raw = {"rows": rows, "summary": summaries, "sources": sources,
            "records": [{str(k): clean(v) for k, v in r.items()} for r in records]}
-    extraction_id = vault(st).snapshot("extractions", raw)
+    store = vault(st)
+    extraction_id = store.snapshot("extractions", raw)
     st.session_state["_review_original_rows"] = rows
     st.session_state["_review_metadata"] = dict(summaries or {})
     st.session_state["_review_extraction_id"] = extraction_id
+    from source_spec_history import ensure_spec_history
+    ensure_spec_history(st.session_state, store, raw)
     for key in list(st.session_state):
         if key.startswith(('review_source_ok_', 'review_reference_only_', 'review_agree_', 'review_resolve_totals_')):
             # Identical originals reuse widget IDs. Deletion resets the server
@@ -122,6 +125,8 @@ def render_review(st, api_key=None):
     st.session_state['_review_workflow_step'] = 2 if original else 1
     if not original:
         return
+    from source_spec_history import ensure_spec_history
+    ensure_spec_history(st.session_state, vault(st))
     from conversation_ui import apply_pending, working_context, render_conversation
     apply_pending(st, vault(st))
     if st.session_state.pop('_review_clear_instruction', False):
