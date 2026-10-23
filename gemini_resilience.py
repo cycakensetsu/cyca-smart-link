@@ -154,6 +154,7 @@ def call_gemini_with_retry(
     source_name: Optional[str] = None,
     on_retry: Optional[Callable[[str, int, float, Optional[int], Optional[int]], None]] = None,
     on_model_start: Optional[Callable[[str, Optional[int]], None]] = None,
+    generation_config=None,
 ) -> GeminiCallResult:
     primary = primary_model or DEFAULT_PRIMARY_MODEL
     models = [primary] + [m for m in (fallback_models or []) if m and m != primary]
@@ -167,7 +168,10 @@ def call_gemini_with_retry(
         LOGGER.info("gemini_call_start model=%s page=%s source=%s", model_name, page_number, source_name)
         for attempt in range(1, max_attempts_per_model + 1):
             try:
-                response = client.models.generate_content(model=model_name, contents=contents)
+                arguments = {'model': model_name, 'contents': contents}
+                if generation_config is not None:
+                    arguments['config'] = generation_config
+                response = client.models.generate_content(**arguments)
                 text = _get_response_text(response)
                 LOGGER.info(
                     "gemini_call_success model=%s retry_count=%s page=%s source=%s",

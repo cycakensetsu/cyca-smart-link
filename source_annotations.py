@@ -34,6 +34,29 @@ def should_verify_annotations(page):
             and not page.whole_document and page.page_number == 1)
 
 
+def annotation_generation_config():
+    # Use response_json_schema: the SDK's older response_schema conversion
+    # does not support additionalProperties=False in Developer API mode.
+    schema = {
+        'type': 'object', 'additionalProperties': False,
+        'required': ['元ファイル', '確認ページ', '原本備考'],
+        'properties': {
+            '元ファイル': {'type': 'string'},
+            '確認ページ': {'type': 'array', 'items': {'type': 'integer'}},
+            '原本備考': {
+                'type': 'array',
+                'items': {
+                    'type': 'object', 'additionalProperties': False,
+                    'required': ['ページ', '原文'],
+                    'properties': {'ページ': {'type': 'integer'}, '原文': {'type': 'string'}},
+                },
+            },
+        },
+    }
+    return types.GenerateContentConfig(response_mime_type='application/json',
+                                       response_json_schema=schema)
+
+
 def annotation_prompt(source_name, total_pages):
     schema = {'元ファイル': source_name, '確認ページ': list(range(1, total_pages + 1)),
               '原本備考': [{'ページ': 1, '原文': ''}]}
@@ -131,7 +154,8 @@ def verify_scanned_annotations(client, page, path, summaries, *, primary_model,
                 client, [part, annotation_prompt(page.source_name, page.total_pages)],
                 primary_model=primary_model, fallback_models=list(fallback_models or ())[:1],
                 max_attempts_per_model=1, source_name=page.source_name, page_number=None,
-                on_retry=on_retry, on_model_start=on_model_start)
+                on_retry=on_retry, on_model_start=on_model_start,
+                generation_config=annotation_generation_config())
         used_model = response.model_name
         try:
             payload = parse_gemini_json_payload(response.text)
