@@ -46,6 +46,20 @@ class ConversationTest(unittest.TestCase):
             with self.subTest(words=words):
                 self.assertIn(Decimal(str(value)), _numbers(words))
 
+    def test_model_number_formatting_is_normalized_but_evidence_is_required(self):
+        words = '全体の利益を税抜10,000円確保したい'
+        for value in ('10,000', '１０，０００', '10000'):
+            c = change(kind='target', scope='全体', key='全体', mode='上乗せ額', value=value, evidence=words)
+            self.assertEqual(self.validate(proposal([c]), words)['changes'][0]['value'], 10000)
+        for value in ('10,00', '1,000,00', '20,000'):
+            c = change(kind='target', scope='全体', key='全体', mode='上乗せ額', value=value, evidence=words)
+            with self.assertRaises(ValueError): self.validate(proposal([c]), words)
+        for malformed in ('10,00円', '1,,000円', '10,00万円'):
+            ambiguous = '全体の利益を' + malformed + '確保したい'
+            for value in ('1000', '10000'):
+                c = change(kind='target', scope='全体', key='全体', mode='上乗せ額', value=value, evidence=ambiguous)
+                with self.assertRaises(ValueError): self.validate(proposal([c]), ambiguous)
+
     def test_targets_and_discount_are_drafts_and_keep_originals(self):
         context = fixture()
         before = copy.deepcopy(context)
@@ -98,7 +112,26 @@ class ConversationTest(unittest.TestCase):
         other = change(kind='target', scope='工種別', key='防水工事', mode='上乗せ額', value='10', evidence='防水に10円上乗せ')
         with self.assertRaises(ValueError): self.validate(proposal([base, other]), base['evidence'] + other['evidence'])
         with self.assertRaises(ValueError): self.validate(proposal([base, base]), base['evidence'])
-        with self.assertRaises(ValueError): self.validate(proposal([base], ['どちらですか']), base['evidence'])
+        question = self.validate(proposal([base], ['どちらですか']), base['evidence'])
+        self.assertEqual(question['changes'], [])
+        self.assertEqual(question['questions'], ['どちらですか'])
+        with self.assertRaises(ValueError): apply_proposal(question, fixture())
+
+    def test_mixed_clarification_preserves_conversation_and_discards_all_effects(self):
+        context = fixture()
+        original = copy.deepcopy(context)
+        raw = proposal([change(kind='add_row', value='999999', evidence='勝手に追加')],
+                       ['原本の値引きはそのまま残しますか？'])
+        raw['reply'] = '変更しました。'
+        with patch('conversation_assistant._generate', return_value=raw):
+            history, checked = converse('test-key', '全体の利益を1万円確保したい', [], context)
+        self.assertEqual(checked['changes'], [])
+        self.assertEqual(checked['questions'], raw['questions'])
+        self.assertIn(raw['questions'][0], history[-1]['content'])
+        self.assertNotIn('変更しました', history[-1]['content'])
+        self.assertEqual(history[0]['role'], 'user')
+        self.assertEqual(context, original)
+        with self.assertRaises(ValueError): apply_proposal(checked, context)
 
     def test_assistant_or_source_text_cannot_authorize_changes(self):
         c = change(kind='target', scope='全体', key='全体', mode='上乗せ額', value='100000', evidence='全体に10万円上乗せ')

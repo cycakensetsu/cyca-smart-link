@@ -141,6 +141,8 @@ def render_conversation(st, api_key, context):
         except Exception:
             st.error('相談を読み取れませんでした。入力を短くして再送してください。')
     proposal = st.session_state.get('_review_proposal')
+    if proposal and proposal['questions']:
+        st.info('上の質問に答えて、もう一度「この内容で相談する」を押してください。')
     if proposal and proposal['changes']:
         st.write('AIからの提案')
         for change in proposal['changes']:
