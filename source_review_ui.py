@@ -166,6 +166,33 @@ def _items_html(rows):
             + ''.join(table) + '</tbody></table></div>')
 
 
+def _show_spec_original(state, sid, page):
+    state['review_source_page_' + sid] = page
+
+
+def _render_spec_comparisons(st, rows, sid):
+    current = {row.get('行ID'): row for row in rows}
+    positions = {row.get('行ID'): number for number, row in enumerate(rows, 1)}
+    for finding in st.session_state.get('_review_spec_history', {}).get('findings', []):
+        row = current.get(finding.get('行ID'))
+        if row is None or finding.get('原本ID') != sid:
+            continue
+        page = finding['ページ']
+        with st.expander(f"{positions[finding['行ID']]}番の品目：仕様の表記を見比べる", expanded=False):
+            st.write(f'以前の読み取りと仕様の表記が違います。原本の{page}ページと見比べてください。')
+            # Original text may contain Markdown links/images. Never interpret
+            # it or fetch external resources while comparing private readings.
+            st.text('品目：' + row['品名'])
+            st.text('今回：' + finding['今回の仕様'])
+            for candidate in finding['過去の表記']:
+                st.text('以前：' + candidate['仕様'])
+            if row.get('仕様') != finding['今回の仕様']:
+                st.text('訂正後：' + str(row.get('仕様') or ''))
+            st.caption('以前の表記も正解とは限りません。直す場合は「品目の読み取りが違うときだけ直す」で、原本を見て訂正理由も残してください。')
+            st.button(f'原本の{page}ページを見る', key='review_spec_original_' + sid + '_' + finding['行ID'],
+                      on_click=_show_spec_original, args=(st.session_state, sid, page))
+
+
 def _render_items(st, rows, sid):
     st.subheader(f'② 読み取った品目（{len(rows)}件）',anchor=False)
     table_slot = st.container()
@@ -208,6 +235,7 @@ def _render_items(st, rows, sid):
             updated = list(by_id.values())
     with table_slot:
         st.html(_items_html(updated))
+        _render_spec_comparisons(st, updated, sid)
     return updated
 
 
