@@ -54,6 +54,11 @@ class ConversationTest(unittest.TestCase):
         for value in ('10,00', '1,000,00', '20,000'):
             c = change(kind='target', scope='全体', key='全体', mode='上乗せ額', value=value, evidence=words)
             with self.assertRaises(ValueError): self.validate(proposal([c]), words)
+        for malformed in ('10,00円', '1,,000円', '10,00万円'):
+            ambiguous = '全体の利益を' + malformed + '確保したい'
+            for value in ('1000', '10000'):
+                c = change(kind='target', scope='全体', key='全体', mode='上乗せ額', value=value, evidence=ambiguous)
+                with self.assertRaises(ValueError): self.validate(proposal([c]), ambiguous)
 
     def test_targets_and_discount_are_drafts_and_keep_originals(self):
         context = fixture()

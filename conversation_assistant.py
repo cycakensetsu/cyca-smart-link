@@ -87,7 +87,17 @@ def validate_audio(data):
 
 def _numbers(evidence):
     """Arabic/Japanese amounts, including e.g. 十万円, 1.5万, 百二十万円."""
-    normalized = unicodedata.normalize('NFKC', evidence).replace(',', '')
+    normalized = unicodedata.normalize('NFKC', evidence)
+    def grouped_number(match):
+        token = match.group()
+        if ',' not in token:
+            return token
+        suffix = token[-1] if token[-1] in '万億' else ''
+        number = token[:-1] if suffix else token
+        if not re.fullmatch(r'[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?', number):
+            return ' 数値不明 '
+        return number.replace(',', '') + suffix
+    normalized = re.sub(r'[0-9][0-9,]*(?:\.[0-9]+)?(?:[万億])?', grouped_number, normalized)
     values = set()
     digits = dict(zip('〇零一二三四五六七八九', (0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9)))
     for token in re.findall(r'[0-9〇零一二三四五六七八九十百千万億]+(?:\.[0-9]+)?(?:[万億])?', normalized):
