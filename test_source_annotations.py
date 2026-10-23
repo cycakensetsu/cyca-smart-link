@@ -72,6 +72,43 @@ class SourceAnnotationsTest(unittest.TestCase):
                 self.assertEqual(actual[-1]['原本備考'], [])
                 self.assertNotIn('private-provider-secret', repr(actual))
 
+    def test_empty_quotations_on_valid_checked_pages_equal_no_notes(self):
+        for text in ('', ' ', '\n\t', '　'):
+            with self.subTest(empty=repr(text)):
+                actual, _, _, _ = self.run_check(payload(notes=[{'ページ': 2, '原文': text}]))
+                self.assertEqual(actual[-1]['原本備考'], [])
+                self.assertEqual(actual[-1]['annotation_review']['status'], 'completed')
+                self.assertEqual(actual[-1]['annotation_review']['reasons'], [])
+                self.assertEqual(actual[-1]['annotation_review']['checked_pages'], [1, 2])
+        original_text = '原本に記載された工程A→工程B\n別紙参照'
+        actual, _, _, _ = self.run_check(payload(notes=[
+            {'ページ': 1, '原文': ''}, {'ページ': 2, '原文': original_text},
+            {'元ファイル': 'a.pdf', 'ページ': 2, '原文': '　'}]))
+        self.assertEqual(actual[-1]['原本備考'], [
+            {'元ファイル': 'a.pdf', 'ページ': 2, '原文': original_text}])
+        self.assertEqual(actual[-1]['annotation_review']['status'], 'completed')
+
+    def test_empty_text_does_not_bypass_source_shape_or_page_validation(self):
+        invalid = [
+            {'元ファイル': 'other.pdf', 'ページ': 2, '原文': ''},
+            {'ページ': True, '原文': ''}, {'ページ': '2', '原文': ''},
+            {'ページ': 0, '原文': ''}, {'ページ': 3, '原文': ''},
+            {'ページ': 2.0, '原文': ''}, {'原文': ''},
+            {'ページ': 2, '原文': '', '金額': 999999},
+            {'ページ': 2}, '']
+        for text in (None, 0, False, [], {}):
+            invalid.append({'ページ': 2, '原文': text})
+        for note in invalid:
+            with self.subTest(note_type=type(note).__name__, keys=list(note) if isinstance(note, dict) else []):
+                actual, _, _, _ = self.run_check(payload(notes=[note]))
+                self.assertEqual(actual[-1]['原本備考'], [])
+                self.assertEqual(actual[-1]['annotation_review']['status'], 'needs_review')
+                self.assertTrue(actual[-1]['annotation_review']['reasons'])
+        # A valid empty quotation cannot hide incomplete page coverage either.
+        actual, _, _, _ = self.run_check(payload(pages=(1,), notes=[{'ページ': 1, '原文': ''}]))
+        self.assertEqual(actual[-1]['annotation_review']['status'], 'needs_review')
+        self.assertIn('incomplete_pages', actual[-1]['annotation_review']['reasons'])
+
     def test_foreign_original_and_invalid_or_unchecked_pages_never_enter_source_notes(self):
         foreign = payload('other.pdf', notes=[{'ページ': 1, '原文': '他原本の条件'}])
         actual, _, _, _ = self.run_check(foreign)
