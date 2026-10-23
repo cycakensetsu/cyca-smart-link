@@ -97,8 +97,12 @@ def _parse_annotations(payload, name, total_pages):
             reasons.append('invalid_page')
             continue
         text = note.get('原文')
-        if not isinstance(text, str) or not text.strip():
+        if not isinstance(text, str):
             reasons.append('invalid_notes')
+            continue
+        # Source, shape, and physical page were checked above. An empty
+        # quotation adds no note, just like an empty notes array for that page.
+        if not text.strip():
             continue
         item = {'元ファイル': name, 'ページ': page, '原文': text}
         if item not in accepted:
