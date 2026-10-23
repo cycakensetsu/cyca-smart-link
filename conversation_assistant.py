@@ -116,7 +116,12 @@ def _numbers(evidence):
 
 def _number(value, evidence):
     try:
-        result = Decimal(value)
+        numeric = unicodedata.normalize('NFKC', str(value)).strip()
+        if ',' in numeric:
+            if not re.fullmatch(r'[+-]?[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?', numeric):
+                raise ValueError
+            numeric = numeric.replace(',', '')
+        result = Decimal(numeric)
         if not result.is_finite() or abs(result) > 100000000000 or abs(result) not in _numbers(evidence):
             raise ValueError
     except Exception:
@@ -133,8 +138,12 @@ def validate_proposal(raw, context, history):
     if not isinstance(questions, list) or len(questions) > 6 or not isinstance(changes, list) or len(changes) > 100:
         raise ValueError('相談の返答が長すぎます。内容を分けてください。')
     questions = [text(q, 500) for q in questions]
-    if questions and changes:
-        raise ValueError('確認事項が残っているため、変更は反映できません。')
+    if questions:
+        # A model can return both a clarification and a draft despite the
+        # schema prompt. Keep the question visible, but discard every effect.
+        # In particular, never retain an unvalidated draft for later application.
+        return {'reply': '確認してから案を作ります。まだ金額や品目は変更していません。',
+                'questions': questions, 'changes': [], 'base': digest(context)}
     utterances = [m['content'] for m in history if m.get('role') == 'user']
     rows = {r['行ID']: r for r in context['rows']}
     checked, seen = [], set()
