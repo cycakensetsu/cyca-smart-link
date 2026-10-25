@@ -105,7 +105,7 @@ def split_print_pages(wb, estimate):
         dest.page_margins = PageMargins(left=.28,right=.28,top=.28,bottom=.28,header=.12,footer=.12)
         dest.print_area = f"A1:H{end-start+1}"
         dest.oddFooter.left.text = estimate.project_name
-        dest.oddFooter.left.size = 8
+        # Leave size unset: Numbers drops this left footer with an explicit 8 pt size.
         dest.oddFooter.right.text = f"{len(wb.worksheets)-1} / {len(blocks)}"
         dest.oddFooter.right.size = 8
     def map_cell(address):

@@ -1,5 +1,7 @@
 import unittest
 from io import BytesIO
+from zipfile import ZipFile
+import xml.etree.ElementTree as ET
 import fitz
 from openpyxl import load_workbook
 from template_fill_test_v2 import Estimate, Category, LineItem, fill_estimate_v2
@@ -7,6 +9,26 @@ from template_fill_test_v2 import Estimate, Category, LineItem, fill_estimate_v2
 class PrintLayoutTest(unittest.TestCase):
     def estimate(self, count=14):
         return Estimate(vendor='検証工務店', customer='塚本 様', project_name='今回の工事', issue_date='2026/10/05', valid_days='30日', categories=[Category('内装工事', [LineItem(f'工事{i}', '', 2, '㎡', 5000, 10000, '') for i in range(count)])])
+
+    def test_numbers_project_footer_keeps_text_without_size_code_and_preserves_right_pager(self):
+        for pour, sources, count in ((False, 2, 25), (True, 2, 25), (True, 1, 3)):
+            with self.subTest(pour_layout=pour, source_count=sources):
+                estimate=self.estimate(count)
+                estimate.project_name='5件工事（確認用）'
+                estimate.pour_layout=pour
+                estimate.source_count=sources
+                result=fill_estimate_v2(estimate,save_to_disk=False)
+                self.assertTrue(result.ok,result.errors)
+                workbook=load_workbook(BytesIO(result.data))
+                with ZipFile(BytesIO(result.data)) as archive:
+                    for number,sheet in enumerate(workbook,1):
+                        self.assertEqual(sheet.oddFooter.left.text,estimate.project_name)
+                        self.assertIsNone(sheet.oddFooter.left.size)
+                        self.assertEqual(sheet.oddFooter.right.text,f'{number} / {len(workbook.worksheets)}')
+                        self.assertEqual(sheet.oddFooter.right.size,8)
+                        root=ET.fromstring(archive.read(f'xl/worksheets/sheet{number}.xml'))
+                        footer=root.find('{*}headerFooter/{*}oddFooter').text
+                        self.assertEqual(footer.split('&R',1)[0],'&L'+estimate.project_name)
 
     def test_print_pages_and_honorific_match_pdf(self):
         result=fill_estimate_v2(self.estimate(), save_to_disk=False)
