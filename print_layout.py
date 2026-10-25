@@ -63,7 +63,7 @@ def split_print_pages(wb, estimate):
     """
     from template_fill_test_v2 import (QUOTE_SHEET, SUMMARY_SHEET, DETAIL_SHEET,
         DETAIL_PAGE_START_ROW, DETAIL_PAGE_BLOCK_ROWS, MAX_DETAIL_PAGES,
-        COVER_END_ROW, SUMMARY_BAND_ROW, SUMMARY_PAGE_END_ROW)
+        COVER_END_ROW, SUMMARY_BAND_ROW, SUMMARY_PAGE_END_ROW, COMPANY)
     source = wb[QUOTE_SHEET]
     blocks = [(QUOTE_SHEET, 1, COVER_END_ROW),
               (SUMMARY_SHEET, SUMMARY_BAND_ROW, SUMMARY_PAGE_END_ROW)]
@@ -104,7 +104,7 @@ def split_print_pages(wb, estimate):
         dest.sheet_properties.pageSetUpPr.fitToPage = True
         dest.page_margins = PageMargins(left=.28,right=.28,top=.28,bottom=.28,header=.12,footer=.12)
         dest.print_area = f"A1:H{end-start+1}"
-        dest.oddFooter.left.text = estimate.project_name
+        dest.oddFooter.left.text = f"{COMPANY['name']}　{estimate.project_name}"
         # Leave size unset: Numbers drops this left footer with an explicit 8 pt size.
         dest.oddFooter.right.text = f"{len(wb.worksheets)-1} / {len(blocks)}"
         dest.oddFooter.right.size = 8

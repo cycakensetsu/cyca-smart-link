@@ -4,7 +4,7 @@ from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 import fitz
 from openpyxl import load_workbook
-from template_fill_test_v2 import Estimate, Category, LineItem, fill_estimate_v2
+from template_fill_test_v2 import Estimate, Category, LineItem, fill_estimate_v2, COMPANY
 
 class PrintLayoutTest(unittest.TestCase):
     def estimate(self, count=14):
@@ -22,13 +22,14 @@ class PrintLayoutTest(unittest.TestCase):
                 workbook=load_workbook(BytesIO(result.data))
                 with ZipFile(BytesIO(result.data)) as archive:
                     for number,sheet in enumerate(workbook,1):
-                        self.assertEqual(sheet.oddFooter.left.text,estimate.project_name)
+                        expected_footer=f"{COMPANY['name']}　{estimate.project_name}"
+                        self.assertEqual(sheet.oddFooter.left.text,expected_footer)
                         self.assertIsNone(sheet.oddFooter.left.size)
                         self.assertEqual(sheet.oddFooter.right.text,f'{number} / {len(workbook.worksheets)}')
                         self.assertEqual(sheet.oddFooter.right.size,8)
                         root=ET.fromstring(archive.read(f'xl/worksheets/sheet{number}.xml'))
                         footer=root.find('{*}headerFooter/{*}oddFooter').text
-                        self.assertEqual(footer.split('&R',1)[0],'&L'+estimate.project_name)
+                        self.assertEqual(footer.split('&R',1)[0],'&L'+expected_footer)
 
     def test_print_pages_and_honorific_match_pdf(self):
         result=fill_estimate_v2(self.estimate(), save_to_disk=False)
