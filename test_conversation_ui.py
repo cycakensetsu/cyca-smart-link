@@ -1,7 +1,10 @@
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+import wave
 
 from streamlit.testing.v1 import AppTest
 from test_conversation_assistant import change, proposal
@@ -29,6 +32,13 @@ render_review(st, api_key='test-key-not-sent')
 
 
 class ConversationUITest(unittest.TestCase):
+    def wav(self):
+        buffer=BytesIO()
+        with wave.open(buffer,'wb') as recording:
+            recording.setnchannels(1);recording.setsampwidth(2);recording.setframerate(16000)
+            recording.writeframes(b'\0\0'*16000)
+        return buffer.getvalue()
+
     def checked_app(self, temp):
         at = AppTest.from_string(app_source(temp)).run()
         sid = at.session_state['_review_sources'][0]['id']
@@ -123,6 +133,64 @@ class ConversationUITest(unittest.TestCase):
             self.assertEqual(at.text_area(key='review_instruction').value, '')
             self.assertEqual(at.text_input(key='review_project').value, '変更した工事')
             self.assertNotIn('_review_proposal', at.session_state)
+
+    def test_uploaded_wav_only_calls_ai_after_click_and_keeps_money_pending_approval(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=self.checked_app(temp)
+            words='見積全体に1万円上乗せ'
+            raw=proposal([change(kind='target',scope='全体',key='全体',mode='上乗せ額',value='10000',evidence=words)])
+            upload=SimpleNamespace(getvalue=self.wav)
+            with patch('streamlit.file_uploader',return_value=upload),patch('conversation_assistant._generate',side_effect=[{'transcript':words},raw]) as ai:
+                at.run()
+                ai.assert_not_called()
+                self.assertFalse(at.button(key='review_voice_file_consult').disabled)
+                at.button(key='review_voice_file_consult').click().run()
+                self.assertEqual(ai.call_count,2)
+            self.assertEqual(list(at.exception),[])
+            self.assertEqual(at.text_area(key='review_instruction').value,words)
+            self.assertFalse(at.button(key='review_apply_conversation').disabled)
+            self.assertEqual(next(n for n in at.number_input if n.key.startswith('review_target_')).value,0)
+            self.assertNotIn('_review_approval',at.session_state)
+            self.assertEqual(at.session_state['_review_original_rows'][0]['原価金額'],100000)
+            at.button(key='review_apply_conversation').click().run()
+            self.assertEqual(next(n for n in at.number_input if n.key.startswith('review_target_')).value,10000)
+            self.assertNotIn('_review_approval',at.session_state)
+            self.assertTrue(at.button(key='review_approve').disabled)
+
+    def test_invalid_uploaded_wav_rejects_before_ai_and_discards_the_previous_unapplied_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=self.checked_app(temp)
+            self.ask(at)
+            with patch('streamlit.file_uploader',return_value=SimpleNamespace(getvalue=lambda:b'not wav')),patch('conversation_assistant._generate') as ai:
+                at.run();at.button(key='review_voice_file_consult').click().run()
+                ai.assert_not_called()
+            self.assertEqual(list(at.exception),[])
+            self.assertNotIn('_review_proposal',at.session_state)
+            self.assertNotIn('review_apply_conversation',[b.key for b in at.button])
+            self.assertTrue(any('録音を確認できません' in e.value for e in at.error))
+            self.assertEqual(next(n for n in at.number_input if n.key.startswith('review_target_')).value,0)
+
+    def test_actual_silent_transcription_shows_voice_error_and_never_creates_a_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=self.checked_app(temp)
+            with patch('streamlit.file_uploader',return_value=SimpleNamespace(getvalue=self.wav)),patch('conversation_assistant._generate',return_value={'transcript':' '}) as ai,patch('conversation_ui.converse') as proposal_ai:
+                at.run();at.button(key='review_voice_file_consult').click().run()
+                self.assertEqual(ai.call_count,1)
+                proposal_ai.assert_not_called()
+            self.assertEqual(list(at.exception),[])
+            self.assertTrue(any('声を聞き取れません' in e.value for e in at.error))
+            self.assertNotIn('_review_proposal',at.session_state)
+
+    def test_failed_new_text_consult_discards_previous_unapplied_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=self.checked_app(temp)
+            self.ask(at)
+            with patch('conversation_ui.converse',side_effect=ValueError('試験：対象が不明')):
+                at.button(key='review_consult').click().run()
+            self.assertEqual(list(at.exception),[])
+            self.assertNotIn('_review_proposal',at.session_state)
+            self.assertNotIn('review_apply_conversation',[b.key for b in at.button])
+            self.assertEqual(next(n for n in at.number_input if n.key.startswith('review_target_')).value,0)
 
     def test_extraction_replacement_forgets_previous_client_conversation(self):
         from types import SimpleNamespace

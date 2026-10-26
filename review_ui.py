@@ -17,9 +17,29 @@ def vault(st):
     return OriginalVault(root, st.session_state.get("username", ""))
 
 
-def render_archive(st):
+def _render_archive_restore(st):
     from vault_archive import restore_archive
+    notice = st.session_state.pop('_vault_restore_notice', '')
+    if notice:
+        st.success(notice)
+    st.caption('以前このアプリで保存したZIPから、原本・読み取り履歴・完成ファイルを戻せます。今の入力や金額はそのままです。')
+    upload = st.file_uploader('保存した作業データ（ZIP）', type=['zip'], key='vault_restore_file')
+    if st.button('このデータを戻す', disabled=upload is None, key='vault_restore'):
+        try:
+            count = restore_archive(vault(st), bytes(upload.getbuffer()))
+        except (ValueError, OSError) as exc:
+            st.error(str(exc))
+        else:
+            for key in ('_vault_archive', '_review_spec_history_scope', '_review_spec_history'):
+                st.session_state.pop(key, None)
+            st.session_state['_vault_restore_notice'] = f'{count}件の保存データを戻しました。'
+            st.rerun()
+
+
+def render_archive(st):
     if not st.session_state.get('_review_export_ready'):
+        with st.expander('以前の保存データを戻す（必要なときだけ）'):
+            _render_archive_restore(st)
         return
     with st.expander("原本・記録もまとめて保存する（社内用・必要なときだけ）", expanded=False):
         st.caption("原本・作成済みの見積・記録を、PCにまとめて保存できます。社内用なのでお客様には送りません。")
@@ -28,11 +48,7 @@ def render_archive(st):
         try:
             render_backup_download(st, 'vault', auto=True)
             with st.expander('以前保存したデータを戻すときだけ開く'):
-                upload = st.file_uploader("保存した作業データ（ZIP）", type=['zip'], key='vault_restore_file')
-                if st.button("このデータを戻す", disabled=upload is None, key='vault_restore'):
-                    count = restore_archive(vault(st), bytes(upload.getbuffer()))
-                    st.session_state.pop('_vault_archive', None)
-                    st.success(f"{count}件の保存データを戻しました。")
+                _render_archive_restore(st)
         except (ValueError, OSError) as exc:
             st.error(str(exc))
 

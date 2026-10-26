@@ -78,6 +78,30 @@ def change_description(c, context):
     return f"{row['見積元']}・{row['品名']}：{c['field']} → {value}" + (f"（{c['reason']}）" if c['reason'] else '')
 
 
+def _clear_unapplied_proposal(state):
+    for key in ('_review_proposal', '_review_proposal_widgets', '_review_assistant_apply'):
+        state.pop(key, None)
+
+
+def _consult_audio(st, api_key, audio, history, context):
+    _clear_unapplied_proposal(st.session_state)
+    try:
+        with st.spinner('話した内容を聞き取り、見積の案を考えています…'):
+            words = transcribe(api_key, audio.getvalue(), st.secrets).strip()
+            if not words:
+                raise ValueError('声を聞き取れませんでした。録り直すか、下に文字で入力してください。')
+            st.session_state['review_instruction'] = words
+            updated, proposal = converse(api_key, words, history, context, st.secrets)
+        st.session_state['_review_chat'] = updated
+        st.session_state['_review_proposal'] = proposal
+        st.session_state['_review_proposal_widgets'] = widget_fingerprint(st.session_state)
+        st.rerun()
+    except ValueError as exc:
+        st.error(str(exc))
+    except Exception:
+        st.error('相談を完了できませんでした。下に聞き取れた文章があれば、直して「この内容で相談する」を押してください。')
+
+
 def render_conversation(st, api_key, context):
     from workflow_steps_ui import render_step_heading
     st.session_state['_review_working'] = context
@@ -108,27 +132,20 @@ def render_conversation(st, api_key, context):
         st.caption('相談ボタンを押すと、音声または文章と現在の見積内容を、読み取りに使っているAIで処理します。録音そのものは保管しません。反映した相談内容は社内用の記録に残ります。')
     audio = st.audio_input('マイクを押して今回の要望を話す（2分以内）', key='review_voice_' + str(st.session_state.get('_review_editor_epoch', 0)), disabled=not ready)
     if st.button('この録音で相談する', key='review_voice_consult', disabled=audio is None or not ready):
-        try:
-            with st.spinner('話した内容を聞き取り、見積の案を考えています…'):
-                words = transcribe(api_key, audio.getvalue(), st.secrets).strip()
-                if not words:
-                    raise ValueError('声を聞き取れませんでした。録り直すか、下に文字で入力してください。')
-                st.session_state['review_instruction'] = words
-                updated, proposal = converse(api_key, words, history, context, st.secrets)
-            st.session_state['_review_chat'] = updated
-            st.session_state['_review_proposal'] = proposal
-            st.session_state['_review_proposal_widgets'] = widget_fingerprint(st.session_state)
-            st.rerun()
-        except ValueError as exc:
-            st.error(str(exc))
-        except Exception:
-            st.error('相談を完了できませんでした。下に聞き取れた文章があれば、直して「この内容で相談する」を押してください。')
+        _consult_audio(st, api_key, audio, history, context)
+    with st.expander('録音ファイルを使うときだけ開く'):
+        st.caption('保存済みのWAV録音を選べます（2分・8MB以内）。相談ボタンを押すと、マイク録音と同じAIで聞き取ります。')
+        recording = st.file_uploader('保存した録音（WAV）', type=['wav'],
+            key='review_voice_file_' + str(st.session_state.get('_review_editor_epoch', 0)), max_upload_size=8, disabled=not ready)
+        if st.button('この録音ファイルで相談する', key='review_voice_file_consult', disabled=recording is None or not ready):
+            _consult_audio(st, api_key, recording, history, context)
     instruction = st.text_area('どんな見積にしますか？',
         key='review_instruction', max_chars=4000,
         placeholder='例：利益を10万円確保したい。値引きは1万円。足場は別のページにして。')
     if not api_key:
         st.info('音声・会話の利用には、既存のAI接続設定が必要です。')
     if st.button('この内容で相談する', key='review_consult', disabled=not ready or not instruction.strip()):
+        _clear_unapplied_proposal(st.session_state)
         try:
             with st.spinner('ご要望を整理して変更案を作っています…'):
                 updated, proposal = converse(api_key, instruction, history, context, st.secrets)
