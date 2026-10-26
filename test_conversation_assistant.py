@@ -165,6 +165,18 @@ class ConversationTest(unittest.TestCase):
             self.assertEqual(transcribe('test-key', audio), '全体に10万円上乗せ')
             self.assertEqual(ai.call_count, 1)
 
+    def test_silent_transcription_reaches_the_voice_ui_and_malformed_results_are_rejected(self):
+        buffer=BytesIO()
+        with wave.open(buffer,'wb') as recording:
+            recording.setnchannels(1);recording.setsampwidth(2);recording.setframerate(16000)
+            recording.writeframes(b'\0\0'*16000)
+        with patch('conversation_assistant._generate',return_value={'transcript':'  \n '}):
+            self.assertEqual(transcribe('test-key',buffer.getvalue()),'')
+        for value in (None,42,'a'*4001):
+            with patch('conversation_assistant._generate',return_value={'transcript':value}):
+                with self.assertRaisesRegex(ValueError,'音声の聞き取り結果'):
+                    transcribe('test-key',buffer.getvalue())
+
     def test_multiturn_uses_current_context_and_history_without_autoapply(self):
         history = [{'role': 'user', 'content': '工事名称は架空工事'}, {'role': 'assistant', 'content': 'ほかの要望はありますか'}]
         c = change(kind='target', scope='全体', key='全体', mode='上乗せ額', value='100000', evidence='全体に10万円上乗せ')

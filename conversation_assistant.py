@@ -309,7 +309,10 @@ def transcribe(api_key, data, secrets=None):
         types.Part.from_bytes(data=data, mime_type='audio/wav')],
         {'type': 'object', 'properties': {'transcript': {'type': 'string'}},
          'required': ['transcript'], 'additionalProperties': False}, secrets)
-    return text(raw.get('transcript', ''))
+    words = raw.get('transcript', '')
+    if not isinstance(words, str) or len(words) > MAX_TEXT:
+        raise ValueError('音声の聞き取り結果を確認できません。短く区切って録り直してください。')
+    return words.strip()
 
 
 def converse(api_key, instruction, history, context, secrets=None):
