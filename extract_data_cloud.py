@@ -11,13 +11,8 @@ import time
 import tempfile
 from io import BytesIO
 import openpyxl  # ExcelWriter engine 用
-import app_release
-import importlib
-# Refresh the dependency manifest itself while retaining its shared lock and
-# fingerprint. Cloud can execute the entrypoint before invalidating imports.
-with app_release._lock:
-    importlib.reload(app_release)
-    app_release.ensure_current_modules()
+from app_release import ensure_current_modules
+ensure_current_modules()
 from gemini_request_gate import PacedGeminiClient
 from gemini_resilience import (
     AI_RETRY_MESSAGE,

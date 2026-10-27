@@ -70,7 +70,7 @@ class RequestPacer:
 
 
 # Keep the gate during coordinated module reloads and overlapping old workers.
-REQUEST_PACER = globals().get('REQUEST_PACER') or RequestPacer()
+REQUEST_PACER = vars(threading).setdefault('_cyca_gemini_request_pacer',globals().get('REQUEST_PACER') or RequestPacer())
 
 
 def retry_after_seconds(error):

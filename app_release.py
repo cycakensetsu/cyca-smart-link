@@ -16,7 +16,7 @@ _MODULES = ('pdf_worker', 'product_design', 'work_effects', 'estimate_pipeline',
             'cyca_reference', 'source_table', 'gemini_request_gate', 'gemini_resilience', 'source_sections', 'document_scopes', 'source_annotations', 'source_extraction', 'extraction_batch', 'complete_document_cache', 'source_variants', 'source_amounts', 'source_rounding', 'source_spec_history', 'item_correction_ui', 'source_review_ui', 'workflow_steps_ui', 'review_input_ui', 'review_findings_ui',
             'conversation_assistant', 'conversation_ui', 'pour_layout',
             'output_preview_ui', 'review_ui', 'saved_read_resume', 'legacy_exports')
-_lock = globals().get('_lock') or threading.RLock()
+_lock = vars(threading).setdefault('_cyca_release_lock',globals().get('_lock') or threading.RLock())
 _loaded_fingerprint = globals().get('_loaded_fingerprint')
 
 
@@ -44,5 +44,13 @@ def ensure_current_modules():
             if module is None:
                 importlib.import_module(name)
             else:
-                importlib.reload(module)
+                try:
+                    importlib.reload(module)
+                except ImportError:
+                    # Streamlit's watcher can evict this object after get().
+                    # Reimport only that eviction; real dependency errors must
+                    # still surface instead of hiding a broken deployment.
+                    if sys.modules.get(name) is module:
+                        raise
+                    importlib.import_module(name)
         _loaded_fingerprint = fingerprint
