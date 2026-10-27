@@ -209,6 +209,12 @@ def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
     records=include_printed_discount(records,summaries,page.source_name,page.total_pages)
     from document_scopes import retain_scope_context
     records=retain_scope_context(records,summaries,page.source_name)
+    if page.whole_document and str(path).lower().endswith('.pdf'):
+        from source_table import attach_native_dimensions
+        try:
+            records=attach_native_dimensions(path,records)
+        except (ValueError,RuntimeError,AttributeError):
+            pass  # Unsupported native geometry keeps the original AI reading.
     if ok:
         from source_annotations import verify_scanned_annotations
         summaries, annotation_model = verify_scanned_annotations(

@@ -8,6 +8,36 @@ from markup_rules import line_amount
 
 
 class SourceSectionsTest(unittest.TestCase):
+    def test_cover_ledger_without_summary_items_needs_printed_heading_and_full_details(self):
+        cover=dict(品名='外壁塗装工事費',数量=1,単位='式',単価=1000,金額=1000,
+                   抽出元テキスト範囲='外壁塗装工事費 1式 1,000',__source_name='a.pdf',__page_number=1)
+        rows=[cover,dict(品名='養生',数量=1,単位='式',単価=100,金額=100,__source_name='a.pdf',__page_number=1),
+              dict(品名='壁面',数量=2,単位='㎡',単価=300,金額=600,__source_name='a.pdf',__page_number=2),
+              dict(品名='屋根',数量=2,単位='㎡',単価=200,金額=400,__source_name='a.pdf',__page_number=2)]
+        summary={'__source_name':'a.pdf','__page_number':1,'__page_role':'cover_summary_page','工事項目':[]}
+        original=copy.deepcopy(rows)
+        result=reconcile_sections(rows,[summary],'a.pdf')
+        self.assertEqual([r['品名'] for r in result],['養生','壁面','屋根'])
+        self.assertEqual(rows,original)
+        for mutation in ('no_evidence','wrong_total','second_cover'):
+            changed=copy.deepcopy(rows);summaries=[summary]
+            if mutation=='no_evidence':changed[0]['抽出元テキスト範囲']=''
+            if mutation=='wrong_total':changed[-1]['金額']=399
+            if mutation=='second_cover':summaries.append({**summary,'__page_number':2})
+            self.assertTrue(any(r['品名']=='外壁塗装工事費' for r in reconcile_sections(changed,summaries,'a.pdf')))
+
+    def test_blank_discount_quantity_uses_only_its_own_explicit_negative_printed_line(self):
+        row=dict(品名='調整値引き',数量=None,単位='',単価=None,金額=-500,
+                 抽出元テキスト範囲='調整値引き -500',__source_name='a.pdf',__page_number=4)
+        original=copy.deepcopy(row)
+        out=reconcile_sections([row],[],'a.pdf')[0]
+        self.assertEqual((out['数量'],out['単位'],out['単価'],out['金額']),(1,'式',-500,-500))
+        self.assertEqual(row,original)
+        for change in ({'品名':'返品資材'},{'金額':500},{'抽出元テキスト範囲':'調整値引き -499'},
+                       {'__source_name':'other.pdf'},{'__page_number':None}):
+            untouched=reconcile_sections([{**row,**change}],[],'a.pdf')[0]
+            self.assertIsNone(untouched['数量'])
+
     def test_one_cover_trade_includes_detail_page_expenses_without_dropping_them(self):
         summary={'__source_name':'a.pdf','__page_number':1,'__page_role':'cover_summary_page',
                  '工事項目':[{'工事項目':'工事一式','金額':110000}]}
