@@ -29,6 +29,25 @@ def stored_read(store):
 
 
 class SavedReadResumeTest(unittest.TestCase):
+    def test_old_rendered_button_refreshes_modules_before_using_current_resume(self):
+        import saved_read_resume
+        from unittest.mock import Mock
+        current=Mock()
+        fake=SimpleNamespace(session_state={},caption=lambda *a:None,
+                             selectbox=lambda *a,**k:'a'*64)
+        fake.button=lambda *a,**k:setattr(fake,'callback',k['on_click'])
+        def update():saved_read_resume.apply_saved_read=current
+        with patch('review_ui.vault',return_value=None),patch.object(saved_read_resume,'available_reads',return_value=[
+                {'id':'a'*64,'files':1,'rows':1,'names':['sample.pdf']}]),\
+             patch.object(saved_read_resume,'apply_saved_read',side_effect=AssertionError('stale resume must not run')) as old,\
+             patch('app_release.ensure_current_modules',side_effect=update) as refresh:
+            saved_read_resume.render_saved_reads(fake)
+            fake.callback()
+            refresh.assert_called_once_with()
+            old.assert_not_called()
+            current.assert_called_once_with(fake,'a'*64)
+            self.assertIn('_saved_read_notice',fake.session_state)
+
     def test_roundtrip_keeps_immutable_evidence_and_never_reads_another_owner(self):
         with tempfile.TemporaryDirectory() as temp:
             store = OriginalVault(temp,'owner')
