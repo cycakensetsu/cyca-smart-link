@@ -29,6 +29,7 @@ def attach_native_dimensions(path, records):
     """
     import fitz
     output=[dict(r) for r in records]
+    removed=set()
     if len({r.get('__source_name') for r in output})!=1:
         return output
     with fitz.open(path) as document:
@@ -75,7 +76,30 @@ def attach_native_dimensions(path, records):
                 if additions:
                     output[index]['仕様']=original+(' ／ ' if original else '')+f'原本{page_number}ページの寸法：'+'、'.join(additions)
                     output[index]['__native_dimension_evidence']={'page':page_number,'dimensions':dimensions,'basis':'labelled W/H columns and unique quantity/unit-price/amount row'}
-    return output
+            # Blank-number sash descriptions can be split out as a spurious
+            # unpriced item. Only join one proven native row band to its unique
+            # priced anchor, preserving the exact words and continuation spec.
+            def letters(value):return ''.join(c for c in compact(value) if c.isalnum())
+            for note_index,note in relevant:
+                if (note.get('No') not in (None,'') or not str(note.get('品名') or '').startswith('障子部')
+                        or any(note.get(k) not in (None,'') for k in ('数量','単位','単価','金額'))):continue
+                label=letters(note['品名'])
+                if len(label)<8:continue
+                candidates=[]
+                for pos,(anchor,parent_index) in enumerate(anchors):
+                    end=anchors[pos+1][0] if pos+1<len(anchors) else page.rect.height
+                    native=''.join(w[4] for w in words if w[2]<wx-8 and anchor-3<=center(w)[1]<end-3)
+                    if label in letters(native) and any(d.startswith('障子部 ') for d in found.get(parent_index,[])):
+                        candidates.append(parent_index)
+                if len(candidates)!=1:continue
+                parent=output[candidates[0]]
+                for quoted in (note.get('抽出元テキスト範囲'),note.get('仕様')):
+                    if quoted and letters(quoted) not in letters(parent.get('仕様')):
+                        parent['仕様']=str(parent.get('仕様') or '')+' ／ 原本の部材注記：'+str(quoted)
+                parent['__native_component_evidence']={'page':page_number,'name':note['品名'],
+                    'basis':'unique priced native row band, blank component number and labelled sash dimensions'}
+                removed.add(note_index)
+    return [r for i,r in enumerate(output) if i not in removed]
 
 
 @isolated_pdf

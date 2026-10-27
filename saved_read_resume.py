@@ -102,11 +102,10 @@ def resume_read(store, extraction_id, current_sources=None):
     # source/page aliases only for the same production ledger reconciliation.
     summaries = [{**s, '__source_name': s.get('元ファイル'), '__page_number': s.get('ページ'),
                   '__page_role': s.get('ページ種別')} for s in summary_sources]
-    from source_sections import reconcile_sections
+    from extraction_batch import reconcile_document_results
     from source_table import attach_native_dimensions
-    records = raw['records']
+    records,summaries = reconcile_document_results(raw['sources'],raw['records'],summaries)
     for source in raw['sources']:
-        records = reconcile_sections(records, summaries, source['name'])
         if Path(source['name']).suffix.lower() == '.pdf':
             scoped = [r for r in records if r.get('__source_name') == source['name']]
             with tempfile.TemporaryDirectory(prefix='cyca-saved-read-') as directory:
@@ -116,9 +115,14 @@ def resume_read(store, extraction_id, current_sources=None):
                     enriched = attach_native_dimensions(str(path), scoped)
                 except (ValueError, RuntimeError, AttributeError):
                     enriched = scoped
-            iterator = iter(enriched)
-            records = [next(iterator) if r.get('__source_name') == source['name'] else r for r in records]
+            combined=[];inserted=False
+            for record in records:
+                if record.get('__source_name')==source['name']:
+                    if not inserted:combined.extend(enriched);inserted=True
+                else:combined.append(record)
+            records=combined
     raw['records'] = records
+    raw['summary']['summary_sources'] = [{**s, 'ページ種別':s.get('__page_role')} for s in summaries]
     return raw
 
 

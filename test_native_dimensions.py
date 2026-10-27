@@ -46,3 +46,24 @@ class NativeDimensionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             rows=self.rows()
             self.assertEqual(attach_native_dimensions(str(self.document(temp,labelled=False)),rows),rows)
+
+    def test_blank_unpriced_sash_continuation_is_retained_inside_native_priced_row(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source=self.document(temp)
+            path=Path(temp)/'component.pdf'
+            with fitz.open(source) as doc:
+                doc[0].insert_text((95,200),'検証ガラス3A透明',fontname='japan',fontsize=8)
+                doc.save(path)
+            child=dict(品名='障子部 検証ガラス3A透明',仕様='原本の枠寸法メモ',No='',数量='',単位='',単価='',金額='',
+                       抽出元テキスト範囲='障子部 検証ガラス3A透明',__source_name='window.pdf',__page_number=1)
+            rows=self.rows()+[child];original=copy.deepcopy(rows)
+            out=attach_native_dimensions(str(path),rows)
+            self.assertEqual(rows,original)
+            self.assertEqual(len(out),1)
+            self.assertEqual(out[0]['金額'],200)
+            self.assertIn('障子部 検証ガラス3A透明',out[0]['仕様'])
+            self.assertIn('原本の枠寸法メモ',out[0]['仕様'])
+            self.assertEqual(attach_native_dimensions(str(path),out),out)
+            for changes in ({'No':2},{'金額':0},{'品名':'障子部 原本にない別部材'},{'__page_number':2}):
+                kept=attach_native_dimensions(str(path),self.rows()+[{**child,**changes}])
+                self.assertEqual(len(kept),2)
