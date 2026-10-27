@@ -1,0 +1,4 @@
+[server]
+# Keep proxy connections active during long reads. Authentication, CORS and
+# XSRF protection retain their defaults. Validate on the public deployment.
+websocketPingInterval = 15

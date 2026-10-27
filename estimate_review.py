@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import tempfile
 import unicodedata
 from datetime import datetime, timezone
 
@@ -85,16 +86,26 @@ class OriginalVault:
     def _put(self, relative, data):
         target = self.root / relative
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Publish only a fully written file. O_EXCL on the final path made a
+        # partial original/JSON visible to other sessions and ZIP snapshots.
+        staging = self.root / '.staging'
+        staging.mkdir(exist_ok=True, mode=0o700)
+        if staging.is_symlink():
+            raise ValueError('保存先に不正なリンクがあります。')
+        fd, temporary = tempfile.mkstemp(dir=staging)
         try:
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            if target.read_bytes() != data:
-                raise ValueError("保存済み原本との不一致を検出しました。") from None
-        else:
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
+            try:
+                # A hard link is atomic and never overwrites an existing file.
+                os.link(temporary, target)
+            except FileExistsError:
+                if target.read_bytes() != data:
+                    raise ValueError("保存済み原本との不一致を検出しました。") from None
+        finally:
+            os.unlink(temporary)
         return target
 
     def preserve(self, name, data):
@@ -131,6 +142,8 @@ class OriginalVault:
         for path in sorted(self.root.rglob('*')):
             if path.is_symlink():
                 raise ValueError('保存先に不正なリンクがあります。')
+            if path.relative_to(self.root).parts[0] == '.staging':
+                continue
             if path.is_file():
                 yield path.relative_to(self.root).as_posix(), path.stat().st_size, path.read_bytes
 

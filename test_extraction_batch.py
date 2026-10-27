@@ -8,6 +8,31 @@ from extraction_batch import extract_batch
 
 
 class BatchTest(unittest.TestCase):
+    def test_finished_read_survives_interrupted_ui_consumer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'source.pdf'
+            path.write_bytes(b'original')
+            job = SimpleNamespace(source_name='a.pdf', page_number=1,
+                                  total_pages=1, whole_document=True)
+            cache, calls = {}, []
+            def read(*args, **kwargs):
+                calls.append(True)
+                kwargs['on_model_start']('fake', 1)
+                return [], [{'__source_name':'a.pdf', '__page_number':1,
+                    '品名':'検証品目', '数量':1, '単位':'式', '単価':100, '金額':100}], [], []
+            options = dict(client_factory=lambda:None, primary_model='fake',
+                           fallback_models=[], cache=cache, extractor=read)
+            stream = extract_batch([job], {id(job):path}, 1, **options)
+            self.assertEqual(next(stream)['kind'], 'started')
+            self.assertEqual(next(stream)['kind'], 'reading')
+            # Streamlit can stop consuming events on a disconnect/rerun.
+            stream.close()
+            self.assertEqual(len(cache), 1)
+            resumed = list(extract_batch([job], {id(job):path}, 1, **options))
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(resumed[0]['cached'])
+            self.assertEqual(resumed[-1]['results'][0][1][0]['金額'], 100)
+
     def test_parallel_network_reads_keep_original_order_and_cache_per_session(self):
         with tempfile.TemporaryDirectory() as temp:
             jobs=[SimpleNamespace(source_name=f'原本　{i}.pdf',page_number=1,total_pages=1,whole_document=True) for i in range(4)]
