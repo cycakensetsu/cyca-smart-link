@@ -4,9 +4,18 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import app_release
+import importlib
 
 
 class ReleaseRefreshTest(unittest.TestCase):
+    def test_refreshing_manifest_keeps_lock_and_already_loaded_version(self):
+        lock=app_release._lock
+        with patch.object(app_release,'_loaded_fingerprint','loaded-source-version'):
+            with lock:
+                importlib.reload(app_release)
+            self.assertIs(app_release._lock,lock)
+            self.assertEqual(app_release._loaded_fingerprint,'loaded-source-version')
+
     def test_source_fingerprint_changes_when_an_imported_file_changes(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(app_release,'_ROOT',Path(temp)), patch.object(app_release,'_MODULES',('synthetic',)):
             source=Path(temp)/'synthetic.py'

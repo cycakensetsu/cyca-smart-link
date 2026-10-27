@@ -157,7 +157,12 @@ def render_saved_reads(st):
         # Resetting their values later in the script would be forbidden by
         # Streamlit and could leave the current review partly replaced.
         try:
-            apply_saved_read(st, chosen)
+            from app_release import ensure_current_modules
+            ensure_current_modules()
+            # Callbacks run before the entrypoint; use the refreshed function
+            # even when this button was rendered by a previous source version.
+            from saved_read_resume import apply_saved_read as current_apply
+            current_apply(st, chosen)
         except (ValueError, TypeError, KeyError, OSError):
             st.session_state['_saved_read_error'] = '再開できませんでした。原本と保存データを確認してください。'
         else:
