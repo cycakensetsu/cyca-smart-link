@@ -1,5 +1,10 @@
 """One shared customer page plan, applied to the existing CYCA template."""
 from io import BytesIO
+from print_text_height import entry_height, values_height, grid_fits
+
+
+def _fits(rows):
+    return grid_fits([entry_height(r) for r in rows])
 
 
 def _chunk(rows):
@@ -16,7 +21,11 @@ def _chunk(rows):
             if context:
                 label += '／' + context
             prefix = [{'kind': 'section', 'label': label}]
-        take = min(20 - len(prefix), len(rows))
+        take = 0
+        while take < len(rows) and _fits(prefix+rows[:take+1]):
+            take += 1
+        if take == 0:
+            raise ValueError('1品目の記載が1ページに収まりません。原本を保全し、仕様を別紙へ分けてください。')
         if take < len(rows) and rows[take]['kind'] == 'subtotal' and take > 1:
             take -= 1
         while take > 1 and rows[take - 1]['kind'] in ('category', 'section'):
@@ -33,6 +42,20 @@ def summary_chunks(categories):
     for number in range(count):
         size=base+(number<extra)
         result.append(categories[offset:offset+size]);offset+=size
+    if all(grid_fits([values_height([i+1,c.items[0].name,c.items[0].spec,None,None,None,None,c.items[0].remark])
+                      if c.summary_only else values_height([i+1,c.name]) for i,c in enumerate(chunk)],16)
+           for chunk in result):return result
+    result=[];chunk=[]
+    for category in categories:
+        item=category.items[0]
+        height=(values_height([1,item.name,item.spec,None,None,None,None,item.remark])
+                if category.summary_only else values_height([1,category.name]))
+        if not grid_fits([height],16):
+            raise ValueError('一式まとめの1品目が1ページに収まりません。仕様を別紙へ分けてください。')
+        if chunk and not grid_fits([h for _,h in chunk]+[height],16):
+            result.append([c for c,_ in chunk]);chunk=[]
+        chunk.append((category,height))
+    if chunk:result.append([c for c,_ in chunk])
     return result
 
 
@@ -49,7 +72,9 @@ def plan(estimate):
             compact_rows.append({'kind':'category','index':index,'category':category})
         item_rows, number = _detail_item_rows(category, number)
         compact_rows.extend(item_rows)
-    compact = (estimate.source_count == 1 and bool(normal) and len(compact_rows) + 4 <= 20 and not estimate.page_breaks)
+    compact = (estimate.source_count == 1 and bool(normal) and len(compact_rows) + 4 <= 20
+               and _fits(compact_rows+[{'kind':'compact_'+n} for n in ('subtotal','discount','net','tax')])
+               and not estimate.page_breaks)
     if compact:
         rows = compact_rows
         rows += [{'kind': 'compact_' + name, 'amount': value} for name, value in
@@ -87,7 +112,7 @@ def plan(estimate):
         tiny_page = False
         for block in blocks:
             tiny = sum(r['kind'] == 'item' for r in block) <= 2
-            if pages and len(pages[-1]) + len(block) <= 20 and (tiny or tiny_page):
+            if pages and _fits(pages[-1]+block) and (tiny or tiny_page):
                 pages[-1].extend(block)
                 tiny_page = tiny_page and tiny
             elif pages and tiny_page and len(pages[-1]) <= 8:
@@ -107,7 +132,7 @@ def plan(estimate):
             else:
                 pages.extend(_chunk(block))
                 tiny_page = tiny
-    summary_pages=max(1,(len(estimate.categories)+15)//16)
+    summary_pages=len(summary_chunks(estimate.categories))
     first_detail=2+summary_pages
     actual = {r['item'].row_id: n for n, page in enumerate(pages, first_detail) for r in page if r['kind'] == 'item'}
     for row_id, number in estimate.requested_pages.items():
