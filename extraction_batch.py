@@ -1,6 +1,7 @@
 """Bounded, session-local extraction: no Streamlit calls from worker threads."""
 import copy
 import hashlib
+import json
 from pathlib import Path
 from queue import Queue, Empty
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +12,36 @@ MAX_NETWORK_WORKERS = 4
 # Preserve the same gate when coordinated source reloads overlap old workers.
 _NETWORK_GATE = globals().get('_NETWORK_GATE') or threading.BoundedSemaphore(MAX_NETWORK_WORKERS)
 _CACHE_LOCK = globals().get('_CACHE_LOCK') or threading.RLock()
+
+
+def _saved_reads(store, wanted):
+    """Read only content-verified, private checkpoints for exact requests."""
+    from vault_archive import validate_entry
+    found, ambiguous, size = {}, set(), 0
+    if store is None:
+        return found
+    for name, length, read in store.entries():
+        if not name.startswith('extractions/') or length > 8 * 1024 * 1024:
+            continue
+        size += length
+        if size > 32 * 1024 * 1024:
+            break
+        try:
+            data = read()
+            validate_entry(name, data)
+            value = json.loads(data)
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(value, dict) or value.get('type') != 'read_checkpoint_v1':
+            continue
+        key, result = value.get('request_key'), value.get('result')
+        if (not isinstance(key, str) or key not in wanted or not isinstance(result, list)
+                or len(result) != 4 or not all(isinstance(part, list) for part in result)):
+            continue
+        if key in found and found[key] != result:
+            ambiguous.add(key)
+        found[key] = result
+    return {key: result for key, result in found.items() if key not in ambiguous}
 
 
 def extraction_failure_reason(error):
@@ -57,11 +88,13 @@ def pipeline_version():
 
 
 def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
-                  fallback_models, cache=None, max_workers=4, extractor=None):
+                  fallback_models, cache=None, max_workers=4, extractor=None,
+                  checkpoint_store=None):
     """Yield UI-safe progress events; complete payloads in original input order.
 
-    Results stay in the caller's authenticated session, keyed by original bytes,
-    exact filename, model settings and parser revision. Failed reads are retried.
+    Results stay in the caller's session and optional private vault, keyed by
+    original bytes, exact filename, batch size, models and parser revision.
+    Failed reads are retried; this never creates or reuses an approval.
     Each network worker owns its client. Native PDF work stays process-isolated.
     """
     from source_extraction import extract_job
@@ -75,9 +108,16 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
         data=Path(paths[id(job)]).read_bytes()
         key=hashlib.sha256(repr((hashlib.sha256(data).hexdigest(),job.source_name,
             job.page_number,job.total_pages,job.whole_document,primary_model,
-            tuple(fallback_models),version)).encode()).hexdigest()
+            tuple(fallback_models),n_files,version)).encode()).hexdigest()
         keys[index]=key
+
+    saved = _saved_reads(checkpoint_store, set(keys.values()))
+    for index, job in enumerate(jobs):
+        key = keys[index]
         with _CACHE_LOCK:
+            if key not in cache and key in saved:
+                if len(cache)>=20:cache.pop(next(iter(cache)))
+                cache[key] = saved[key]
             if key in cache and not annotation_cache_ready(cache[key][0]):
                 cache.pop(key)
             cached = copy.deepcopy(cache[key]) if key in cache else None
@@ -104,6 +144,9 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
             with _CACHE_LOCK:
                 if len(cache)>=20:cache.pop(next(iter(cache)))
                 cache[keys[index]]=copy.deepcopy(result)
+            if checkpoint_store is not None:
+                checkpoint_store.snapshot('extractions', {'type':'read_checkpoint_v1',
+                    'request_key':keys[index], 'result':result})
 
     def work(index,job):
         started=monotonic();client=None
