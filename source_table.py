@@ -21,6 +21,64 @@ def number(value):
 
 
 @isolated_pdf
+def attach_native_dimensions(path, records):
+    """Retain printed W/H cells only beside an exact, unique priced row.
+
+    Dimension columns must be explicitly labelled 寸法(mm), W, H. No OCR
+    geometry or inferred size replaces a number, description or existing spec.
+    """
+    import fitz
+    output=[dict(r) for r in records]
+    if len({r.get('__source_name') for r in output})!=1:
+        return output
+    with fitz.open(path) as document:
+        for page_number,page in enumerate(document,1):
+            words=page.get_text('words')
+            center=lambda w:((w[0]+w[2])/2,(w[1]+w[3])/2)
+            headers=[]
+            for w in words:
+                if compact(w[4])!='W':continue
+                for h in words:
+                    if (compact(h[4])=='H' and abs(center(w)[1]-center(h)[1])<3
+                            and 10<center(h)[0]-center(w)[0]<80
+                            and any('寸法' in compact(t[4]) and 'mm' in compact(t[4]).lower()
+                                and 0<w[1]-t[3]<25 and t[0]-10<w[0]<h[2]<t[2]+10 for t in words)):
+                        headers.append((center(w)[0],center(h)[0],center(w)[1]))
+            if len(headers)!=1:continue
+            wx,hx,top=headers[0]
+            relevant=[(i,r) for i,r in enumerate(output) if number(r.get('__page_number'))==page_number]
+            anchors=[]
+            ys=sorted({round(center(w)[1],1) for w in words if center(w)[0]>hx+10 and number(w[4]) is not None and center(w)[1]>top})
+            for y in ys:
+                if anchors and abs(y-anchors[-1][0])<3:continue
+                cells=sorted((w for w in words if abs(center(w)[1]-y)<3 and center(w)[0]>hx+10 and number(w[4]) is not None),key=lambda w:w[0])
+                values=[number(w[4]) for w in cells]
+                matches=[i for i,r in relevant if len(values)>=3 and values[:3]==[number(r.get(k)) for k in ('数量','単価','金額')]]
+                if len(matches)==1:anchors.append((y,matches[0]))
+            found={}
+            for w in words:
+                width=number(w[4]);y=center(w)[1]
+                if (width is None or not width.is_integer() or not 0<width<100000
+                        or abs(center(w)[0]-wx)>7 or y<=top):continue
+                heights=[h for h in words if abs(center(h)[1]-y)<3 and abs(center(h)[0]-hx)<7
+                         and number(h[4]) is not None and 0<number(h[4])<100000 and number(h[4]).is_integer()]
+                preceding=[a for a in anchors if a[0]<=y+3]
+                if len(heights)!=1 or not preceding:continue
+                anchor,index=preceding[-1]
+                nearby=''.join(t[4] for t in words if t[2]<wx-8 and abs(center(t)[1]-y)<5)
+                label='障子部 ' if '障子' in nearby else ('' if abs(anchor-y)<3 else '同じ製品欄 ')
+                found.setdefault(index,[]).append(f'{label}W{int(width)}×H{int(number(heights[0][4]))}mm')
+            for index,dimensions in found.items():
+                dimensions=list(dict.fromkeys(dimensions))
+                original=str(output[index].get('仕様') or '')
+                additions=[d for d in dimensions if compact(d) not in compact(original)]
+                if additions:
+                    output[index]['仕様']=original+(' ／ ' if original else '')+f'原本{page_number}ページの寸法：'+'、'.join(additions)
+                    output[index]['__native_dimension_evidence']={'page':page_number,'dimensions':dimensions,'basis':'labelled W/H columns and unique quantity/unit-price/amount row'}
+    return output
+
+
+@isolated_pdf
 def read_native_tables(path):
     import fitz
     rows, subtotals, projects, issuers = [], [], set(), set()

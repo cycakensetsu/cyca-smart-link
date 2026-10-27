@@ -67,6 +67,13 @@ def reconcile_sections(records, summaries, source_name):
     output=[dict(r) for r in records]
     for row in output:
         amount=_integer(row.get('金額'))
+        if (row.get('__source_name')==source_name and amount is not None and amount<0
+                and (_integer(row.get('__page_number')) or 0)>0
+                and re.search('値引|端数調整|出精',str(row.get('品名') or ''))
+                and row.get('数量') in (None,'') and row.get('単位') in (None,'')
+                and row.get('単価') in (None,'') and _printed_discount(row,amount)):
+            row.update(数量=1,単位='式',単価=amount,
+                       __normalization='原本の明記された負の値引きを会計上の1式として保持')
         if (row.get('__source_name')==source_name and amount is not None
                 and _integer(row.get('数量'))==1 and str(row.get('単位') or '')=='式'
                 and row.get('単価') in (None,'')):
@@ -89,6 +96,18 @@ def reconcile_sections(records, summaries, source_name):
                and (next_cover is None or (_integer(r.get('__page_number')) or 0)<next_cover)]
         def common(name):return bool(re.search('諸経費|運搬|福利|処分|養生|値引|調整|荷揚',name))
         trade_items=[i for i in items if isinstance(i,dict) and not common(_name(i.get('工事項目',i.get('品名'))))]
+        # Some reads retain the cover ledger and its text but omit the summary
+        # item list. A single explicitly printed trade heading, bounded by the
+        # next cover, can still be proved by the complete later detail total.
+        if is_cover and not items:
+            candidates=[r for r in cover if not common(_name(r.get('品名')))
+                        and _integer(r.get('数量'))==1 and r.get('単位')=='式'
+                        and _integer(r.get('金額')) is not None
+                        and _name(r.get('品名')) in _name(r.get('抽出元テキスト範囲'))
+                        and str(abs(_integer(r.get('金額')))) in re.sub(r'[,\s]','',str(r.get('抽出元テキスト範囲') or ''))]
+            if len(candidates)==1:
+                items=[{'工事項目':candidates[0]['品名'],'金額':candidates[0]['金額']}]
+                trade_items=items
         for row in cover if is_cover else []:
             name=_name(row.get('品名'));amount=_integer(row.get('金額'))
             item=next((i for i in items if isinstance(i,dict)
