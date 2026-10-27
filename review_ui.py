@@ -34,6 +34,11 @@ def _render_archive_restore(st):
                 st.session_state.pop(key, None)
             st.session_state['_vault_restore_notice'] = f'{count}件の保存データを戻しました。'
             st.rerun()
+    notice = st.session_state.pop('_saved_read_notice', '')
+    if notice:
+        st.success(notice)
+    from saved_read_resume import render_saved_reads
+    render_saved_reads(st)
 
 
 def render_archive(st):
