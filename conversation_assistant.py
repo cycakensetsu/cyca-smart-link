@@ -282,11 +282,12 @@ def apply_proposal(proposal, context):
 def _generate(api_key, contents, schema, secrets=None):
     from google import genai
     from google.genai import types
+    from gemini_request_gate import PacedGeminiClient
     from gemini_resilience import get_configured_gemini_models, _get_response_text, _extract_error_code
     primary, fallback = get_configured_gemini_models(secrets)
     # No SDK retry or content logging: an error must never echo client records/keys.
-    with genai.Client(api_key=api_key, http_options=types.HttpOptions(
-            timeout=45000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
+    with PacedGeminiClient(genai.Client(api_key=api_key, http_options=types.HttpOptions(
+            timeout=45000, retry_options=types.HttpRetryOptions(attempts=1)))) as client:
         for model in [primary] + fallback:
             try:
                 response = client.models.generate_content(model=model, contents=contents,
