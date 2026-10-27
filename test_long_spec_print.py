@@ -71,5 +71,27 @@ class LongSpecPrintTest(unittest.TestCase):
         self.assertIsNone(result.pdf_data)
         self.assertTrue(any('1ページに収まりません' in e for e in result.errors))
 
+    def test_copied_summary_and_late_detail_sheets_keep_both_footer_fields_and_total_label(self):
+        estimate=self.estimate(180)
+        for item in estimate.categories[0].items:item.spec='短い仕様'
+        estimate.source_count=2
+        estimate.categories += [Category('費用'+str(i),[LineItem('検証費用'+str(i),'',1,'式',100,100)],True)
+                                for i in range(16)]
+        result=fill_estimate_v2(estimate,save_to_disk=False)
+        self.assertTrue(result.ok,result.errors)
+        workbook=load_workbook(BytesIO(result.data))
+        self.assertIn('工事品目集計2',workbook.sheetnames)
+        self.assertIn('明細9',workbook.sheetnames)
+        for i,sheet in enumerate(workbook,1):
+            self.assertIn(estimate.project_name,sheet.oddFooter.left.text)
+            self.assertIsNone(sheet.oddFooter.left.size)
+            self.assertEqual(sheet.oddFooter.right.text,f'{i} / {len(workbook.worksheets)}')
+            self.assertEqual(sheet.oddFooter.right.size,8)
+            if sheet.title.startswith('工事品目集計'):
+                self.assertEqual(sheet['E22'].value,'全体小計')
+        with fitz.open(stream=result.pdf_data,filetype='pdf') as pdf:
+            for page in (pdf[1],pdf[2]):
+                self.assertIn('合計欄は、まとめ全ページを合わせた金額です。',page.get_text())
+
 
 if __name__=='__main__':unittest.main()

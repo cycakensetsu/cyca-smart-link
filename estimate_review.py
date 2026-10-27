@@ -348,7 +348,7 @@ def reference_material_allowed(original_rows, source):
 def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, metadata=None, resolutions=None):
     """Return a complete reviewable snapshot. Corrections never change raw data."""
     metadata = dict(metadata or {})
-    metadata['出力デザイン'] = '既存横型流し込み（工種別ページ・配置確認版2026-10-20）'
+    metadata['出力デザイン'] = '既存横型流し込み（工種別ページ・配置確認版2026-10-27）'
     page_breaks = metadata.get('改ページ', [])
     if not isinstance(page_breaks, list) or len(set(page_breaks)) != len(page_breaks) or any(k not in {r['行ID'] for r in edited_rows if r.get('採用')} for k in page_breaks):
         raise ValueError('改ページする品目を確認してください。')

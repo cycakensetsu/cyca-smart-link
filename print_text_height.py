@@ -22,7 +22,9 @@ def cell_height(value, column):
     lines=sum(max(1,math.ceil(sum(0 if unicodedata.combining(c) else
                 (1 if unicodedata.east_asian_width(c) in ('W','F','A') else .6)
                 for c in line)*9/available)) for line in value.split('\n'))
-    return max(22,math.ceil(height+8),math.ceil(lines*12+8))
+    # Numbers imports the Japanese fallback font with about 1.7x line spacing;
+    # 4/3 spacing clipped a real window specification's final sash dimensions.
+    return max(22,math.ceil(height+8),math.ceil(lines*9*1.75+8) if lines>1 else 22)
 
 
 def values_height(values):
@@ -45,7 +47,8 @@ def entry_height(row):
 
 
 def grid_fits(heights, count=20):
-    """Keep at least 8pt for unused spreadsheet rows, without font shrinking."""
+    """Spend empty row space on very long text, without font shrinking."""
+    blank=2 if heights and max(heights)>160 else 8
     return (len(heights)<=count
-        and sum(heights)+8*(count-len(heights))<=count*22
-        and sum(21 if h==22 else h for h in heights)+8*(count-len(heights))<=count*21)
+        and sum(heights)+blank*(count-len(heights))<=count*22
+        and sum(21 if h==22 else h for h in heights)+blank*(count-len(heights))<=count*21)

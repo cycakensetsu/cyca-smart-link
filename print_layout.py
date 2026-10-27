@@ -50,9 +50,10 @@ def fit_numbers_text_rows(sheet, start, end):
                 required = max(required, shared_height)
         sheet.row_dimensions[row].height = required
     extra = sum((sheet.row_dimensions[r].height or before[r]) - before[r] for r in before)
+    minimum_blank = 2 if any((sheet.row_dimensions[r].height or 0)>160 for r in before) else 8
     for index, row in enumerate(blank):
         share = max(0, extra) / (len(blank) - index)
-        take = min(max(0, before[row] - 8), share)
+        take = min(max(0, before[row] - minimum_blank), share)
         sheet.row_dimensions[row].height = before[row] - take
         extra -= take
 
@@ -254,6 +255,8 @@ def render_estimate_pdf(estimate):
             blank_height=min(18,(16*22-((top-48)-yy))/blanks) if blanks else 18
             for _ in range(blanks): yy=cells(['']*8,yy,blank_height)
             text('※工事内容明細には消費税が含まれておりません。',x,yy-21,8)
+            if summary_pages>1:
+                text('合計欄は、まとめ全ページを合わせた金額です。',x,yy-33,8)
             sy=yy-34
             for label,amount in [('全体小計' if summary_pages>1 else '小計',estimate.subtotal),('値引き',estimate.discount),('税抜合計',estimate.net_total),('消費税',estimate.tax),('税込合計',estimate.grand_total)]:
                 c.setFillColor(navy if label=='税込合計' else tint);c.rect(x+542,sy-19,105,19,fill=1,stroke=0)
