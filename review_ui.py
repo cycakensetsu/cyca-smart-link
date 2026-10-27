@@ -40,6 +40,9 @@ def render_archive(st):
     if not st.session_state.get('_review_export_ready'):
         with st.expander('以前の保存データを戻す（必要なときだけ）'):
             _render_archive_restore(st)
+            if st.session_state.get('_review_extraction_id'):
+                st.caption('原本と読み取り結果の控えを、確認途中でもPCへ保存できます。入力中の訂正・宛名・金額設定は含みません。')
+                render_backup_download(st, 'intake')
         return
     with st.expander("原本・記録もまとめて保存する（社内用・必要なときだけ）", expanded=False):
         st.caption("原本・作成済みの見積・記録を、PCにまとめて保存できます。社内用なのでお客様には送りません。")
