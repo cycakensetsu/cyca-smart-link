@@ -279,12 +279,18 @@ def build_outputs(estimate, template_path):
             else:
                 for row in (22,23,24,25,26):summary.cell(row,7).value=f"='{SUMMARY_SHEET}'!G{row}"
             if len(summary_names)>1:
-                _set(summary,22,6,'全体小計')
+                _set(summary,22,5,'全体小計')
                 _set(summary,21,1,'合計欄は、まとめ全ページを合わせた金額です。')
     cover['C13'] = "='明細1'!G24" if layout['compact'] else "='工事品目集計'!G26"
     from print_layout import fit_numbers_text_rows
+    from template_fill_test_v2 import COMPANY
     for n, ws in enumerate(wb, 1):
+        # copy_worksheet does not copy headers/footers. Populate every final
+        # sheet, including summary continuation and detail pages beyond eight.
+        ws.oddFooter.left.text = COMPANY['name']+'　'+estimate.project_name
+        ws.oddFooter.left.size = None
         ws.oddFooter.right.text = f'{n} / {len(wb.worksheets)}'
+        ws.oddFooter.right.size = 8
         if ws.title.startswith(SUMMARY_SHEET):
             fit_numbers_text_rows(ws, 3, 18)
         elif ws.title.startswith('明細'):
