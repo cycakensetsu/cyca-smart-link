@@ -8,6 +8,30 @@ import importlib
 
 
 class ReleaseRefreshTest(unittest.TestCase):
+    def test_watcher_eviction_reimports_but_real_import_failure_is_not_hidden(self):
+        import sys
+        old=SimpleNamespace()
+        def evict(module):
+            sys.modules.pop('synthetic_live_module')
+            raise ImportError('module removed by watcher',name='synthetic_live_module')
+        with patch.object(app_release,'_MODULES',('synthetic_live_module',)),\
+             patch.object(app_release,'_loaded_fingerprint',None),\
+             patch.object(app_release,'_source_fingerprint',return_value='new-source'),\
+             patch.dict('sys.modules',{'synthetic_live_module':old}),\
+             patch('app_release.importlib.reload',side_effect=evict),\
+             patch('app_release.importlib.import_module') as reimport:
+            app_release.ensure_current_modules()
+            reimport.assert_called_once_with('synthetic_live_module')
+        with patch.object(app_release,'_MODULES',('synthetic_live_module',)),\
+             patch.object(app_release,'_loaded_fingerprint',None),\
+             patch.object(app_release,'_source_fingerprint',return_value='other-source'),\
+             patch.dict('sys.modules',{'synthetic_live_module':old}),\
+             patch('app_release.importlib.reload',side_effect=ImportError('missing real dependency')),\
+             patch('app_release.importlib.import_module') as reimport:
+            with self.assertRaisesRegex(ImportError,'missing real dependency'):
+                app_release.ensure_current_modules()
+            reimport.assert_not_called()
+
     def test_refreshing_manifest_keeps_lock_and_already_loaded_version(self):
         lock=app_release._lock
         with patch.object(app_release,'_loaded_fingerprint','loaded-source-version'):

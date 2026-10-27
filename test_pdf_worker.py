@@ -11,6 +11,14 @@ from source_amounts import read_amounts
 
 
 class PdfWorkerTest(unittest.TestCase):
+    def test_fresh_import_after_watcher_eviction_keeps_one_pdf_slot(self):
+        import importlib.util
+        import pdf_worker
+        spec=importlib.util.spec_from_file_location('_fresh_cyca_pdf_worker_test',pdf_worker.__file__)
+        fresh=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+        self.assertIs(fresh._PDF_SLOT,pdf_worker._PDF_SLOT)
+
     def data(self):
         document=fitz.open();page=document.new_page();page.insert_text((30,60),'税抜合計 100,000円',fontname='japan',fontsize=12)
         result=document.tobytes();document.close();return result

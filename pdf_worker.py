@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 
-_PDF_SLOT=globals().get('_PDF_SLOT') or threading.BoundedSemaphore(1)
+_PDF_SLOT=vars(threading).setdefault('_cyca_pdf_worker_slot',globals().get('_PDF_SLOT') or threading.BoundedSemaphore(1))
 _FLAG='CYCA_INTERNAL_PDF_WORKER'
 _MARKER=b'\nCYCA_PDF_RESULT:'
 _ALLOWED={'cyca_reference':{'read_reference_quote'},'source_table':{'read_native_tables','attach_native_dimensions'},

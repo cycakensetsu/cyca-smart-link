@@ -11,6 +11,13 @@ import gemini_request_gate as gate
 
 
 class RequestPacingTest(unittest.TestCase):
+    def test_fresh_import_after_module_eviction_keeps_server_request_budget(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('_fresh_cyca_request_gate_test',gate.__file__)
+        fresh=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+        self.assertIs(fresh.REQUEST_PACER,gate.REQUEST_PACER)
+
     def test_ten_clients_share_one_request_budget(self):
         # Ten independent clients stand for ten sessions. Observe the actual
         # provider entry, not just reservations in the scheduler.
