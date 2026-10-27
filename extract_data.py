@@ -13,6 +13,7 @@ from io import BytesIO
 import openpyxl  # ExcelWriter engine 用
 from app_release import ensure_current_modules
 ensure_current_modules()
+from gemini_request_gate import PacedGeminiClient
 from gemini_resilience import (
     AI_RETRY_MESSAGE,
     GeminiTemporaryUnavailable,
@@ -725,7 +726,8 @@ if uploaded_files:
                             text=f"ステップ1：{finished_pages}/{total_pages}ページ処理済み ｜ {elapsed}秒 ｜ {active_label}")
                     show_read_progress()
                     for event in extract_batch(page_jobs, source_paths, n_files,
-                            client_factory=lambda: genai.Client(api_key=MY_API_KEY, http_options={"timeout":90000}),
+                            client_factory=lambda: PacedGeminiClient(genai.Client(api_key=MY_API_KEY,
+                                http_options={"timeout":90000,"retry_options":{"attempts":1}})),
                             primary_model=primary_model, fallback_models=fallback_models,
                             cache=st.session_state.setdefault('_extraction_cache', {}),
                             checkpoint_store=vault(st)):
@@ -741,6 +743,9 @@ if uploaded_files:
                             st.session_state['_reading_status'] = active_label
                             show_read_progress()
                         elif kind == 'waiting':
+                            show_read_progress()
+                        elif kind == 'rate_wait':
+                            active_label = '順番待ち中です。利用上限に合わせて自動で続けます：' + event['source']
                             show_read_progress()
                         elif kind == 'retry':
                             active_label = '読み直し中：' + event['source']

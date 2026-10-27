@@ -152,6 +152,11 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
         started=monotonic();client=None
         try:
             client=client_factory()
+            from gemini_request_gate import PacedGeminiClient
+            if isinstance(client, PacedGeminiClient):
+                client.on_wait = lambda delay, queued: events.put(
+                    {'kind':'rate_wait','index':index,'source':job.source_name,
+                     'seconds':delay,'queued':queued})
             result=extractor(client,job,paths[id(job)],n_files,
                 primary_model=primary_model,fallback_models=fallback_models,
                 **({'client_factory':client_factory,'network_gate':_NETWORK_GATE,

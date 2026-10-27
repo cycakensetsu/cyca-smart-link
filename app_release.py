@@ -13,7 +13,7 @@ import threading
 _ROOT = Path(__file__).resolve().parent
 _MODULES = ('pdf_worker', 'product_design', 'work_effects', 'estimate_pipeline', 'template_fill_test_v2', 'horizontal_estimate_flow',
             'print_layout', 'reference_layout', 'estimate_review', 'vault_archive',
-            'cyca_reference', 'source_table', 'gemini_resilience', 'source_sections', 'document_scopes', 'source_annotations', 'source_extraction', 'extraction_batch', 'complete_document_cache', 'source_variants', 'source_amounts', 'source_rounding', 'source_spec_history', 'source_review_ui', 'workflow_steps_ui', 'review_input_ui', 'review_findings_ui',
+            'cyca_reference', 'source_table', 'gemini_request_gate', 'gemini_resilience', 'source_sections', 'document_scopes', 'source_annotations', 'source_extraction', 'extraction_batch', 'complete_document_cache', 'source_variants', 'source_amounts', 'source_rounding', 'source_spec_history', 'source_review_ui', 'workflow_steps_ui', 'review_input_ui', 'review_findings_ui',
             'conversation_assistant', 'conversation_ui', 'pour_layout',
             'output_preview_ui', 'review_ui', 'legacy_exports')
 _lock = threading.RLock()
