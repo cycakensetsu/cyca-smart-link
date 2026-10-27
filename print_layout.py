@@ -44,6 +44,10 @@ def fit_numbers_text_rows(sheet, start, end):
                 lines += max(1, math.ceil(units * size / available))
             if lines > 1:
                 required = max(required, math.ceil(lines * size * 4 / 3 + 8))
+            from print_text_height import cell_height
+            shared_height = cell_height(cell.value, col)
+            if shared_height > 22:
+                required = max(required, shared_height)
         sheet.row_dimensions[row].height = required
     extra = sum((sheet.row_dimensions[r].height or before[r]) - before[r] for r in before)
     for index, row in enumerate(blank):
@@ -223,7 +227,7 @@ def render_estimate_pdf(estimate):
                 if i in (3,5,6): text(value,xx+cw-4,yy-height/2-3,9,white if fill==navy else navy,'right')
                 elif fill==navy: text(value,xx+cw/2,yy-height/2-3,9,white,'center')
                 else:
-                    para=Paragraph(escape(value),style);_,ph=para.wrap(cw-8,height)
+                    para=Paragraph(escape(value).replace('\n','<br/>'),style);_,ph=para.wrap(cw-8,height)
                     if ph>height: raise ValueError(f'PDFの行に収まりません: {value}')
                     para.drawOn(c,xx+4,yy-height/2-ph/2)
             xx+=cw
@@ -232,6 +236,7 @@ def render_estimate_pdf(estimate):
         band(label,top)
         return cells(['No.','工事品目','仕様','数量','単位','単価','金額','備考'],top-24,24,navy)
     if not compact:
+        from print_text_height import values_height
         from pour_layout import summary_chunks
         chunks=summary_chunks(estimate.categories) if estimate.pour_layout else [estimate.categories]
         category_offset=0
@@ -244,8 +249,10 @@ def render_estimate_pdf(estimate):
                     values=[i,item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark]
                 else:
                     values=[i,cat.name,'工事一式',1,'式','',cat.subtotal,'']
-                yy=cells(values,yy,22)
-            for _ in range(16-len(chunk)): yy=cells(['']*8,yy,18)
+                yy=cells(values,yy,values_height(values))
+            blanks=16-len(chunk)
+            blank_height=min(18,(16*22-((top-48)-yy))/blanks) if blanks else 18
+            for _ in range(blanks): yy=cells(['']*8,yy,blank_height)
             text('※工事内容明細には消費税が含まれておりません。',x,yy-21,8)
             sy=yy-34
             for label,amount in [('全体小計' if summary_pages>1 else '小計',estimate.subtotal),('値引き',estimate.discount),('税抜合計',estimate.net_total),('消費税',estimate.tax),('税込合計',estimate.grand_total)]:
@@ -256,6 +263,7 @@ def render_estimate_pdf(estimate):
             category_offset+=len(chunk)
             footer(2+summary_index);c.showPage()
     for page_no,rows in enumerate(pages,2 if compact else 2+summary_pages):
+        from print_text_height import entry_height
         yy=headers('工 事 内 容 明 細'); amount=0
         for row in rows:
             kind=row['kind']
@@ -267,8 +275,10 @@ def render_estimate_pdf(estimate):
                 values=['','','','','',label,row['amount'],''];fill=None
             else:
                 item=row['item'];values=[row['no'],item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark];fill=None;amount+=item.amount
-            yy=cells(values,yy,22,fill)
-        for _ in range(20-len(rows)): yy=cells(['']*8,yy,18)
+            yy=cells(values,yy,entry_height(row),fill)
+        blanks=20-len(rows)
+        blank_height=min(18,(20*22-((top-48)-yy))/blanks) if blanks else 18
+        for _ in range(blanks): yy=cells(['']*8,yy,blank_height)
         text('各明細金額は税抜です。消費税は合計欄に計上しています。' if compact else '※工事内容明細には消費税が含まれておりません。',x,yy-19,8)
         text('税込合計' if compact else '合　計',x+560,yy-43,11);text(f'{estimate.grand_total if compact else amount:,}',x+710,yy-43,11,align='right')
         footer(page_no);c.showPage()
