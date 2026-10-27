@@ -208,12 +208,13 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
 
 def reconcile_document_results(sources,records,summaries):
     """Join page reads only after every physical page has a retained result."""
-    from source_sections import reconcile_sections,reconcile_printed_totals
+    from source_sections import reconcile_sections,reconcile_printed_totals,reconcile_financial_pages
     from source_extraction import include_printed_discount
     from document_scopes import retain_scope_context,verify_scope_boundaries
     summaries=[reconcile_printed_totals(s) for s in summaries]
     for source in sources:
         name=source['name']
+        records,summaries=reconcile_financial_pages(records,summaries,name)
         records=reconcile_sections(records,summaries,name)
         records=include_printed_discount(records,summaries,name,source['pages'])
         summaries=verify_scope_boundaries(records,summaries,name)

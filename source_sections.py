@@ -60,13 +60,88 @@ def _printed_discount(summary, adjustment):
     """An explicitly negative, labelled source figure; never a residual."""
     import unicodedata
     text=re.sub(r'\s+','',unicodedata.normalize('NFKC',str(summary.get('抽出元テキスト範囲') or ''))).replace(',','')
-    return bool(re.search(r'(?:値引き?|端数調整|出精|調整)[^\d\-−▲△]{0,15}[-−▲△]'+str(abs(adjustment))+r'(?!\d)',text))
+    return bool(re.search(r'(?:値引き?|端数調整|出精|調整)[^\d\-−▲△]{0,15}(?:1(?:\.0+)?式[^\d\-−▲△]{0,5})?[-−▲△]'+str(abs(adjustment))+r'(?!\d)',text))
+
+
+def _coherent_net(summary):
+    net=_integer(summary.get('改小計',summary.get('税抜合計')))
+    tax=_integer(summary.get('消費税'));gross=_integer(summary.get('工事費計'))
+    return net if net is not None and tax is not None and gross==net+tax else None
+
+
+def _printed_row(row):
+    import unicodedata
+    text=re.sub(r'[,\s]','',unicodedata.normalize('NFKC',str(row.get('抽出元テキスト範囲') or '')))
+    name=_name(unicodedata.normalize('NFKC',str(row.get('品名') or '')))
+    amount=_integer(row.get('金額'))
+    return bool(name and name in text and amount is not None
+                and re.search(r'(?<!\d)'+str(abs(amount))+r'(?!\d)',text))
+
+
+def reconcile_financial_pages(records,summaries,source_name):
+    """Recognize a mislabelled cover and standalone repeated total by evidence.
+
+    Never match arbitrary subsets or replace prices with a residual. Require a
+    complete physical page, coherent independently printed net/tax/gross and
+    printed row evidence. Ambiguous pages remain blocked for original review.
+    """
+    output=[dict(r) for r in records];summaries=[dict(s) for s in summaries]
+    scoped=[r for r in output if r.get('__source_name')==source_name]
+    for summary in summaries:
+        if summary.get('__source_name')!=source_name or summary.get('__page_role')!='detail_page':continue
+        page=_integer(summary.get('__page_number'));net=_coherent_net(summary)
+        if page is None or net is None:continue
+        cover=[r for r in scoped if _integer(r.get('__page_number'))==page]
+        values=[_integer(r.get('金額')) for r in cover]
+        if not values or any(v is None for v in values) or sum(values)!=net:continue
+        trades=[r for r in cover if not re.search('諸経費|運搬|福利|処分|養生|値引|調整|荷揚',_name(r.get('品名')))]
+        if (len(trades)!=1 or not _printed_row(trades[0]) or _integer(trades[0].get('数量'))!=1
+                or trades[0].get('単位')!='式' or not re.search('工事|製品代計',_name(trades[0].get('品名')))):continue
+        later=[r for r in scoped if _integer(r.get('__page_number'))==page+1]
+        amounts=[_integer(r.get('金額')) for r in later]
+        next_has_totals=any(s.get('__source_name')==source_name and _integer(s.get('__page_number'))==page+1
+                            and (_coherent_net(s) is not None or s.get('__page_role') in ('cover_summary_page','summary_page')) for s in summaries)
+        if not next_has_totals and len(later)>1 and all(v is not None for v in amounts) and sum(amounts)==_integer(trades[0]['金額']):
+            summary['__page_role']='cover_summary_page'
+            summary['ページ種別']='cover_summary_page'
+            summary['__normalization']='印字された表紙の内訳・税抜税・税込と次の明細全ページを照合'
+    declared={_coherent_net(s) for s in summaries if s.get('__source_name')==source_name
+              and s.get('__page_role') in ('cover_summary_page','summary_page')}
+    declared.discard(None)
+    for row in list(scoped):
+        # A bare repeated total has no quantity/unit/rate and no service name.
+        if (not re.fullmatch(r'御?見積(?:総)?金額',_name(row.get('品名')))
+                or any(row.get(k) not in (None,'') for k in ('数量','単位','単価')) or not _printed_row(row)):continue
+        amount=_integer(row.get('金額'));page=_integer(row.get('__page_number'))
+        if page is None or amount not in declared or len([r for r in scoped if _integer(r.get('__page_number'))==page])!=1:continue
+        covers=[s for s in summaries if s.get('__source_name')==source_name and s.get('__page_role') in ('cover_summary_page','summary_page')
+                and (_integer(s.get('__page_number')) or 0)<page]
+        if not covers:continue
+        first=max(_integer(s['__page_number']) for s in covers)
+        if not any(_integer(s['__page_number'])==first and _coherent_net(s)==amount for s in covers):continue
+        last=min((_integer(s.get('__page_number')) for s in summaries if s.get('__source_name')==source_name
+                  and s.get('__page_role') in ('cover_summary_page','summary_page') and (_integer(s.get('__page_number')) or 0)>first),default=None)
+        other_pages={_integer(r.get('__page_number')) for r in scoped if first<(_integer(r.get('__page_number')) or 0)
+                     and (last is None or _integer(r.get('__page_number'))<last) and _integer(r.get('__page_number'))!=page}
+        proved=[]
+        for other in other_pages:
+            detail=[r for r in scoped if _integer(r.get('__page_number'))==other]
+            vals=[_integer(r.get('金額')) for r in detail]
+            if len(detail)>1 and all(v is not None for v in vals) and sum(vals)==amount:proved.append(other)
+        if proved:output.remove(row)
+    return output,summaries
 
 
 def reconcile_sections(records, summaries, source_name):
     output=[dict(r) for r in records]
     for row in output:
         amount=_integer(row.get('金額'))
+        unit=str(row.get('単位') or '')
+        if (row.get('__source_name')==source_name and amount is not None and _integer(row.get('数量'))==1
+                and unit and row.get('単価') in (None,'') and _printed_row(row)
+                and re.search(r'(?<!\d)1(?:\.0+)?'+re.escape(unit),re.sub(r'\s+','',str(row.get('抽出元テキスト範囲') or '')))):
+            row['単価']=amount
+            row['__normalization']='原本に明記された数量1'+unit+'・金額を単価へ転記'
         if (row.get('__source_name')==source_name and amount is not None and amount<0
                 and (_integer(row.get('__page_number')) or 0)>0
                 and re.search('値引|端数調整|出精',str(row.get('品名') or ''))
@@ -120,6 +195,7 @@ def reconcile_sections(records, summaries, source_name):
             details=[r for r in later if _name(r.get('工事種別'))==name]
             values=[_integer(r.get('金額')) for r in details]
             shared=common(name)
+            repeated_discounts=[]
             if not shared and len(trade_items)==1:
                 all_values=[_integer(r.get('金額')) for r in later]
                 if all_values and all(v is not None for v in all_values) and sum(all_values)==amount:
@@ -127,6 +203,22 @@ def reconcile_sections(records, summaries, source_name):
                     # on its detail page under a different classification.
                     # Retain every such detail and remove only its verified sum.
                     details=later;values=all_values
+                # A product subtotal excludes the discount repeated below its
+                # complete detail page. Prove both printed ledgers and the full
+                # net total before discarding either duplicate cover line.
+                net=_coherent_net(summary)
+                negatives=[r for r in cover if (_integer(r.get('金額')) or 0)<0]
+                pairs=[(r,[d for d in later if _name(d.get('品名'))==_name(r.get('品名'))
+                          and _integer(d.get('金額'))==_integer(r.get('金額')) and _printed_discount(d,_integer(r['金額']))])
+                       for r in negatives if _printed_discount(r,_integer(r['金額']))]
+                if (net is not None and negatives and len(pairs)==len(negatives)
+                        and all(len(p[1])==1 for p in pairs) and all(_integer(r.get('金額')) is not None for r in cover+later)
+                        and sum(_integer(r['金額']) for r in cover)==net
+                        and sum(_integer(r['金額']) for r in later)==net):
+                    body=[d for d in later if not any(d is p[1][0] for p in pairs)]
+                    if body and all(_integer(d['金額'])>=0 for d in body) and sum(_integer(d['金額']) for d in body)==amount:
+                        details=body;values=[_integer(d['金額']) for d in body]
+                        repeated_discounts=negatives
             elif (not shared and not details and all(any(
                     _integer(r.get('金額'))==_integer(i.get('金額'))
                     and _item_key(r.get('品名'))==_item_key(i.get('工事項目',i.get('品名')))
@@ -147,6 +239,8 @@ def reconcile_sections(records, summaries, source_name):
             if aggregate:
                 # The original cover summary is already retained in summaries.
                 output.remove(row)
+                for duplicate in repeated_discounts:
+                    if duplicate in output:output.remove(duplicate)
             elif _integer(row.get('数量'))==1 and str(row.get('単位') or '')=='式':
                 if row.get('単価') in (None,''):
                     row['単価']=amount
