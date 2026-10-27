@@ -13,6 +13,30 @@ from vault_archive import archive_bytes
 
 
 class RestoreUITest(unittest.TestCase):
+    def test_optional_read_backup_before_export_contains_sources_without_approval(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=AppTest.from_string(f'''
+import os
+os.environ['CYCA_DATA_DIR']={temp!r}
+import streamlit as st
+from review_ui import vault, render_archive
+st.session_state['username']='read-backup-actor'
+store=vault(st)
+source=store.preserve('original.pdf',b'original bytes')
+st.session_state['_review_extraction_id']=store.snapshot('extractions',{{'type':'read_checkpoint_v1','result':[]}})
+render_archive(st)
+''').run()
+            self.assertEqual(len(at.get('download_button')),0)
+            at.button(key='intake_prepare_archive').click().run()
+            self.assertEqual(list(at.exception),[])
+            from io import BytesIO
+            from zipfile import ZipFile
+            with ZipFile(BytesIO(at.session_state['_vault_archive'][0])) as archive:
+                names=archive.namelist()
+                self.assertTrue(any(n.startswith('originals/') for n in names))
+                self.assertTrue(any(n.startswith('extractions/') for n in names))
+                self.assertFalse(any(n.startswith(('approvals/','exports/')) for n in names))
+
     def app(self, temp):
         return AppTest.from_string(f'''
 import copy, os
