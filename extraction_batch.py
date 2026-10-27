@@ -10,6 +10,7 @@ import threading
 MAX_NETWORK_WORKERS = 4
 # Preserve the same gate when coordinated source reloads overlap old workers.
 _NETWORK_GATE = globals().get('_NETWORK_GATE') or threading.BoundedSemaphore(MAX_NETWORK_WORKERS)
+_CACHE_LOCK = globals().get('_CACHE_LOCK') or threading.RLock()
 
 
 def extraction_failure_reason(error):
@@ -76,12 +77,33 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
             job.page_number,job.total_pages,job.whole_document,primary_model,
             tuple(fallback_models),version)).encode()).hexdigest()
         keys[index]=key
-        if key in cache and not annotation_cache_ready(cache[key][0]):
-            cache.pop(key)
-        if key in cache:
-            results[index]=copy.deepcopy(cache[key])
+        with _CACHE_LOCK:
+            if key in cache and not annotation_cache_ready(cache[key][0]):
+                cache.pop(key)
+            cached = copy.deepcopy(cache[key]) if key in cache else None
+        if cached is not None:
+            results[index]=cached
             yield {'kind':'done','index':index,'source':job.source_name,'cached':True,'seconds':0}
         else:pending.append((index,job))
+
+    def remember(index, job, result):
+        from estimate_pipeline import build_intermediate_dataframe,validate_intermediate
+        from source_extraction import _total_mismatch
+        frame,_=build_intermediate_dataframe(result[1])
+        cacheable=(bool(result[1]) and not result[3] and not validate_intermediate(frame)
+                   and annotation_cache_ready(result[0]))
+        def linked(row):
+            try:
+                page=float(row.get('__page_number',1 if job.total_pages==1 else 0))
+                return (row.get('__source_name')==job.source_name and page.is_integer()
+                        and 1<=page<=job.total_pages)
+            except (TypeError,ValueError):return False
+        cacheable=cacheable and all(linked(row) for row in result[1])
+        cacheable=cacheable and not _total_mismatch(result[1],result[0],job.source_name)
+        if cacheable:
+            with _CACHE_LOCK:
+                if len(cache)>=20:cache.pop(next(iter(cache)))
+                cache[keys[index]]=copy.deepcopy(result)
 
     def work(index,job):
         started=monotonic();client=None
@@ -95,6 +117,9 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
                     {'kind':'retry','index':index,'source':job.source_name,'seconds':delay,'page':page}),
                 on_model_start=lambda model,page:events.put(
                     {'kind':'reading','index':index,'source':job.source_name,'page':page}))
+            # Keep completed reads even if the UI stops consuming progress
+            # during a temporary disconnect. No Streamlit calls in workers.
+            remember(index, job, result)
         except Exception as error:
             # Provider exception messages may contain document data or credentials.
             result=([],[],[],[{'source':job.source_name,'page':None,'reason':extraction_failure_reason(error)}])
@@ -122,22 +147,6 @@ def extract_batch(jobs, paths, n_files, *, client_factory, primary_model,
                 continue
             if event['kind']=='done':
                 index=event['index'];result=event.pop('result');results[index]=result;completed+=1
-                from estimate_pipeline import build_intermediate_dataframe,validate_intermediate
-                from source_extraction import _total_mismatch
-                frame,_=build_intermediate_dataframe(result[1])
-                cacheable=(bool(result[1]) and not result[3] and not validate_intermediate(frame)
-                           and annotation_cache_ready(result[0]))
-                def linked(row):
-                    try:
-                        page=float(row.get('__page_number',1 if jobs[index].total_pages==1 else 0))
-                        return (row.get('__source_name')==event['source'] and page.is_integer()
-                                and 1<=page<=jobs[index].total_pages)
-                    except (TypeError,ValueError):return False
-                cacheable=cacheable and all(linked(row) for row in result[1])
-                cacheable=cacheable and not _total_mismatch(result[1],result[0],event['source'])
-                if cacheable:
-                    if len(cache)>=20:cache.pop(next(iter(cache)))
-                    cache[keys[index]]=copy.deepcopy(result)
             yield event
             now=monotonic()
             if now-last_wait>=1 and completed<len(pending):
