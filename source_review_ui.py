@@ -233,6 +233,8 @@ def _render_items(st, rows, sid):
             for change in advanced.to_dict('records'):
                 by_id[change['行ID']].update({k:clean(v) for k,v in change.items() if k != '品名'})
             updated = list(by_id.values())
+        from item_correction_ui import render_item_correction
+        render_item_correction(st, updated, sid)
     with table_slot:
         st.html(_items_html(updated))
         _render_spec_comparisons(st, updated, sid)
