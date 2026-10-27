@@ -49,7 +49,7 @@ from template_fill_test import TEMPLATE_FILL_TEST_NAME, build_template_fill_test
 import template_fill_test_v2 as tfv2
 from horizontal_estimate_flow import build_horizontal_estimate
 from estimate_review import REVIEW_MODE
-from review_ui import preserve_uploads, capture_extraction, render_review, render_archive
+from review_ui import preserve_uploads, capture_extraction, render_review, render_archive, vault
 from legacy_exports import queue_draft_export, render_draft_exports
 from work_effects import cue, render as render_work_effects
 from product_design import STYLE as PRODUCT_STYLE, loading_panel, ready_panel
@@ -727,7 +727,8 @@ if uploaded_files:
                     for event in extract_batch(page_jobs, source_paths, n_files,
                             client_factory=lambda: genai.Client(api_key=MY_API_KEY, http_options={"timeout":90000}),
                             primary_model=primary_model, fallback_models=fallback_models,
-                            cache=st.session_state.setdefault('_extraction_cache', {})):
+                            cache=st.session_state.setdefault('_extraction_cache', {}),
+                            checkpoint_store=vault(st)):
                         kind = event['kind']
                         if kind == 'done':
                             job = page_jobs[event['index']]

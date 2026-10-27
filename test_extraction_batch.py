@@ -5,9 +5,70 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from extraction_batch import extract_batch
+from estimate_review import OriginalVault
+from vault_archive import archive_bytes, restore_archive
 
 
 class BatchTest(unittest.TestCase):
+    def test_completed_read_survives_session_loss_and_backup_restore(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'source.pdf'; path.write_bytes(b'original')
+            job = SimpleNamespace(source_name='a.pdf', page_number=1, total_pages=1, whole_document=True)
+            calls = []
+            def read(*args, **kwargs):
+                calls.append(True); kwargs['on_model_start']('fake', 1)
+                return [], [{'__source_name':'a.pdf', '__page_number':1, '品名':'検証品目',
+                    '数量':1, '単位':'式', '単価':100, '金額':100}], [], []
+            store = OriginalVault(Path(temp)/'first', 'owner')
+            options = dict(client_factory=lambda:None, primary_model='fake', fallback_models=[],
+                           extractor=read, checkpoint_store=store)
+            stream = extract_batch([job], {id(job):path}, 1, **options)
+            self.assertEqual(next(stream)['kind'], 'started')
+            self.assertEqual(next(stream)['kind'], 'reading'); stream.close()
+            restored = OriginalVault(Path(temp)/'restored', 'owner')
+            restore_archive(restored, archive_bytes(store))
+            resumed = list(extract_batch([job], {id(job):path}, 1,
+                **{**options, 'checkpoint_store':restored, 'cache':{}}))
+            self.assertEqual(calls, [True]); self.assertTrue(resumed[0]['cached'])
+            self.assertEqual(resumed[-1]['results'][0][1][0]['金額'], 100)
+            # Another login has no access to this owner's saved reading.
+            other = OriginalVault(Path(temp)/'first', 'other')
+            list(extract_batch([job], {id(job):path}, 1, **{**options, 'checkpoint_store':other}))
+            self.assertEqual(len(calls), 2)
+            # A changed batch prompt must trigger a new read.
+            list(extract_batch([job], {id(job):path}, 2, **options))
+            self.assertEqual(len(calls), 3)
+
+    def test_tampered_checkpoint_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'source.pdf';path.write_bytes(b'original')
+            job=SimpleNamespace(source_name='a.pdf',page_number=1,total_pages=1,whole_document=True)
+            store=OriginalVault(Path(temp)/'vault','owner');calls=[]
+            def read(*args,**kwargs):
+                calls.append(True)
+                return [],[{'__source_name':'a.pdf','__page_number':1,'品名':'検証品目',
+                    '数量':1,'単位':'式','単価':100,'金額':100}],[],[]
+            options=dict(client_factory=lambda:None,primary_model='fake',fallback_models=[],
+                         extractor=read,checkpoint_store=store)
+            list(extract_batch([job],{id(job):path},1,**options))
+            checkpoint=next((store.root/'extractions').glob('*.json'))
+            checkpoint.write_text(checkpoint.read_text().replace('100','999'))
+            # A fresh successful result cannot overwrite the corrupted immutable
+            # checkpoint, so the write is rejected rather than accepting it.
+            result=list(extract_batch([job],{id(job):path},1,**options))[-1]
+            self.assertEqual(len(calls),2)
+            self.assertTrue(result['results'][0][3])
+
+    def test_incomplete_reading_is_not_checkpointed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'source.pdf';path.write_bytes(b'original')
+            job=SimpleNamespace(source_name='a.pdf',page_number=1,total_pages=1,whole_document=True)
+            store=OriginalVault(Path(temp)/'vault','owner')
+            def read(*args,**kwargs):return [],[{'品名':'不完全','金額':100}],[],[]
+            list(extract_batch([job],{id(job):path},1,client_factory=lambda:None,
+                primary_model='fake',fallback_models=[],extractor=read,checkpoint_store=store))
+            self.assertEqual(list(store.entries()),[])
+
     def test_finished_read_survives_interrupted_ui_consumer(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'source.pdf'
