@@ -142,7 +142,7 @@ class OriginalVault:
         for path in sorted(self.root.rglob('*')):
             if path.is_symlink():
                 raise ValueError('保存先に不正なリンクがあります。')
-            if path.relative_to(self.root).parts[0] == '.staging':
+            if path.relative_to(self.root).parts[0] in ('.staging', '.draft_heads'):
                 continue
             if path.is_file():
                 yield path.relative_to(self.root).as_posix(), path.stat().st_size, path.read_bytes
