@@ -41,13 +41,34 @@ class LongSpecPrintTest(unittest.TestCase):
         printed=[]
         for sheet in workbook:
             if not sheet.title.startswith('明細'):continue
-            self.assertLessEqual(sum(sheet.row_dimensions[r].height or 21 for r in range(3,23)),420.001)
+            self.assertLessEqual(sum(sheet.row_dimensions[r].height or 21 for r in range(3,23)),440.001)
             for row in range(3,23):
                 if isinstance(sheet.cell(row,1).value,int):
                     printed.append(sheet.cell(row,2).value)
                     self.assertEqual(sheet.cell(row,7).value,f'=ROUND(D{row}*F{row},0)')
                     self.assertEqual(sheet.cell(row,3).font.sz,9)
         self.assertEqual(printed,['検証窓'+str(i) for i in range(18)])
+
+    def test_paper_columns_give_long_specs_and_units_room_without_crushed_blank_boxes(self):
+        estimate=self.estimate(5)
+        estimate.categories[0].items[1].unit='記載なし'
+        result=fill_estimate_v2(estimate,save_to_disk=False)
+        self.assertTrue(result.ok,result.errors)
+        workbook=load_workbook(BytesIO(result.data))
+        for sheet in workbook:
+            if not sheet.title.startswith('明細'):continue
+            self.assertGreater(sheet.column_dimensions['C'].width,sheet.column_dimensions['B'].width)
+            self.assertGreater(sheet.column_dimensions['C'].width,3*sheet.column_dimensions['H'].width)
+            unit=next((c for row in sheet for c in row if c.value=='記載なし'),None)
+            if unit:self.assertLessEqual(sheet.row_dimensions[unit.row].height,22)
+            for row in range(3,23):
+                if any(sheet.cell(row,c).value not in ('',None) for c in range(1,9)):continue
+                merge=next((m for m in sheet.merged_cells.ranges if m.min_col==1 and m.min_row<=row<=m.max_row),None)
+                # Inspect physical boxes, including vertically merged blank slots.
+                if merge and row!=merge.min_row:continue
+                end=merge.max_row if merge else row
+                height=sum(sheet.row_dimensions[r].height for r in range(row,end+1))
+                self.assertGreaterEqual(height,18)
 
     def test_long_summary_expenses_gain_pages_and_keep_cross_sheet_totals(self):
         estimate=self.estimate(1)

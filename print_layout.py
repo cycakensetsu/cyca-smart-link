@@ -45,19 +45,17 @@ def fit_numbers_cover_text(sheet):
 def fit_numbers_text_rows(sheet, start, end):
     """Reserve real height for wrapped text; Numbers cannot auto-fit XLSX rows.
 
-    Keep the original page height when unused grid rows can supply the space.
-    Text, formulas, fonts and the existing print-page boundaries are unchanged.
+    Use the shared physical page budget and merge unused slots into normal
+    empty boxes. Text, formulas and font sizes are unchanged.
     """
-    import math
-    import unicodedata
-    before = {r: sheet.row_dimensions[r].height or 20 for r in range(start, end + 1)}
+    from print_text_height import values_height, blank_grid
     blank = []
+    heights = []
     for row in range(start, end + 1):
         if not any(sheet.cell(row, col).value not in (None, '') for col in range(1, 9)):
             blank.append(row)
             continue
-        required = before[row]
-        for col in (2, 3, 8):
+        for col in (2, 3, 5, 8):
             cell = sheet.cell(row, col)
             if not isinstance(cell.value, str) or cell.data_type == 'f' or not cell.value:
                 continue
@@ -65,31 +63,19 @@ def fit_numbers_text_rows(sheet, start, end):
             alignment.wrap_text = True
             alignment.shrink_to_fit = False
             cell.alignment = alignment
-            size = float(cell.font.sz or 9)
-            width = sheet.column_dimensions[get_column_letter(col)].width or 13
-            # XLSX widths use default-font character units, not points. Reserve
-            # a little extra for Numbers' imported cell padding and font metrics.
-            available = max(size, (width * 7 + 5) * .75 - 12)
-            lines = 0
-            for line in cell.value.split('\n'):
-                units = sum(0 if unicodedata.combining(char) else
-                            (1 if unicodedata.east_asian_width(char) in ('W', 'F', 'A') else .6)
-                            for char in line)
-                lines += max(1, math.ceil(units * size / available))
-            if lines > 1:
-                required = max(required, math.ceil(lines * size * 4 / 3 + 8))
-            from print_text_height import cell_height
-            shared_height = cell_height(cell.value, col)
-            if shared_height > 22:
-                required = max(required, shared_height)
+        required = values_height([sheet.cell(row, col).value for col in range(1, 9)])
         sheet.row_dimensions[row].height = required
-    extra = sum((sheet.row_dimensions[r].height or before[r]) - before[r] for r in before)
-    minimum_blank = 2 if any((sheet.row_dimensions[r].height or 0)>160 for r in before) else 8
-    for index, row in enumerate(blank):
-        share = max(0, extra) / (len(blank) - index)
-        take = min(max(0, before[row] - minimum_blank), share)
-        sheet.row_dimensions[row].height = before[row] - take
-        extra -= take
+        heights.append(required)
+    offset = 0
+    for slots, height in blank_grid(heights, end-start+1):
+        group = blank[offset:offset+slots]
+        for row in group:
+            sheet.row_dimensions[row].height = height / slots
+        if slots > 1 and group[-1]-group[0]+1 == slots:
+            for col in range(1, 9):
+                sheet.merge_cells(start_row=group[0], end_row=group[-1],
+                                  start_column=col, end_column=col)
+        offset += slots
 
 
 def split_print_pages(wb, estimate):
@@ -118,6 +104,10 @@ def split_print_pages(wb, estimate):
         dest.sheet_view.showGridLines = False
         for key, dimension in source.column_dimensions.items():
             dest.column_dimensions[key] = copy(dimension)
+        if name != QUOTE_SHEET:
+            from print_text_height import column_width
+            for col in range(1, 9):
+                dest.column_dimensions[get_column_letter(col)].width = column_width(col)
         for old_row in range(start, end+1):
             row = old_row-start+1
             dest.row_dimensions[row].height = source.row_dimensions[old_row].height
@@ -247,7 +237,8 @@ def render_estimate_pdf(estimate):
     text(COMPANY['tel']+'　'+COMPANY['fax'],x+460,132,8)
     text(COMPANY['ceo'],x+460,112,9)
     footer(1);c.showPage()
-    widths=[26,192,162,44,33,75,90,width-622]
+    from print_text_height import TABLE_WIDTHS, blank_grid
+    widths=TABLE_WIDTHS
     style=ParagraphStyle('cell',fontName=font,fontSize=9,leading=11,wordWrap='CJK',textColor=navy)
     def cells(values,yy,height=22,fill=None,bold=False):
         xx=x
@@ -286,9 +277,11 @@ def render_estimate_pdf(estimate):
                 else:
                     values=[i,cat.name,'工事一式',1,'式','',cat.subtotal,'']
                 yy=cells(values,yy,values_height(values))
-            blanks=16-len(chunk)
-            blank_height=min(18,(16*22-((top-48)-yy))/blanks) if blanks else 18
-            for _ in range(blanks): yy=cells(['']*8,yy,blank_height)
+            used_heights=[values_height([i+1,cat.items[0].name,cat.items[0].spec,
+                cat.items[0].qty,cat.items[0].unit,None,None,cat.items[0].remark])
+                if cat.summary_only else values_height([i+1,cat.name,'工事一式',1,'式'])
+                for i,cat in enumerate(chunk)]
+            for _,height in blank_grid(used_heights,16): yy=cells(['']*8,yy,height)
             text('※工事内容明細には消費税が含まれておりません。',x,yy-21,8)
             if summary_pages>1:
                 text('合計欄は、まとめ全ページを合わせた金額です。',x,yy-33,8)
@@ -314,9 +307,8 @@ def render_estimate_pdf(estimate):
             else:
                 item=row['item'];values=[row['no'],item.name,item.spec,item.qty,item.unit,item.unit_price,item.amount,item.remark];fill=None;amount+=item.amount
             yy=cells(values,yy,entry_height(row),fill)
-        blanks=20-len(rows)
-        blank_height=min(18,(20*22-((top-48)-yy))/blanks) if blanks else 18
-        for _ in range(blanks): yy=cells(['']*8,yy,blank_height)
+        for _,height in blank_grid([entry_height(row) for row in rows]):
+            yy=cells(['']*8,yy,height)
         text('各明細金額は税抜です。消費税は合計欄に計上しています。' if compact else '※工事内容明細には消費税が含まれておりません。',x,yy-19,8)
         text('税込合計' if compact else '合　計',x+560,yy-43,11);text(f'{estimate.grand_total if compact else amount:,}',x+710,yy-43,11,align='right')
         footer(page_no);c.showPage()

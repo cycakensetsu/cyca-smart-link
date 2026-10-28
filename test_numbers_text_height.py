@@ -28,8 +28,9 @@ class NumbersTextHeightTest(unittest.TestCase):
 
     def sheet(self):
         sheet=Workbook().active
-        for col,width in [('A',4.5),('B',34),('C',30),('D',8),('E',6),('F',14),('G',16),('H',32)]:
-            sheet.column_dimensions[col].width=width
+        from print_text_height import column_width
+        for index,col in enumerate('ABCDEFGH',1):
+            sheet.column_dimensions[col].width=column_width(index)
         for row in range(3,23):
             sheet.row_dimensions[row].height=21
             for col in range(1,9):
@@ -37,7 +38,7 @@ class NumbersTextHeightTest(unittest.TestCase):
                 sheet.cell(row,col).alignment=Alignment(wrap_text=col in (2,3,8))
         return sheet
 
-    def test_wrapped_name_and_spec_gain_height_without_changing_values_fonts_or_page_height(self):
+    def test_wrapped_text_preserves_values_fonts_and_fixed_physical_page_budget(self):
         sheet=self.sheet()
         sheet['B3']='確認工事'*8
         sheet['C3']='原本仕様'*8
@@ -46,24 +47,24 @@ class NumbersTextHeightTest(unittest.TestCase):
         sheet['B5']='短い品名'
         sheet.row_dimensions[5].height=19
         before_values=[[sheet.cell(r,c).value for c in range(1,9)] for r in range(3,23)]
-        before_total=sum(sheet.row_dimensions[r].height for r in range(3,23))
         fit_numbers_text_rows(sheet,3,22)
         self.assertGreaterEqual(sheet.row_dimensions[3].height,32)
         self.assertGreaterEqual(sheet.row_dimensions[4].height,44)
-        self.assertEqual(sheet.row_dimensions[5].height,19)
+        self.assertEqual(sheet.row_dimensions[5].height,22)
         self.assertEqual([[sheet.cell(r,c).value for c in range(1,9)] for r in range(3,23)],before_values)
-        self.assertAlmostEqual(sum(sheet.row_dimensions[r].height for r in range(3,23)),before_total)
+        self.assertAlmostEqual(sum(sheet.row_dimensions[r].height for r in range(3,23)),440)
         self.assertTrue(all(sheet.row_dimensions[r].height>=8 for r in range(3,23)))
         for cell in ('B3','C3','B4'):
             self.assertEqual(sheet[cell].font.sz,9)
             self.assertTrue(sheet[cell].alignment.wrap_text)
             self.assertFalse(sheet[cell].alignment.shrink_to_fit)
 
-    def test_explicit_line_breaks_get_real_height_even_on_fully_occupied_page(self):
+    def test_fully_occupied_page_must_repaginate_instead_of_overflowing(self):
         sheet=self.sheet()
         for row in range(3,23):sheet.cell(row,2,'確認工事')
         sheet['H8']='原本の条件\n二行目の条件\n三行目の条件'
-        fit_numbers_text_rows(sheet,3,22)
+        with self.assertRaisesRegex(ValueError,'ページの高さ'):
+            fit_numbers_text_rows(sheet,3,22)
         self.assertGreaterEqual(sheet.row_dimensions[8].height,44)
         self.assertEqual(sheet['H8'].value,'原本の条件\n二行目の条件\n三行目の条件')
         self.assertEqual(sheet['H8'].font.sz,9)
