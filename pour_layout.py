@@ -198,6 +198,8 @@ def build_outputs(estimate, template_path):
     _set(cover, 7, 7, estimate.issue_date)
     _set(cover, 25, 3, estimate.project_name)
     _set(cover, 29, 3, estimate.valid_days)
+    from print_layout import fit_numbers_cover_text
+    fit_numbers_cover_text(cover)
     item_refs = {i: [] for i in range(len(estimate.categories))}
     category_index = {id(c): i for i, c in enumerate(estimate.categories)}
     item_categories = {id(item): i for i, c in enumerate(estimate.categories) for item in c.items}

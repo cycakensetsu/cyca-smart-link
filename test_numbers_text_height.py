@@ -3,11 +3,29 @@ from io import BytesIO
 import unittest
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment
-from print_layout import fit_numbers_text_rows
+from print_layout import fit_numbers_text_rows, fit_numbers_cover_text
 from template_fill_test_v2 import Estimate, Category, LineItem, fill_estimate_v2
 
 
 class NumbersTextHeightTest(unittest.TestCase):
+    def test_real_long_cover_title_keeps_all_text_and_page_height(self):
+        title = '復元・窓仕様・室外機 出力検証20261028・提出不可'
+        estimate = Estimate('', '検証用 御中', title, '2026/10/28', '30日',
+            [Category('確認工事', [LineItem('確認作業', '', 1, '式', 1000, 1000)])],
+            pour_layout=True, source_count=2)
+        result = fill_estimate_v2(estimate, save_to_disk=False)
+        self.assertTrue(result.ok, result.errors)
+        sheet = load_workbook(BytesIO(result.data))['見積書']
+        self.assertEqual(sheet['C25'].value, title)
+        self.assertTrue(sheet['C25'].alignment.wrap_text)
+        self.assertFalse(sheet['C25'].alignment.shrink_to_fit)
+        self.assertEqual(sheet['C25'].font.sz, 10)
+        self.assertGreater(sheet.row_dimensions[25].height, 18)
+        before = sum(sheet.row_dimensions[r].height or 20 for r in range(16, 31))
+        fit_numbers_cover_text(sheet)
+        self.assertEqual(sum(sheet.row_dimensions[r].height or 20 for r in range(16, 31)), before)
+        self.assertEqual(sheet['E25'].value, '彩架建設株式会社')
+
     def sheet(self):
         sheet=Workbook().active
         for col,width in [('A',4.5),('B',34),('C',30),('D',8),('E',6),('F',14),('G',16),('H',32)]:
