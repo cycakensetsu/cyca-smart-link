@@ -11,7 +11,7 @@ from estimate_review import canonical, digest
 MAX_BYTES = 200 * 1024 * 1024
 MAX_FILES = 2000
 _HEX = r'[a-f0-9]{64}'
-_PATH = re.compile(rf'(originals/{_HEX}/original|(?:uploads|extractions|approvals)/{_HEX}\.json|exports/{_HEX}/{_HEX}\.(?:xlsx|pdf))')
+_PATH = re.compile(rf'(originals/{_HEX}/original|(?:uploads|extractions|approvals|drafts)/{_HEX}\.json|exports/{_HEX}/{_HEX}\.(?:xlsx|pdf))')
 
 
 def validate_entry(name, data):
@@ -26,15 +26,24 @@ def validate_entry(name, data):
         value = json.loads(data)
         if digest(value) != PurePosixPath(parts[-1]).stem:
             raise ValueError('保管記録が変更されています。')
+        if parts[0] == 'drafts':
+            from work_drafts import validate_draft
+            validate_draft(value)
         return
     if hashlib.sha256(data).hexdigest() != expected:
         raise ValueError('原本または帳票が変更されています。')
 
 
 def archive_bytes(store):
+    from work_drafts import available_drafts
+    # Keep all immutable evidence/receipts. Draft revisions stay in the vault;
+    # the portable backup needs only each independent work's latest checkpoint.
+    latest_drafts = {f"drafts/{v['id']}.json" for v in available_drafts(store)}
     files = []
     total = 0
     for name, size, read in store.entries():
+        if name.startswith('drafts/') and name not in latest_drafts:
+            continue
         total += size
         if total > MAX_BYTES or len(files) >= MAX_FILES:
             raise ValueError('一括保存の上限200MB・2000件を超えました。管理者に保管先の設定を依頼してください。')
@@ -76,6 +85,9 @@ def restore_archive(store, data):
             for name, expected in hashes.items():
                 content = archive.read(name)
                 validate_entry(name, content)
+                if name.startswith('drafts/'):
+                    from work_drafts import validate_draft
+                    validate_draft(json.loads(content), store.root.name)
                 if hashlib.sha256(content).hexdigest() != expected:
                     raise ValueError('バックアップの内容が変更されています。')
                 existing = store.get_entry(name)
@@ -86,4 +98,7 @@ def restore_archive(store, data):
         raise ValueError('サイカスマートリンクの有効なバックアップではありません。') from None
     for name, content in checked:
         store._put(name, content)
+        if name.startswith('drafts/'):
+            from work_drafts import update_head
+            update_head(store, PurePosixPath(name).stem, json.loads(content))
     return len(checked)

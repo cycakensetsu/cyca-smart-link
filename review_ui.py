@@ -46,7 +46,7 @@ def render_archive(st):
         with st.expander('以前の保存データを戻す（必要なときだけ）'):
             _render_archive_restore(st)
             if st.session_state.get('_review_extraction_id'):
-                st.caption('原本と読み取り結果の控えを、確認途中でもPCへ保存できます。入力中の訂正・宛名・金額設定は含みません。')
+                st.caption('原本・読み取り結果と、自動保存済みの訂正・宛名・金額設定をPCへ保存できます。まだ保存していない入力は含みません。')
                 render_backup_download(st, 'intake')
         return
     with st.expander("原本・記録もまとめて保存する（社内用・必要なときだけ）", expanded=False):
@@ -112,6 +112,8 @@ def preserve_uploads(st, uploads):
 
 
 def capture_extraction(st, detail, summaries, records, read_errors=()):
+    from work_drafts import reset_tracking
+    reset_tracking(st.session_state)
     for key in list(st.session_state):
         if key.startswith('_review_') and key != '_review_sources':
             del st.session_state[key]
@@ -144,6 +146,8 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
 
 
 def render_review(st, api_key=None):
+    from work_drafts import hydrate_inputs
+    hydrate_inputs(st.session_state)
     st.session_state['_review_export_ready'] = False
     original = st.session_state.get("_review_original_rows")
     st.session_state['_review_workflow_step'] = 2 if original else 1

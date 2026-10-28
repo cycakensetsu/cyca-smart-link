@@ -15,7 +15,7 @@ _MODULES = ('pdf_worker', 'product_design', 'work_effects', 'estimate_pipeline',
             'print_layout', 'reference_layout', 'estimate_review', 'vault_archive',
             'cyca_reference', 'source_table', 'gemini_request_gate', 'gemini_resilience', 'source_sections', 'document_scopes', 'source_annotations', 'source_extraction', 'extraction_batch', 'complete_document_cache', 'source_variants', 'source_amounts', 'source_rounding', 'source_spec_history', 'item_correction_ui', 'source_review_ui', 'workflow_steps_ui', 'review_input_ui', 'review_findings_ui',
             'conversation_assistant', 'conversation_ui', 'pour_layout',
-            'output_preview_ui', 'review_ui', 'saved_read_resume', 'legacy_exports')
+            'output_preview_ui', 'review_ui', 'saved_read_resume', 'work_drafts', 'legacy_exports')
 _lock = vars(threading).setdefault('_cyca_release_lock',globals().get('_lock') or threading.RLock())
 _loaded_fingerprint = globals().get('_loaded_fingerprint')
 

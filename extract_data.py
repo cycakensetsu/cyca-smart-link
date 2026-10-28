@@ -508,6 +508,8 @@ upload_signature = tuple(
     (f.name, f.size, hashlib.sha256(f.getbuffer()).hexdigest()) for f in (uploaded_files or [])
 )
 if st.session_state.get("_upload_signature") != upload_signature:
+    from work_drafts import reset_tracking
+    reset_tracking(st.session_state)
     for key in list(st.session_state):
         if key.startswith(("_extracted_", "cat_profit_", "_review_", "review_", "_legacy_")) or key in (
             "_detail_df", "_vendor_summaries", "_summary_data", "_categories_summary",
@@ -523,6 +525,8 @@ if st.session_state.get("_upload_signature") != upload_signature:
         cue(st, "upload")
 
 if profit_mode == REVIEW_MODE:
+    from work_drafts import render_recovery
+    render_recovery(st)
     with workflow_slot.container():
         render_workflow_status(st)
 
@@ -1213,7 +1217,12 @@ if uploaded_files and format_choice == HORIZONTAL_FORMAT:
 
 
 if profit_mode == REVIEW_MODE:
-    render_review(st, api_key=MY_API_KEY)
+    from work_drafts import autosave
+    try:
+        render_review(st, api_key=MY_API_KEY)
+    finally:
+        # Includes form/AI/page callbacks that call st.rerun before the bottom.
+        autosave(st)
     with workflow_slot.container():
         render_workflow_status(st)
 
