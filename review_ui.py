@@ -174,22 +174,26 @@ def customer_default(metadata):
 
 def _render_review_plan(st,api_key,original,rows,sources):
     from conversation_ui import working_context, render_conversation
-    conversation_slot = st.container()
+    from workflow_steps_ui import render_step_heading
+    render_step_heading(st, 3)
     st.markdown('#### 見積金額と宛名を確認する')
-    st.caption('出力先：アプリ既存の横型流し込みデザイン。通常は工種ごとに明細を分け、2行程度の小工種は同じページにまとめます。少量の1社見積は一式まとめを省きます。')
+    st.caption('内容はA4横の見積書に自動で並びます。次の工程で、実際の仕上がりを確認できます。')
     m = st.session_state.get('_review_metadata', {})
     with st.container(border=True):
         st.caption('見積書を渡すお客様と、表紙の工事名を確認してください。')
         customer = st.text_input('お客様名', value=customer_default(m), placeholder='例：〇〇株式会社 御中', key='review_customer')
-        project = st.text_input('工事名', value=str(m.get('工事名称') or ''), key='review_project')
-    with st.expander("金額・利益を手動で調整する", expanded=False):
+        project = st.text_input('工事名', value=str(m.get('工事名称') or ''), placeholder='例：○○様邸 外壁塗装工事', key='review_project')
+    custom_target = (st.session_state.get('review_scope','全体') != '全体'
+                     or st.session_state.get('review_target_mode','上乗せ額') != '上乗せ額')
+    with st.expander("細かい金額設定（業者別・工種別・値引きなど）", expanded=custom_target):
         scope = st.radio("目標の指定範囲", ["全体", "業者別", "工種別"], horizontal=True, key="review_scope")
         mode = st.selectbox("目標の指定方法", ["上乗せ額", "掛け率", "粗利益率"], key="review_target_mode")
         accepted = [r for r in rows if r["採用"]]
         group = "見積元" if scope == "業者別" else "工事種別"
         keys = ["全体"] if scope == "全体" else list(dict.fromkeys(str(r[group]) for r in accepted))
         targets = []
-        for key in keys:
+        simple_profit = scope == '全体' and mode == '上乗せ額'
+        for key in ([] if simple_profit else keys):
             defaults = (0.0, 0.0, 10000.0) if mode == "上乗せ額" else ((1.0, 1.0, .05) if mode == "掛け率" else (0.0, 0.0, 1.0))
             value = st.number_input(f"{key}：{mode}" + ("（%）" if mode == "粗利益率" else ""),
                                     value=defaults[0], min_value=defaults[1], step=defaults[2],
@@ -205,12 +209,18 @@ def _render_review_plan(st,api_key,original,rows,sources):
             "有効期限": "30日", "値引き理由": reason,
             "顧客税率": st.selectbox("顧客向け税率", [.10, .08, 0.0], format_func=lambda x:f"{x:.0%}", key="review_customer_tax"),
         }
+    if simple_profit:
+        value = st.number_input('上乗せする利益（円）', value=0.0, min_value=0.0, step=10000.0,
+            key='review_target_'+digest(['全体','上乗せ額','全体']))
+        targets = [Target('全体','全体','上乗せ額',value)]
+        st.caption('仕入金額に加える金額です。0円なら仕入金額のまま作ります。話さず、ここに直接入力しても進められます。')
     if st.session_state.get('_review_conversation_record'):
         metadata['相談反映記録'] = st.session_state['_review_conversation_record']
     from output_preview_ui import page_controls, render_preview
     metadata = page_controls(st, rows, metadata)
-    with conversation_slot:
-        render_conversation(st, api_key, working_context(rows, sources, targets, discount, metadata))
+    with st.expander('話して・文字で相談する（相談して決めたいとき）',
+                     expanded=bool(st.session_state.get('_review_proposal') or st.session_state.get('_review_assistant_notice'))):
+        render_conversation(st, api_key, working_context(rows, sources, targets, discount, metadata), show_heading=False)
     resolutions = {}
     try:
         draft = build_draft(original, rows, sources, targets, discount, metadata)
@@ -251,7 +261,17 @@ def _render_review_plan(st,api_key,original,rows,sources):
     st.caption('確認した内容でPDFとNumbers用ファイルを作ります。作成後に保存ボタンが出ます。')
     if preview_ready and agree:
         st.session_state['_review_workflow_step'] = 5
-    if st.button("この内容で見積書を作成", disabled=not (valid and agree and preview_ready), key="review_approve"):
+    previous_approval = st.session_state.get('_review_approval')
+    already_created = (previous_approval and st.session_state.get('_review_result')
+        and previous_approval['fingerprint'] == draft['fingerprint'] and valid and agree and preview_ready)
+    if not already_created and not (preview_ready and agree):
+        st.caption('ステップ4で完成イメージを開き、「内容とページ分けは、これでOKです」にチェックすると作成できます。')
+    create_slot = st.empty()
+    create_clicked = False
+    if not already_created:
+        with create_slot.container():
+            create_clicked = st.button("この内容で見積書を作成", type='primary', disabled=not (valid and agree and preview_ready), key="review_approve")
+    if create_clicked:
         try:
             approval = approve(draft, st.session_state["username"])
             result = build_approved_estimate(draft, approval)
@@ -266,14 +286,19 @@ def _render_review_plan(st,api_key,original,rows,sources):
             st.session_state["_review_result"] = result
             st.session_state["_review_approval"] = approval
             cue(st, 'output')
+            create_slot.empty()
         except (ValueError, OSError) as exc:
             st.error(str(exc))
     approval = st.session_state.get("_review_approval")
     result = st.session_state.get("_review_result")
     if approval and result and approval["fingerprint"] == draft["fingerprint"] and valid and agree and preview_ready:
         st.session_state['_review_export_ready'] = True
-        st.success("見積書ができました。下のボタンから保存できます。")
-        st.download_button("PDFを保存", result.pdf_data, file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf", on_click=download_cue)
+        st.success("見積書ができました。まずPDFを保存してください。")
+        st.caption('印刷・お客様への提出にはPDFを使います。Numbers用ファイルも、必要な場合だけ保存できます。')
+        st.download_button("PDFを保存", result.pdf_data, type='primary', file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf", on_click=download_cue)
+        with st.expander('印刷のしかた'):
+            st.write('保存したPDFを開き、「ファイル」→「プリント」を選びます。用紙はA4・横向きです。ページ数を確認してから印刷してください。')
+        st.caption('あとで表を編集する場合はこちらです（Numbers・Excelで開けます）。')
         st.download_button("Numbers用を保存", result.data, file_name=result.file_name, key="review_xlsx", on_click=download_cue)
         with st.expander('承認記録を見る・保存する（社内用）'):
             st.download_button("承認記録を保存", canonical(approval).encode(), file_name="社内承認記録.json", key="review_receipt")

@@ -499,6 +499,7 @@ uploaded_files = st.file_uploader(
     "見積書のPDF・写真を選ぶ",
     type=["pdf", "jpg", "jpeg", "png"],
     accept_multiple_files=True,
+    max_upload_size=20,
     key='estimate_upload_' + st.session_state['_upload_epoch'],
 )
 
