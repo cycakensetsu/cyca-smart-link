@@ -33,10 +33,13 @@ def progress_markup(number):
     for step,label in SHORT.items():
         kind='current' if step==number else ('done' if step<number else 'upcoming')
         selected=' aria-current="step"' if step==number else ''
-        parts.append(f'<li class="cyca-step-{kind}"{selected}><span>{step}</span>{label}</li>')
-    return ('''<style>.cyca-workflow{margin:8px 0 22px;padding:15px 18px;border:1px solid #d5e4eb;border-radius:13px;background:#f4f8fa;color:#203b50}
+        content=f'<span>{step}</span>{label}'
+        if step<=number:
+            content=f'<a href="#cyca-step-{step}" aria-label="ステップ{step}：{STEPS[step]}へ移動">{content}</a>'
+        parts.append(f'<li class="cyca-step-{kind}"{selected}>{content}</li>')
+    return ('''<style>[id^="cyca-step-"],[id^="cyca-source-"]{scroll-margin-top:84px}.cyca-workflow{margin:8px 0 22px;padding:15px 18px;border:1px solid #d5e4eb;border-radius:13px;background:#f4f8fa;color:#203b50}
 .cyca-workflow strong{display:block;font-size:16px;line-height:1.6}.cyca-workflow ol{display:flex;flex-wrap:wrap;list-style:none;gap:8px 12px;margin:12px 0 0;padding:0}
-.cyca-workflow li{display:flex;align-items:center;gap:5px;font-size:12px;color:#617786}.cyca-workflow li span{display:inline-grid;place-items:center;width:22px;height:22px;border:1px solid #bfd0dc;border-radius:50%;font-variant-numeric:tabular-nums}
+.cyca-workflow li{display:flex;align-items:center;gap:5px;font-size:14px;color:#617786;min-height:44px}.cyca-workflow a{display:flex;align-items:center;gap:5px;min-height:44px;padding:0 6px;color:inherit!important;text-decoration:none}.cyca-workflow a:hover{text-decoration:underline}.cyca-workflow a:focus-visible{outline:3px solid #164f68;outline-offset:2px;border-radius:5px}.cyca-workflow li span{display:inline-grid;place-items:center;width:24px;height:24px;border:1px solid #bfd0dc;border-radius:50%;font-variant-numeric:tabular-nums}
 .cyca-workflow li.cyca-step-current{font-weight:700;color:#164f68}.cyca-step-current span{background:#164f68;color:white;border-color:#164f68!important}.cyca-step-done span{background:#e0eef0;color:#275b65}
 </style><nav class="cyca-workflow" aria-label="見積書作成の進み具合">'''
             f'<strong>いま：ステップ{number} / 5　{STEPS[number]}</strong>'

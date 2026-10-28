@@ -2,18 +2,20 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const source=fs.readFileSync(__dirname+'/work_effects_frontend/effects.js','utf8');
-function setup({unsupported=false,saved={},reduce=false,deferFrames=false}={}) {
-  const items={}, messages=[], oscillators=[], gains=[], listeners={}, pending=new Map(),frames=[],activeParticles=[]; let serial=0, particles=0;
+function setup({unsupported=false,saved={},reduce=false,deferFrames=false,portal=false}={}) {
+  const items={}, messages=[], oscillators=[], voices=[], contexts=[], notices=[], gains=[], listeners={}, pending=new Map(),frames=[],activeParticles=[]; let serial=0, particles=0;
   for(const id of ['sound','sample','volume','volumeValue','motion','theme','stage','icon','message','hint','card'])items[id]={value:'',checked:true,textContent:'',className:'',attrs:{},classList:{add(...names){items[id].className+=' '+names.join(' ');}},setAttribute(k,v){this.attrs[k]=v;},getBoundingClientRect(){return {height:248};},appendChild(node){particles++;activeParticles.push(node);}};
   items.volume.value='20';items.theme.value='shuffle';
-  const pageStyle={};const document={documentElement:{style:{setProperty:(k,v)=>pageStyle[k]=v}},hidden:false,querySelector:id=>items[id.slice(1)],addEventListener:(event,fn)=>listeners[event]=fn,removeEventListener:(event)=>delete listeners[event],querySelectorAll:()=>[...activeParticles],createElement:()=>({style:{setProperty(){}},addEventListener(){},remove(){const i=activeParticles.indexOf(this);if(i>=0)activeParticles.splice(i,1);}})};
+  const pageStyle={};const document={documentElement:{style:{setProperty:(k,v)=>pageStyle[k]=v}},hidden:false,querySelector:id=>items[id.slice(1)],addEventListener:(event,fn)=>listeners[event]=fn,removeEventListener:(event)=>delete listeners[event],querySelectorAll:()=>[...activeParticles],createElement:()=>({style:{setProperty(){}},attrs:{},setAttribute(k,v){this.attrs[k]=v;},animate(){this.animated=true;},addEventListener(){},remove(){for(const list of [activeParticles,notices]){const i=list.indexOf(this);if(i>=0)list.splice(i,1);}}})};
+  document.body={appendChild:node=>notices.push(node)};
+  const effectsRoot=portal?{ownerDocument:document,querySelector:document.querySelector,querySelectorAll:document.querySelectorAll}:document;
   const window={parent:{postMessage:m=>messages.push(m)},addEventListener:(event,fn)=>listeners[event]=fn};
-  window.AudioContext=class {constructor(){if(unsupported)throw Error();this.state='suspended';this.currentTime=0;this.destination={};}async resume(){this.state='running';}createGain(){const gain={gain:{cancelScheduledValues(){},setTargetAtTime(){},setValueAtTime:v=>gains.push(v),linearRampToValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){},disconnect(){}};return gain;}createOscillator(){const o={frequency:{},connect(){},disconnect(){},start(){oscillators.push(this.frequency.value);},stop(){}};return o;}};
+  window.AudioContext=class {constructor(){if(unsupported)throw Error();this.state='suspended';this.currentTime=0;this.destination={};contexts.push(this);}async resume(){this.state='running';}close(){this.state='closed';return Promise.resolve();}createGain(){const gain={gain:{cancelScheduledValues(){},setTargetAtTime(){},setValueAtTime:v=>gains.push(v),linearRampToValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){},disconnect(){}};return gain;}createOscillator(){const o={frequency:{},connect(){},disconnect(){},start(){oscillators.push(this.frequency.value);voices.push(this);},stop(){}};return o;}};
   const motionListeners={};const media={matches:reduce,addEventListener:(event,fn)=>motionListeners[event]=fn,removeEventListener:event=>delete motionListeners[event]};
-  const engine=vm.runInNewContext(source+'\ncreateEffects(document);',{document,window,localStorage:{getItem:()=>JSON.stringify(saved),setItem(){}},matchMedia:()=>media,ResizeObserver:class{observe(){}},Math,Date,JSON,Set,Array,Number,String,Error,requestAnimationFrame:fn=>deferFrames?frames.push(fn):fn(),setTimeout:fn=>{pending.set(++serial,fn);return serial;},clearTimeout:id=>pending.delete(id)});
+  const engine=vm.runInNewContext(source+'\ncreateEffects(effectsRoot);',{effectsRoot,document,window,localStorage:{getItem:()=>JSON.stringify(saved),setItem(){}},matchMedia:()=>media,ResizeObserver:class{observe(){}},Math,Date,JSON,Set,Array,Number,String,Error,requestAnimationFrame:fn=>deferFrames?frames.push(fn):fn(),setTimeout:fn=>{pending.set(++serial,fn);return serial;},clearTimeout:id=>pending.delete(id)});
   const flush=()=>{for(const [id,fn] of [...pending]){pending.delete(id);fn();}};
   const event=(id,stage,age=0)=>engine.receive([{id,stage,at:Date.now()/1000-age}]);
-  return {items,messages,oscillators,gains,flush,event,document,listeners,pageStyle,engine,media,motionListeners,flushFrames:()=>{while(frames.length)frames.shift()();},get particles(){return particles;},get activeParticles(){return activeParticles.length;}};
+  return {items,messages,oscillators,voices,contexts,notices,gains,flush,event,document,listeners,pageStyle,engine,media,motionListeners,flushFrames:()=>{while(frames.length)frames.shift()();},get particles(){return particles;},get activeParticles(){return activeParticles.length;}};
 }
 (async()=>{
   const t=setup();
@@ -61,6 +63,28 @@ function setup({unsupported=false,saved={},reduce=false,deferFrames=false}={}) {
   assert.doesNotMatch(pendingFrame.items.stage.className,/is-animated/,'a late frame cannot restart disabled motion');
   animation.engine.dispose();assert.equal(animation.listeners.pointerdown,undefined);assert.equal(animation.listeners.visibilitychange,undefined);
   animation.event('after-dispose','output');animation.flush();assert.equal(animation.activeParticles,0);
+  const audio=setup({saved:{theme:'spark'}});await audio.items.sample.onclick();
+  assert.equal(audio.items.theme.value,'spark');
+  for(const voice of audio.voices)voice.onended();
+  assert.equal(audio.items.card.attrs['data-sound-completed'],'output','actual tone completion is recorded, not only scheduling');
+  audio.contexts[0].state='suspended';audio.contexts[0].onstatechange();
+  assert.equal(audio.items.card.attrs['data-sound-state'],'ready');
+  const oldSounds=audio.oscillators.length;await audio.listeners.keydown({isTrusted:true});
+  assert.equal(audio.items.card.attrs['data-sound-state'],'running');assert(audio.oscillators.length>oldSounds,'normal gesture resumes suspended audio');
+  const interrupted=setup();await interrupted.items.sample.onclick();await interrupted.items.sound.onclick();
+  for(const voice of interrupted.voices)voice.onended();
+  assert.equal(interrupted.items.card.attrs['data-sound-completed'],'','muted/interrupted audio cannot report completion');
+  const zeroVolume=setup();await zeroVolume.items.sample.onclick();for(const voice of zeroVolume.voices)voice.onended();
+  zeroVolume.items.volume.value='0';await zeroVolume.items.sample.onclick();
+  assert.equal(zeroVolume.items.card.attrs['data-sound-completed'],'','zero-volume test cannot reuse an old completion result');
+  const portal=setup({portal:true});await portal.items.sample.onclick();
+  assert.equal(portal.notices.length,1);assert.match(portal.notices[0].textContent,/PDFを保存/);
+  assert.match(portal.notices[0].style.cssText,/pointer-events:none/,'celebration cannot block clicks');
+  portal.event('portal-next','output');portal.flush();assert.equal(portal.notices.length,1,'completion notices never stack');
+  portal.engine.dispose();assert.equal(portal.notices.length,0,'disposal removes the app-document notice');
+  const quietPortal=setup({portal:true,reduce:true});await quietPortal.items.sample.onclick();
+  assert.equal(quietPortal.notices[0].animated,undefined,'reduced motion also applies to the floating completion notice');
+  quietPortal.document.hidden=true;quietPortal.listeners.visibilitychange();assert.equal(quietPortal.notices.length,0);
   console.log('アニメーション：工程別の動き・連続変化・粒子数上限・OFF時の停止・動きを減らす設定・背景時停止・破棄後の停止を確認しました。');
   console.log('効果音：デフォルトON・通常操作から開始・明示的な消音保持・背景完了通知・重複防止・音量上限を確認しました。');
 })().catch(error=>{console.error(error);process.exitCode=1;});

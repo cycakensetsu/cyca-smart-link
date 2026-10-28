@@ -17,6 +17,23 @@ class WorkflowStepsUITest(unittest.TestCase):
         self.assertIn('いま：ステップ3 / 5',html)
         self.assertEqual(re.findall(r'<li class="cyca-step-([a-z]+)"',html),
                          ['done','done','current','upcoming','upcoming'])
+        for step in (1,2,3):self.assertIn(f'href="#cyca-step-{step}"',html)
+        for step in (4,5):self.assertNotIn(f'href="#cyca-step-{step}"',html)
+
+    def test_profit_can_be_entered_directly_without_voice_or_opening_advanced_settings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            at=AppTest.from_string(app_source(temp)).run()
+            sid=at.session_state['_review_sources'][0]['id']
+            at.number_input(key='review_net_'+sid).set_value(100000).run()
+            at.checkbox(key='review_source_ok_'+sid).check().run()
+            target=next(n for n in at.number_input if n.key.startswith('review_target_'))
+            self.assertEqual(target.label,'上乗せする利益（円）')
+            self.assertFalse(any(n.key==target.key for e in at.expander for n in e.number_input))
+            target.set_value(10000).run()
+            self.assertEqual(list(at.exception),[])
+            self.assertEqual(next(m.value for m in at.metric if m.label=='お客様への税込見積額'),'121,000円')
+            self.assertNotIn('_review_proposal',at.session_state)
+            self.assertNotIn('_review_approval',at.session_state)
 
     def test_stage_two_to_five_then_edit_returns_to_the_required_step(self):
         with tempfile.TemporaryDirectory() as temp:

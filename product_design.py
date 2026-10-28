@@ -16,6 +16,9 @@ STYLE = '''<style>
 .cyca-scan:before,.cyca-ring:before,.cyca-ring:after,.cyca-track i,.header-gradient-line,.upload-success-box{animation-play-state:var(--cyca-motion-play-state,running)}.cyca-scan:before{opacity:var(--cyca-sweep-opacity,1)}
 @media(max-width:600px){.cyca-scan{padding:20px;gap:17px}.cyca-scan .headline{font-size:17px}.cyca-ring{flex-basis:46px;width:46px;height:46px}}
 @media(prefers-reduced-motion:reduce){.cyca-scan:before,.cyca-ring:before,.cyca-ring:after,.cyca-track i,.header-gradient-line,.upload-success-box{animation:none!important}.stButton>button,.stDownloadButton>button{transition:none!important;transform:none!important}}
+.cyca-paper{position:relative;width:27px;height:34px;background:#f2fffe;border:1px solid #9cf0df;border-radius:5px 9px 5px 5px;box-shadow:4px 4px 0 #67dcd326;animation:cyca-paper-sway 2.8s ease-in-out infinite;animation-play-state:var(--cyca-motion-play-state,running)}.cyca-paper:before{content:"";position:absolute;left:6px;top:12px;width:3px;height:3px;background:#254b65;border-radius:50%;box-shadow:10px 0 #254b65}.cyca-paper:after{content:"";position:absolute;left:9px;top:18px;width:7px;height:4px;border-bottom:2px solid #e7aa62;border-radius:0 0 7px 7px}.cyca-ready .cyca-paper{animation:none}.cyca-received-heading b{background:linear-gradient(120deg,#dff4f3,#fff0d9);color:#21485c}.cyca-track i{background:linear-gradient(90deg,transparent,#6ae4dc,#ffcf86,#91b8f5)}
+@keyframes cyca-paper-sway{0%,100%{transform:rotate(-5deg) translateY(0)}50%{transform:rotate(5deg) translateY(-3px)}}
+@media(prefers-reduced-motion:reduce){.cyca-paper{animation:none!important}}
 </style>'''
 
 
@@ -23,7 +26,7 @@ def loading_panel(count, page=None):
     detail = '文字・数量・単価を読み取り、工種ごとに整理しています。'
     if page is not None:
         detail = f'原本の{int(page)}ページ目を読み取っています。完了後に内容を確認できます。'
-    return f'''<div class="cyca-scan" role="status"><div class="cyca-ring">AI</div><div style="flex:1"><div class="eyebrow">CYCA SMART LINK / ANALYZING</div><div class="headline">{int(count)}件の原本から、見積の構成を読み解く。</div><div class="detail">{detail}</div><div class="cyca-track"><i></i></div></div></div>'''
+    return f'''<div class="cyca-scan" role="status"><div class="cyca-ring" aria-hidden="true"><span class="cyca-paper"></span></div><div style="flex:1"><div class="eyebrow">CYCA SMART LINK</div><div class="headline">{int(count)}件の原本を、見積のかたちへ。</div><div class="detail">{detail}</div><div class="cyca-track"><i></i></div></div></div>'''
 
 
 def ready_panel(names, action_label='見積書を読み取る', *, read=False):
