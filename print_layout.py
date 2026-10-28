@@ -8,6 +8,40 @@ from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.worksheet.page import PageMargins
 
 
+def fit_numbers_cover_text(sheet):
+    """Reserve explicit wrapped height: Numbers can clip shrink-to-fit titles."""
+    import math
+    import unicodedata
+    growth = 0
+    for row in range(25, 31):
+        cell = sheet.cell(row, 3)
+        if not isinstance(cell.value, str) or not cell.value:
+            continue
+        size = float(cell.font.sz or 10)
+        width = sum(((sheet.column_dimensions[get_column_letter(c)].width or 13) * 7 + 5) * .75
+                    for c in (3, 4)) - 16
+        lines = sum(max(1, math.ceil(sum(0 if unicodedata.combining(c) else
+                    (1 if unicodedata.east_asian_width(c) in ('W', 'F', 'A') else .6)
+                    for c in line) * size / width)) for line in cell.value.split('\n'))
+        alignment = copy(cell.alignment)
+        alignment.wrap_text = True
+        alignment.shrink_to_fit = False
+        cell.alignment = alignment
+        before = sheet.row_dimensions[row].height or 18
+        required = max(before, math.ceil(lines * size * 1.75 + 8)) if lines > 1 else before
+        sheet.row_dimensions[row].height = required
+        growth += required - before
+    # The amount/tax and company blocks retain their cells and formulas. Use
+    # only truly empty rows above the information block to preserve page size.
+    blanks = [r for r in range(16, 25)
+              if not any(sheet.cell(r, c).value not in (None, '') for c in range(1, 9))]
+    for index, row in enumerate(blanks):
+        before = sheet.row_dimensions[row].height or 20
+        take = min(max(0, before - 2), max(0, growth) / (len(blanks) - index))
+        sheet.row_dimensions[row].height = before - take
+        growth -= take
+
+
 def fit_numbers_text_rows(sheet, start, end):
     """Reserve real height for wrapped text; Numbers cannot auto-fit XLSX rows.
 
@@ -102,6 +136,7 @@ def split_print_pages(wb, estimate):
             if LOGO_PATH.exists():
                 logo=Image(str(LOGO_PATH)); logo.width,logo.height=186,67
                 dest.add_image(logo,"F3")
+            fit_numbers_cover_text(dest)
         dest.page_setup.orientation = "landscape"
         dest.page_setup.paperSize = dest.PAPERSIZE_A4
         dest.page_setup.fitToWidth = 1

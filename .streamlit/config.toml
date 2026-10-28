@@ -1,4 +1,5 @@
 [server]
-# Keep proxy connections active during long reads. Authentication, CORS and
-# XSRF protection retain their defaults. Validate on the public deployment.
-websocketPingInterval = 15
+# This interval also sets the pong timeout. Allow 30 seconds for a response:
+# public testing observed keepalive timeouts with the earlier 15-second limit.
+# Authentication, CORS, XSRF and disconnected-session retention stay unchanged.
+websocketPingInterval = 30
