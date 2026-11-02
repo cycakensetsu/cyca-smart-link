@@ -11,11 +11,11 @@ import sys
 import threading
 
 _ROOT = Path(__file__).resolve().parent
-_MODULES = ('pdf_worker', 'product_design', 'work_effects', 'estimate_pipeline', 'print_text_height', 'template_fill_test_v2', 'horizontal_estimate_flow',
-            'print_layout', 'reference_layout', 'estimate_review', 'vault_archive',
+_MODULES = ('login_ui', 'pdf_worker', 'product_design', 'work_effects', 'estimate_pipeline', 'print_text_height', 'template_fill_test_v2', 'horizontal_estimate_flow',
+            'print_layout', 'reference_layout', 'estimate_review', 'vault_archive', 'storage_health',
             'cyca_reference', 'source_table', 'gemini_request_gate', 'gemini_resilience', 'source_sections', 'document_scopes', 'source_annotations', 'source_extraction', 'extraction_batch', 'complete_document_cache', 'source_variants', 'source_amounts', 'source_rounding', 'source_spec_history', 'item_correction_ui', 'source_review_ui', 'workflow_steps_ui', 'review_input_ui', 'review_findings_ui',
             'conversation_assistant', 'conversation_ui', 'pour_layout',
-            'output_preview_ui', 'review_ui', 'saved_read_resume', 'work_drafts', 'legacy_exports')
+            'output_preview_ui', 'review_ui', 'saved_read_resume', 'work_drafts', 'browser_backups', 'legacy_exports')
 _lock = vars(threading).setdefault('_cyca_release_lock',globals().get('_lock') or threading.RLock())
 _loaded_fingerprint = globals().get('_loaded_fingerprint')
 
@@ -25,7 +25,8 @@ def _source_fingerprint():
     for name in _MODULES:
         result.update(name.encode())
         result.update((_ROOT / (name + '.py')).read_bytes())
-    for asset in sorted((_ROOT / 'work_effects_frontend').glob('*')):
+    for asset in sorted([*(_ROOT / 'work_effects_frontend').glob('*'),
+                         *(_ROOT / 'browser_backups_frontend').glob('*')]):
         if asset.is_file():
             result.update(asset.name.encode())
             result.update(asset.read_bytes())

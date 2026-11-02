@@ -40,7 +40,9 @@ class ConversationUITest(unittest.TestCase):
         return buffer.getvalue()
 
     def checked_app(self, temp):
-        at = AppTest.from_string(app_source(temp)).run()
+        # This fixture also renders a PDF preview in a worker. Its completion
+        # is checked below; the framework's 3s default is not a product SLA.
+        at = AppTest.from_string(app_source(temp), default_timeout=10).run()
         sid = at.session_state['_review_sources'][0]['id']
         at.selectbox(key='review_basis_' + sid).select('税抜')
         at.selectbox(key='review_tax_' + sid).select('10%')
