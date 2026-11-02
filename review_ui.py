@@ -14,7 +14,17 @@ from estimate_review import (OriginalVault, Target, REVIEW_MODE, review_rows, bu
 
 def vault(st):
     root = os.environ.get("CYCA_DATA_DIR", str(Path(__file__).parent / ".private_data"))
-    return OriginalVault(root, st.session_state.get("username", ""))
+    secrets = getattr(st, 'secrets', {})
+    try:
+        settings = secrets.get('shared_storage', {})
+    except (FileNotFoundError, KeyError):
+        settings = {}
+    from shared_storage import configured_vault
+    try:
+        return configured_vault(root, st.session_state.get("username", ""), settings)
+    except (ValueError, OSError):
+        st.error('共通保存先の設定を確認できません。管理者の接続確認が必要です。保存済みのデータは変更していません。')
+        st.stop()
 
 
 def _render_archive_restore(st):
@@ -48,6 +58,8 @@ def render_archive(st):
             if fresh:
                 from storage_health import render_storage_status
                 render_storage_status(st, vault(st))
+                from saved_quotes import render_saved_quotes
+                render_saved_quotes(st, vault(st))
             _render_archive_restore(st)
             if st.session_state.get('_review_extraction_id'):
                 st.caption('原本・読み取り結果と、自動保存済みの訂正・宛名・金額設定をPCへ保存できます。まだ保存していない入力は含みません。')

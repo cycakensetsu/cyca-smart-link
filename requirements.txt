@@ -5,3 +5,4 @@ google-genai
 PyMuPDF
 Pillow
 reportlab
+storage3>=2.33,<3

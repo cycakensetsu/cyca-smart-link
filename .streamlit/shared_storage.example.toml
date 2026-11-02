@@ -1,0 +1,7 @@
+# Example only. Add all fields together to the existing server secrets.
+# Keep existing users/GOOGLE_API_KEY. Never commit a real service key.
+[shared_storage]
+provider = "supabase"
+url = "https://YOUR_PROJECT_REF.supabase.co"
+bucket = "cyca-estimates"
+service_key = "SET_A_SERVER_ONLY_KEY_IN_STREAMLIT_SECRETS"

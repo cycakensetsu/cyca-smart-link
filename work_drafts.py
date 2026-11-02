@@ -204,7 +204,10 @@ def available_drafts(store):
     heads = store.root / '.draft_heads'
     if heads.is_symlink():
         raise ValueError('途中データの保存先が不正です。')
-    if heads.is_dir():
+    if hasattr(store, 'draft_entries'):
+        # A host-local head index cannot know another host's new revisions.
+        candidates = store.draft_entries()
+    elif heads.is_dir():
         candidates = []
         for path in heads.glob('*.head'):
             if path.is_symlink() or not re.fullmatch(r'[a-f0-9]{32}\.head', path.name) or path.stat().st_size != 64:
@@ -306,7 +309,10 @@ def render_recovery(st):
             return f"{when:%m/%d %H:%M} ｜ {title} ｜ 作業{value['work_id'][-4:]}"
         chosen = st.selectbox('再開する作業', [v['id'] for v in shown], format_func=label, key='work_resume_choice')
         st.caption('訂正・宛名・金額・相談履歴を戻します。別の人やタブの作業は上書きしません。未反映のAI提案と作成承認は戻しません。')
-        st.caption('アプリの再設置などで保管先が消えた場合に備え、社内用バックアップもPCへ保存してください。')
+        if getattr(vault(st), 'shared', False):
+            st.caption('同じログインIDなら、別の端末でも保存した作業を開けます。再開すると別の作業として保存し、元の見積や他の人の変更は上書きしません。')
+        else:
+            st.caption('アプリの再設置などで保管先が消えた場合に備え、社内用バックアップもPCへ保存してください。')
         def choose():
             st.session_state['_work_resume_id'] = chosen
         st.button('この作業を途中から再開', on_click=choose, key='work_resume', type='primary')
@@ -324,5 +330,6 @@ def autosave(st):
     stamp = st.session_state.get('_work_draft_saved_at')
     if stamp:
         when = datetime.fromisoformat(stamp).astimezone(ZoneInfo('Asia/Tokyo'))
-        st.caption(f'途中の入力を自動保存済み（{when:%H:%M}）。再ログイン後に「途中の作業から再開」で戻せます。')
+        destination = '共通保存先に' if getattr(vault(st), 'shared', False) else ''
+        st.caption(f'途中の入力を{destination}自動保存済み（{when:%H:%M}）。再ログイン後に「途中の作業から再開」で戻せます。')
         st.caption('入力欄はEnterか欄の外を押すと保存されます。1品ずつの訂正は「この品目の訂正を保存」を押してください。')
