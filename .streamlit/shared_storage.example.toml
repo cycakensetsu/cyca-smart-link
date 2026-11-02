@@ -2,6 +2,7 @@
 # Keep existing users/GOOGLE_API_KEY. Never commit a real service key.
 [shared_storage]
 provider = "supabase"
+enabled_users = ["YOUR_APP_LOGIN_ID"]
 url = "https://YOUR_PROJECT_REF.supabase.co"
 bucket = "cyca-estimates"
 service_key = "SET_A_SERVER_ONLY_KEY_IN_STREAMLIT_SECRETS"

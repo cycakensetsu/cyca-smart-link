@@ -69,6 +69,7 @@ class StorageHTTPFixture:
                 if self.wrote and self.corrupt_read_after_write:return httpx.Response(200,content=b'corrupted provider readback')
                 return httpx.Response(200,content=target.read_bytes()) if target.exists() else error(404,'NoSuchKey')
             if request.method=='POST':
+                if '~' in target.name:return error(400,'InvalidKey')
                 if request.headers.get('x-upsert') != 'false':return error(400,'UnsafeOverwrite')
                 if target.exists():return error(409,'Duplicate')
                 message=BytesParser(policy=default).parsebytes(
@@ -110,6 +111,21 @@ class SharedStorageTest(unittest.TestCase):
         with patch('shared_storage.backend') as connect:
             with self.assertRaises(ValueError):configured_vault(self.root/'bad','owner',{'url':URL},{})
             connect.assert_not_called()
+
+    def test_scoped_rollout_keeps_unmigrated_logins_on_their_existing_store(self):
+        root=self.root/'existing-app'
+        old=OriginalVault(root,'other');source=old.preserve('old.pdf',b'other login original')
+        settings={'url':URL,'service_key':KEY,'enabled_users':['owner']}
+        with patch('shared_storage.backend',return_value=self.service.objects()) as connect:
+            other=configured_vault(root,'other',settings,{})
+            self.assertEqual(other.root,old.root)
+            self.assertEqual(other.read(source['id']),b'other login original')
+            self.assertFalse(hasattr(other,'objects'));connect.assert_not_called()
+            active=configured_vault(root,'owner',settings,{})
+            self.assertTrue(active.shared);connect.assert_called_once()
+        for bad in ([], 'owner', [''], [1]):
+            with self.assertRaises(ValueError):
+                configured_vault(root,'owner',{**settings,'enabled_users':bad},{})
 
     def test_two_cold_hosts_restore_corrected_work_and_preexisting_outputs_without_local_transfer(self):
         a=self.host('host-A');state=working(a);key=save_draft(state,a)
@@ -198,6 +214,16 @@ class SharedStorageTest(unittest.TestCase):
         self.assertTrue(all(b.get_entry(n) for n,_,_ in b.entries()))
         for owner,name in [('..','uploads/'+'a'*64+'.json'),(a.root.name,'../other'),(a.root.name,'drafts/x.json')]:
             with self.assertRaises(ValueError):object_path(owner,name)
+
+    def test_provider_safe_names_and_dashboard_marker_preserve_pagination(self):
+        a=self.host('A')
+        for i in range(105):a.snapshot('uploads',{'index':i})
+        folder=self.service.root/a.root.name
+        self.assertTrue(all('__' in p.name and '~' not in p.name for p in folder.iterdir()))
+        marker=folder/'.emptyFolderPlaceholder';marker.write_bytes(b'')
+        self.assertEqual(len(list(self.host('cold').entries())),105)
+        marker.write_bytes(b'unexpected content')
+        with self.assertRaises(OSError):list(self.host('bad-marker').entries())
 
     def test_migration_preflights_before_any_upload_and_is_retryable_and_additive(self):
         old=OriginalVault(self.root/'legacy','owner');state=working(old);save_draft(state,old)
