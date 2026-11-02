@@ -27,11 +27,8 @@ def migrate_archive(data, target, *, apply=False):
         if not apply:
             return plan
         restored = restore_archive(target, data)
-        # Verify through a cold cache independently in operational integration
-        # checks too; this check catches missing/corrupt uploaded records now.
-        for name, _, read in checked.entries():
-            if target.objects.get(target.root.name, name) != read():
-                raise OSError('移行後の記録が一致しません。元データは保全しています。')
+        # restore_archive also performs uncached provider readback, so the GUI
+        # and this administrator path have the same completion condition.
         return {**plan, 'applied': True, 'verified_records': restored}
 
 

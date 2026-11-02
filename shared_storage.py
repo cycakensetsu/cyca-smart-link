@@ -200,6 +200,13 @@ class SharedVault(OriginalVault):
     def draft_entries(self):
         return (entry for entry in self.entries() if entry[0].startswith('drafts/'))
 
+    def verify_restored_entries(self, entries):
+        # Bypass the warm app cache: GUI restores and browser recovery must
+        # prove the provider can return the same bytes before reporting success.
+        for name, expected in entries:
+            if self.objects.get(self.root.name, name) != expected:
+                raise OSError('共通保存先からの読み戻しが一致しません。元データは保全しています。')
+
 
 def configured_vault(cache_root, user, settings=None, environ=None):
     config = configuration(settings, environ)
