@@ -51,8 +51,9 @@ def object_path(owner, name):
     if not _OWNER.fullmatch(owner) or not _PATH.fullmatch(name):
         raise ValueError('共通保存先の指定が不正です。')
     # One owner directory permits bounded, sorted pagination without recursively
-    # listing every original/export directory. Every valid path is reversible.
-    return owner+'/'+name.replace('/', '~')
+    # listing every original/export directory. Canonical vault paths contain no
+    # underscores, so this provider-safe delimiter is unambiguous and reversible.
+    return owner+'/'+name.replace('/', '__')
 
 
 def validate_owned(owner, name, data):
@@ -133,9 +134,13 @@ class SupabaseObjects:
                     raise ValueError
                 for item in page:
                     flat = item['name']
-                    name = flat.replace('~', '/')
                     size = item['metadata']['size']
-                    if (not _PATH.fullmatch(name) or flat != name.replace('/', '~')
+                    # The dashboard creates this zero-byte folder marker. It is
+                    # not a vault record; malformed/nonempty lookalikes still fail.
+                    if flat == '.emptyFolderPlaceholder' and type(size) is int and size == 0:
+                        continue
+                    name = flat.replace('__', '/')
+                    if (not _PATH.fullmatch(name) or flat != name.replace('/', '__')
                             or type(size) is not int or not 0 <= size <= MAX_BYTES):
                         raise ValueError
                     found[name] = size
@@ -209,6 +214,16 @@ class SharedVault(OriginalVault):
 
 
 def configured_vault(cache_root, user, settings=None, environ=None):
+    enabled = (settings or {}).get('enabled_users')
+    if enabled is not None:
+        if (not isinstance(enabled, list) or not enabled or any(
+                not isinstance(name, str) or not name.strip() or len(name) > 128
+                for name in enabled)):
+            raise ValueError('共通保存を有効にするログインIDの設定を確認してください。')
+        if user not in enabled:
+            # Roll out only the explicitly migrated owner; preserve every
+            # other login's existing local namespace and avoid remote calls.
+            return OriginalVault(cache_root, user)
     config = configuration(settings, environ)
     if config is None:
         return OriginalVault(cache_root, user)
