@@ -355,8 +355,9 @@ st.markdown(PRODUCT_STYLE, unsafe_allow_html=True)
 # ==========================================
 # 🔐 ログイン画面
 # ==========================================
-from app_auth import configuration_signature, session_valid
-import time as _auth_time
+from app_auth import session_valid
+from login_ui import clear_login_password, render_login
+clear_login_password(st)
 _login_users = load_users()
 if not session_valid(st.session_state, _login_users):
     if st.session_state.get("logged_in"):
@@ -377,17 +378,7 @@ if not st.session_state.logged_in:
     st.subheader("🔐 ログイン")
     if not load_users():
         st.info("管理者によるログイン設定が必要です。設定完了後にご利用いただけます。")
-    login_user = st.text_input("ユーザー名", placeholder="ユーザー名を入力")
-    login_pass = st.text_input("パスワード", type="password", placeholder="パスワードを入力")
-    if st.button("ログイン"):
-        if check_login(login_user, login_pass):
-            st.session_state.logged_in = True
-            st.session_state['_auth_signature'] = configuration_signature(_login_users)
-            st.session_state['_auth_started'] = _auth_time.time()
-            st.session_state.username = login_user
-            st.rerun()
-        else:
-            st.error("ユーザー名またはパスワードが正しくありません。")
+    render_login(st, _login_users)
     st.stop()
 
 # ログアウト用・ログイン中ユーザー表示
@@ -1231,5 +1222,7 @@ if profit_mode != REVIEW_MODE:
 
 # Stable component position preserves the user-activated audio context across reruns.
 render_archive(st)
+from browser_backups import render as render_browser_backups
+render_browser_backups(st)
 with effects_slot:
     render_work_effects(st)

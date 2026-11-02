@@ -43,7 +43,11 @@ def _render_archive_restore(st):
 
 def render_archive(st):
     if not st.session_state.get('_review_export_ready'):
-        with st.expander('以前の保存データを戻す（必要なときだけ）'):
+        fresh = not st.session_state.get('_review_extraction_id')
+        with st.expander('保存した見積を開く・作業データを戻す', expanded=fresh):
+            if fresh:
+                from storage_health import render_storage_status
+                render_storage_status(st, vault(st))
             _render_archive_restore(st)
             if st.session_state.get('_review_extraction_id'):
                 st.caption('原本・読み取り結果と、自動保存済みの訂正・宛名・金額設定をPCへ保存できます。まだ保存していない入力は含みません。')
