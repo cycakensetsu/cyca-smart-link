@@ -42,7 +42,10 @@ def _render_archive_restore(st):
         else:
             for key in ('_vault_archive', '_review_spec_history_scope', '_review_spec_history'):
                 st.session_state.pop(key, None)
-            st.session_state['_vault_restore_notice'] = f'{count}件の保存データを戻しました。'
+            if getattr(vault(st), 'shared', False):
+                st.session_state['_vault_restore_notice'] = f'共通保存先へ保存し、全{count}件を読み戻して一致を確認しました。'
+            else:
+                st.session_state['_vault_restore_notice'] = f'{count}件の保存データを戻しました。'
             st.rerun()
     notice = st.session_state.pop('_saved_read_notice', '')
     if notice:

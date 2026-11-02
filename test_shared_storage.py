@@ -40,6 +40,7 @@ class StorageHTTPFixture:
         self.root=Path(root);self.root.mkdir(exist_ok=True)
         self.lock=threading.RLock();self.public=False;self.outage=False
         self.lose_next_upload_response=False;self.requests=[]
+        self.read_error_after_write=False;self.corrupt_read_after_write=False;self.wrote=False
 
     def response(self, request):
         with self.lock:
@@ -64,6 +65,8 @@ class StorageHTTPFixture:
             if not path.startswith(prefix):return error(404,'NoSuchKey')
             target=self.root/path[len(prefix):]
             if request.method=='GET':
+                if self.wrote and self.read_error_after_write:return error(503,'InternalError')
+                if self.wrote and self.corrupt_read_after_write:return httpx.Response(200,content=b'corrupted provider readback')
                 return httpx.Response(200,content=target.read_bytes()) if target.exists() else error(404,'NoSuchKey')
             if request.method=='POST':
                 if request.headers.get('x-upsert') != 'false':return error(400,'UnsafeOverwrite')
@@ -73,6 +76,7 @@ class StorageHTTPFixture:
                 content=next(p.get_payload(decode=True) for p in message.iter_parts()
                              if p.get_param('name',header='content-disposition')=='file')
                 target.parent.mkdir(exist_ok=True);target.write_bytes(content)
+                self.wrote=True
                 if self.lose_next_upload_response:
                     self.lose_next_upload_response=False
                     raise httpx.ReadError('lost reply '+KEY,request=request)
@@ -207,6 +211,27 @@ class SharedStorageTest(unittest.TestCase):
         migrate_archive(data,target,apply=True)
         cold=self.host('after-migration');self.assertEqual({n:r() for n,_,r in cold.entries()},before)
         self.assertEqual(archive_payloads(archive_bytes(cold)),archive_payloads(data))
+
+    def test_GUI_restore_requires_uncached_provider_readback_and_failure_is_retryable(self):
+        old=OriginalVault(self.root/'legacy','owner');save_draft(working(old),old)
+        data=archive_bytes(old);before={n:r() for n,_,r in old.entries()}
+        target=self.host('GUI-target');self.service.read_error_after_write=True
+        with self.assertRaises(OSError):restore_archive(target,data)
+        # Successful writes and their warm cache cannot hide a provider read
+        # failure. Retry is additive; the original ZIP/store are untouched.
+        self.assertTrue(list(target.root.rglob('*.json')))
+        self.assertEqual({n:r() for n,_,r in old.entries()},before)
+        self.service.read_error_after_write=False
+        count=restore_archive(target,data)
+        self.assertEqual(count,len(archive_payloads(data))-1)  # manifest is not a stored record
+        self.assertEqual(archive_payloads(archive_bytes(self.host('cold-after-GUI'))),archive_payloads(data))
+
+    def test_GUI_restore_rejects_corrupt_readback_even_when_local_cached_bytes_are_valid(self):
+        old=OriginalVault(self.root/'legacy','owner');old.preserve('synthetic.pdf',b'synthetic original')
+        data=archive_bytes(old);target=self.host('GUI-target')
+        self.service.corrupt_read_after_write=True
+        with self.assertRaises(ValueError):restore_archive(target,data)
+        self.assertEqual(next((target.root/'originals').rglob('original')).read_bytes(),b'synthetic original')
 
 
 if __name__=='__main__':unittest.main()

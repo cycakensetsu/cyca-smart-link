@@ -101,4 +101,7 @@ def restore_archive(store, data):
         if name.startswith('drafts/'):
             from work_drafts import update_head
             update_head(store, PurePosixPath(name).stem, json.loads(content))
+    verify = getattr(store, 'verify_restored_entries', None)
+    if verify is not None:
+        verify(checked)
     return len(checked)
