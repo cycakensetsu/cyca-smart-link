@@ -197,6 +197,7 @@ finally:
         self.assertEqual(at.session_state['review_customer'], '架空のお客様 御中')
         self.assertEqual(at.session_state['_review_assistant_rows'][0]['仕様'], '訂正した長い仕様')
         sid = at.session_state['_review_sources'][0]['id']
+        next(t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由').input('架空原本の訂正済み仕様と行注記を照合済み').run()
         at.checkbox(key='review_source_ok_' + sid).check().run()
         self.assertEqual(list(at.exception), [])
         self.assertEqual(at.text_input(key='review_customer').value, '架空のお客様 御中')
@@ -211,6 +212,8 @@ finally:
         fresh.button(key='work_resume').click().run()
         self.assertEqual(list(fresh.exception), [])
         self.assertEqual(fresh.session_state['review_customer'], '接続前に変えた宛名')
+        self.assertEqual(next(t for t in fresh.text_input if t.label=='原本で仕様・注記を確認した内容と理由').value,
+                         '架空原本の訂正済み仕様と行注記を照合済み')
         fresh.checkbox(key='review_source_ok_' + sid).check().run()
         self.assertEqual(list(fresh.exception), [])
         self.assertTrue(fresh.button(key='review_approve').disabled)

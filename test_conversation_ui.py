@@ -48,6 +48,7 @@ class ConversationUITest(unittest.TestCase):
         at.selectbox(key='review_tax_' + sid).select('10%')
         at.number_input(key='review_net_' + sid).set_value(100000)
         at.run()
+        next(t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由').input('架空原本2ページの仕様と行注記を原本確認済み').run()
         at.checkbox(key='review_source_ok_' + sid).check().run()
         at.text_input(key='review_customer').set_value('架空会社 御中')
         at.text_input(key='review_project').set_value('架空工事')

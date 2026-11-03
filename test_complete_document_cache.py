@@ -14,7 +14,23 @@ class CompleteDocumentCacheTest(unittest.TestCase):
                       __source_name=source['name'],__page_number=i) for i in (1,2)]
         summary=dict(改小計=200,消費税=20,工事費計=220,__source_name=source['name'],
                      __page_number=1,__page_role='cover_summary_page')
+        summary['annotation_review'] = {'schema_version':2, 'status':'completed',
+            'source_name':source['name'], 'sha256':source['id'], 'checked_pages':[1,2],
+            'row_evidence':[{'ページ':i, '見積区分':'', '品名':'原本行'+str(i),
+                             '仕様':'', '備考':'', '原文':'原本行'+str(i)} for i in (1,2)]}
         return source,([summary],records,['fake'],[])
+
+    def test_legacy_completed_annotation_cache_is_not_row_verified_and_is_rejected(self):
+        source, result = self.fixture()
+        settings = dict(primary_model='fake', fallback_models=[])
+        cache = {}
+        self.assertTrue(put_document(cache, source, result, **settings))
+        key = next(iter(cache))
+        cache[key][0][0]['annotation_review'] = {'status':'completed'}
+        self.assertIsNone(get_document(cache, source, **settings))
+        self.assertFalse(cache)
+        result[0][0]['annotation_review'] = {'status':'completed'}
+        self.assertFalse(put_document(cache, source, result, **settings))
 
     def test_complete_hit_is_available_without_preparation_or_network_and_returns_copies(self):
         source,result=self.fixture();cache={};settings=dict(primary_model='fake',fallback_models=[])

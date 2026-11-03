@@ -9,6 +9,31 @@ class ItemCorrectionTest(unittest.TestCase):
     def fields(self,row):
         return {k:row.get(k) for k in ('品名','仕様','数量','単位','原価単価','原価金額','部位','ページ','見積元','訂正理由')}
 
+    def test_note_correction_keeps_originals_and_customer_note_separate_and_old_calls_preserve_it(self):
+        rows=snapshot()['rows'];rows[0].update(備考='本体のみ。別行の設置費を誤結合',顧客備考='承認済みのお客様向け文言')
+        state={'_review_original_rows':copy.deepcopy(rows),'_review_assistant_rows':copy.deepcopy(rows),
+               '_review_export_ready':True,'review_source_ok_'+rows[0]['原本ID']:True}
+        for key in ('_review_preview','_review_approval','_review_result','_vault_archive','_review_proposal'):
+            state[key]='old'
+        original=copy.deepcopy(rows)
+        fields=self.fields(rows[0]);fields.update(備考='本体のみ',訂正理由='原本3ページの注記を対応する行へ訂正')
+        apply_correction(state,rows,rows[0]['行ID'],fields)
+        edited=state['_review_assistant_rows'][0]
+        self.assertEqual(state['_review_original_rows'],original)
+        self.assertEqual(edited['備考'],'本体のみ')
+        self.assertEqual(edited['顧客備考'],original[0]['顧客備考'])
+        self.assertEqual(edited['原本ID'],original[0]['原本ID'])
+        self.assertFalse(state['_review_export_ready'])
+        self.assertFalse(state['review_source_ok_'+edited['原本ID']])
+        self.assertTrue(all(key not in state for key in ('_review_preview','_review_approval','_review_result','_vault_archive','_review_proposal')))
+        legacy=self.fields(edited);legacy.update(仕様='次の訂正',訂正理由='原本の仕様を確認')
+        apply_correction(state,[edited],edited['行ID'],legacy)
+        self.assertEqual(state['_review_assistant_rows'][0]['備考'],'本体のみ')
+        for fields in ({**legacy,'備考':'変更','訂正理由':''},{**legacy,'備考':'変更','原本ID':'foreign'}):
+            before=copy.deepcopy(state)
+            with self.assertRaises(ValueError):apply_correction(state,[edited],edited['行ID'],fields)
+            self.assertEqual(state,before)
+
     def test_only_current_item_changes_and_approvals_are_invalidated_without_touching_originals(self):
         raw=snapshot();rows=raw['rows'];other=copy.deepcopy(rows[0]);other['行ID']='other'
         state={'_review_original_rows':copy.deepcopy(rows+[other]),
@@ -34,6 +59,7 @@ class ItemCorrectionTest(unittest.TestCase):
 
     def test_form_keeps_unknown_numbers_unknown_and_requires_reason(self):
         raw=snapshot();raw['rows'][0]['原価単価']=''
+        raw['rows'][0]['備考']='別行の注記が混在'
         app=f'''
 import streamlit as st
 from item_correction_ui import render_item_correction
@@ -48,11 +74,14 @@ render_item_correction(st,rows,{raw['sources'][0]['id']!r})
         at.button[0].click().run()
         self.assertTrue(any('理由' in e.value for e in at.error))
         next(t for t in at.text_area if t.label=='仕様・寸法').input('原本どおりの仕様')
+        next(t for t in at.text_area if t.label=='原本の注記（社内確認用）').input('本体のみの費用')
         next(t for t in at.text_input if t.label=='直した理由（必須）').input('原本4ページを確認')
         at.button[0].click().run()
         self.assertEqual(list(at.exception),[])
         self.assertEqual(at.session_state['_review_assistant_rows'][0]['仕様'],'原本どおりの仕様')
         self.assertIsNone(at.session_state['_review_assistant_rows'][0]['原価単価'])
+        self.assertEqual(at.session_state['_review_assistant_rows'][0]['備考'],'本体のみの費用')
+        self.assertEqual(at.session_state['_review_original_rows'][0]['備考'],'別行の注記が混在')
 
 
 if __name__=='__main__':unittest.main()

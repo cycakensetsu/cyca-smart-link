@@ -7,7 +7,7 @@ from conversation_assistant import apply_proposal, converse, transcribe, compari
 
 
 def widget_fingerprint(state):
-    prefixes = ('review_rows_', 'review_target_', 'review_basis_', 'review_tax_',
+    prefixes = ('review_rows_', 'review_target_', 'review_cap_override_', 'review_basis_', 'review_tax_',
                 'review_net_', 'review_gross_', 'review_source_ok_')
     names = {'review_scope', 'review_target_mode', 'review_discount', 'review_discount_reason',
              'review_customer', 'review_project', 'review_date', 'review_customer_tax', 'review_page_breaks'}
@@ -44,8 +44,13 @@ def apply_pending(st, store):
             st.session_state['review_scope'] = targets[0]['scope']
             st.session_state['review_target_mode'] = targets[0]['mode']
         for key in list(st.session_state):
-            if key.startswith(('review_target_', 'review_agree_')):
+            if key.startswith('review_cap_override_'):
+                st.session_state[key] = False
+            elif key.startswith(('review_target_', 'review_agree_')):
                 del st.session_state[key]
+        for key in list(st.session_state.get('_work_draft_inputs', {})):
+            if key.startswith('review_cap_override_'):
+                del st.session_state['_work_draft_inputs'][key]
         for target in targets:
             st.session_state['review_target_' + digest([target['scope'], target['mode'], target['key']])] = float(target['value'])
         for key in ('_review_result', '_review_approval', '_review_preview', '_vault_archive', '_review_proposal'):

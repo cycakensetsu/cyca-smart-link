@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 
 from estimate_pipeline import build_intermediate_dataframe
 from estimate_review import (OriginalVault, Target, review_rows, build_draft, approve,
-                             verify_approval, build_approved_estimate, target_total)
+                             verify_approval, build_approved_estimate, target_total, estimate_for_output)
 
 
 class EstimateReviewTest(unittest.TestCase):
@@ -28,6 +28,10 @@ class EstimateReviewTest(unittest.TestCase):
 
     def test_negotiated_or_gross_discount_requires_a_recorded_decision(self):
         self.source['amount_reading']={'amount_notes':[{'kind':'gross_discount','value':-500,'page':1}]}
+        from row_evidence_gate import requirement
+        self.source['row_evidence_confirmation'] = {
+            'signature': requirement(self.rows, self.source)['signature'],
+            'reason': '架空原本の仕様・注記は別途原本照合済み。金額選択のみを試験。'}
         self.assertIn('原本金額の選択',[i['種類'] for i in self.draft()['unresolved']])
         self.source['amount_notes_resolution']='架空検証：見積内訳どおりを採用'
         self.assertEqual(self.draft()['unresolved'],[])
@@ -119,6 +123,29 @@ class EstimateReviewTest(unittest.TestCase):
         self.assertTrue(self.draft(rows=rows)["unresolved"])
         rows[0]["訂正理由"]="原本2ページの文字を確認"
         self.assertFalse(self.draft(rows=rows)["unresolved"])
+
+    def test_source_note_correction_requires_reason_changes_approval_and_never_becomes_customer_note(self):
+        self.rows[0]['備考']='本体のみ。別行の設置費を誤結合'
+        before=copy.deepcopy(self.rows);original=self.draft();approval=approve(original,'reviewer')
+        for note in ('本体のみ',''):
+            with self.subTest(note=note):
+                rows=copy.deepcopy(self.rows);rows[0]['備考']=note
+                blocked=self.draft(rows=rows)
+                self.assertIn('訂正理由',[i['種類'] for i in blocked['unresolved']])
+                rows[0]['訂正理由']='原本の行注記と対応を確認'
+                corrected=self.draft(rows=rows)
+                self.assertEqual(corrected['unresolved'],[])
+                self.assertEqual(corrected['payload']['確認明細'][0]['備考'],note)
+                self.assertEqual(corrected['payload']['原本明細'],before)
+                with self.assertRaises(ValueError):verify_approval(corrected,approval)
+                output=estimate_for_output(corrected)
+                self.assertEqual(output.categories[0].items[0].remark,'')
+        self.assertEqual(self.rows,before)
+
+    def test_legacy_missing_note_displayed_as_blank_is_not_a_correction(self):
+        self.rows[0].pop('備考',None)
+        rows=copy.deepcopy(self.rows);rows[0]['備考']=''
+        self.assertEqual(self.draft(rows=rows)['unresolved'],[])
 
     def test_missing_and_nonfinite_values_cannot_be_approved(self):
         for value in (None,float("inf"),"abc"):

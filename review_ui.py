@@ -182,11 +182,13 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
     from source_spec_history import ensure_spec_history
     ensure_spec_history(st.session_state, store, raw)
     for key in list(st.session_state):
-        if key.startswith(('review_source_ok_', 'review_reference_only_', 'review_agree_', 'review_resolve_totals_')):
+        if key.startswith(('review_source_ok_', 'review_reference_only_', 'review_agree_', 'review_resolve_totals_', 'review_cap_override_')):
             # Identical originals reuse widget IDs. Deletion resets the server
             # but sends no value update to a browser still showing a checkmark.
             # Explicit False also clears the browser; fresh human checks follow.
             st.session_state[key] = False
+        elif key.startswith('review_row_evidence_'):
+            st.session_state[key] = ''
         elif key.startswith("review_") or key in ("_review_approval", "_review_result"):
             del st.session_state[key]
 
@@ -222,6 +224,20 @@ def customer_default(metadata):
     return '' if compact=='彩架建設' else value
 
 
+def prepare_cap_overrides(state, context):
+    """Keep an explicit exception on resume, clear it after price changes."""
+    previous = state.get('_review_cap_context')
+    if previous is not None and previous != context:
+        for key in list(state):
+            if key.startswith('review_cap_override_'):
+                state[key] = False
+        retained = state.get('_work_draft_inputs', {})
+        for key in list(retained):
+            if key.startswith('review_cap_override_'):
+                del retained[key]
+    state['_review_cap_context'] = context
+
+
 def _render_review_plan(st,api_key,original,rows,sources):
     from conversation_ui import working_context, render_conversation
     from workflow_steps_ui import render_step_heading
@@ -242,13 +258,21 @@ def _render_review_plan(st,api_key,original,rows,sources):
         group = "見積元" if scope == "業者別" else "工事種別"
         keys = ["全体"] if scope == "全体" else list(dict.fromkeys(str(r[group]) for r in accepted))
         targets = []
+        entered = []
         simple_profit = scope == '全体' and mode == '上乗せ額'
         for key in ([] if simple_profit else keys):
             defaults = (0.0, 0.0, 10000.0) if mode == "上乗せ額" else ((1.0, 1.0, .05) if mode == "掛け率" else (0.0, 0.0, 1.0))
             value = st.number_input(f"{key}：{mode}" + ("（%）" if mode == "粗利益率" else ""),
                                     value=defaults[0], min_value=defaults[1], step=defaults[2],
                                     key="review_target_"+digest([scope,mode,key]))
-            targets.append(Target(scope, key, mode, value))
+            entered.append((key, value))
+        prepare_cap_overrides(st.session_state, digest([scope, mode, entered]))
+        for key, value in entered:
+            override = st.checkbox(f'{key}：指定した利益額を優先する',
+                key='review_cap_override_'+digest([scope,mode,key,value]))
+            if override:
+                st.caption('この対象だけ、実数量の単価倍率上限を超えて配分します。一式の上限・数量・仕入額は変えません。')
+            targets.append(Target(scope, key, mode, value, override))
         discount = st.number_input("顧客向け値引き（0円以下）", max_value=0, value=0, step=1000, key="review_discount")
         reason = st.text_input("顧客値引きの理由", key="review_discount_reason")
         st.caption("仕入側の値引きは原本明細の負数行として保持します。顧客値引きとは別に計算します。")

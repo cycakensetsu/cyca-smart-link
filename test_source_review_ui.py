@@ -113,8 +113,12 @@ st.session_state['checked_source']=source
             self.assertEqual(len(at.session_state['checked_rows']),1)
             self.assertNotIn('review_reference_only_'+source['id'],[c.key for c in at.checkbox])
             self.assertTrue(any('同じ原本が3回選ばれています。内容は1件として表示しています。' == i.value for i in at.info))
-            # A duplicated priced original still needs its ordinary human check.
+            # An old reading without row evidence needs an explicit comparison,
+            # followed by the ordinary source check. Duplicate notices cannot
+            # turn the original into an attachment or bypass that review.
             self.assertFalse(source['confirmed'])
+            self.assertTrue(at.checkbox(key='review_source_ok_'+source['id']).disabled)
+            next(t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由').input('架空原本1ページの品名・仕様・注記と行位置を確認').run()
             self.assertFalse(at.checkbox(key='review_source_ok_'+source['id']).disabled)
             at.checkbox(key='review_source_ok_'+source['id']).check().run()
             self.assertTrue(at.session_state['checked_source']['confirmed'])

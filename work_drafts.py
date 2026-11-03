@@ -25,6 +25,8 @@ _NAMES = {'review_customer', 'review_project', 'review_date', 'review_discount',
 _KEYS = re.compile(rf'(?:review_(?:target|basis|tax|net|gross|tax_amount|tax_exists|'
                    rf'missing_gross|resolve_totals|amount_notes|reference_only|source_page)_{_HEX}'
                    rf'|review_resolution_group_{_HEX}(?:_both)?'
+                   rf'|review_row_evidence_{_HEX}'
+                   rf'|review_cap_override_{_HEX}'
                    rf'|_review_reference_(?:previous|saved)_{_HEX})')
 
 
@@ -80,9 +82,11 @@ def validate_draft(value, owner=None):
                         'review_discount_reason', 'review_instruction', '_review_conversation_record'}
         text = text or bool(re.fullmatch(rf'review_(?:basis|tax|amount_notes)_{_HEX}', name))
         text = text or bool(re.fullmatch(rf'review_resolution_group_{_HEX}', name))
+        text = text or bool(re.fullmatch(rf'review_row_evidence_{_HEX}', name))
         numeric = name in {'review_discount', 'review_customer_tax'} or bool(
             re.fullmatch(rf'review_(?:target|net|gross|tax_amount|missing_gross|source_page)_{_HEX}', name))
         boolean = bool(re.fullmatch(rf'review_(?:tax_exists|resolve_totals|reference_only)_{_HEX}', name)
+                       or re.fullmatch(rf'review_cap_override_{_HEX}', name)
                        or re.fullmatch(rf'review_resolution_group_{_HEX}_both', name)
                        or re.fullmatch(rf'_review_reference_previous_{_HEX}', name))
         if ((text and not isinstance(item, str))

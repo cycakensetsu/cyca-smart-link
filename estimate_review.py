@@ -207,6 +207,7 @@ class Target:
     key: str
     mode: str  # 上乗せ額 / 掛け率 / 粗利益率
     value: float
+    allow_low_price_cap_override: bool = False
 
 
 def target_total(cost, target):
@@ -244,6 +245,8 @@ def allocate(rows, targets):
     if len(scopes) > 1:
         raise ValueError("全体・業者別・工種別は同時に指定できません。二重の上乗せを防ぐため一つ選択してください。")
     for t in targets:
+        if type(t.allow_low_price_cap_override) is not bool:
+            raise ValueError('指定額を優先する設定を確認してください。')
         if t.scope == "全体":
             group = out
         elif t.scope in ("業者別", "工種別"):
@@ -259,15 +262,17 @@ def allocate(rows, targets):
         cost = sum(integer(x) for x in group["原価金額"])
         total = target_total(cost, t)
         if group.get('__source_rounding_approved', pd.Series(False,index=group.index)).any():
-            allocated = _price_rounded_source(group, total)
+            allocated = _price_rounded_source(group, total,
+                allow_low_price_cap_override=t.allow_low_price_cap_override)
         else:
-            allocated = _allocate_group_markup(group, total)
+            allocated = _allocate_group_markup(group, total,
+                allow_low_price_cap_override=t.allow_low_price_cap_override)
         for col in ("見積単価", "見積金額", "上乗せ額"):
             out.loc[allocated.index, col] = allocated[col].astype(float)
     return out
 
 
-def _price_rounded_source(group, total):
+def _price_rounded_source(group, total, *, allow_low_price_cap_override=False):
     """Source costs stay immutable; only customer unit prices are calculated.
 
     Validation has already required human confirmation of the printed facts,
@@ -281,7 +286,8 @@ def _price_rounded_source(group, total):
             pricing.at[idx,'原価金額']=line_amount(row['数量'],row['原価単価'])
     baseline=sum(integer(v) for v in pricing['原価金額'])
     if total >= baseline:
-        result=_allocate_group_markup(pricing,total)
+        result=_allocate_group_markup(pricing,total,
+            allow_low_price_cap_override=allow_low_price_cap_override)
     else:
         difference=baseline-total
         candidates=[]
@@ -366,14 +372,16 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
     source_map = {s["id"]: s for s in sources}
     if len(source_map) != len(sources):
         issue("同一原本", [], "同じ原本が複数回取り込まれています。", "停止")
-    allowed = {"採用", "訂正理由", "除外理由", "工事種別", "品名", "仕様", "数量", "単位", "原価単価", "原価金額", "見積元", "集計のみ", "部位", "顧客備考", "ページ"}
-    financial = {"品名", "仕様", "数量", "単位", "原価単価", "原価金額", "見積元", "部位", "ページ"}
+    allowed = {"採用", "訂正理由", "除外理由", "工事種別", "品名", "仕様", "備考", "数量", "単位", "原価単価", "原価金額", "見積元", "集計のみ", "部位", "顧客備考", "ページ"}
+    financial = {"品名", "仕様", "備考", "数量", "単位", "原価単価", "原価金額", "見積元", "部位", "ページ"}
     accepted = []
     for row in edited_rows:
         before = raw[row["行ID"]]
         if any(row.get(k) != v for k, v in before.items() if k not in allowed):
             raise ValueError("原本の参照情報は変更できません。")
-        if any(row.get(k) != before.get(k) for k in financial) and not str(row.get("訂正理由", "")).strip():
+        corrected = any((clean(row.get(k)) != clean(before.get(k))) if k == '備考'
+                        else row.get(k) != before.get(k) for k in financial)
+        if corrected and not str(row.get("訂正理由", "")).strip():
             issue("訂正理由", [row["行ID"]], "原文の訂正には原本を確認した理由が必要です。", "停止")
         if not row.get("採用", True):
             if not str(row.get("除外理由", "")).strip():
@@ -414,6 +422,10 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
         if not s.get("confirmed"):
             issue("原本確認", [], "全原本の税区分と明細を確認してください。", "停止")
         all_rows = [r for r in edited_rows if r["原本ID"] == s["id"]]
+        from row_evidence_gate import verified as row_evidence_verified
+        if not row_evidence_verified(all_rows, s):
+            issue('仕様注記の原本照合', [r['行ID'] for r in all_rows],
+                  '仕様・注記の対応が未確認です。原本を見て訂正し、確認した内容と理由を記録してください。', '停止')
         if not all_rows:
             issue("原本明細なし", [], "明細がない原本が含まれています。取込漏れを確認してください。", "停止")
         if s.get("net_total") is None:
