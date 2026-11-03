@@ -19,6 +19,33 @@ def example(counts=(12,8,12), sources=2, expense=False):
 
 
 class PourLayoutTest(unittest.TestCase):
+    def test_rebalancing_several_tiny_trades_never_orphans_a_subtotal(self):
+        categories = []
+        number = 0
+        for index, count in enumerate((8, 2, 1, 1, 2, 1)):
+            items = []
+            for pos in range(count):
+                number += 1
+                section = ('西側' if pos < 4 else '屋上') if index == 0 else '南側'
+                items.append(LineItem(f'架空工事{number}', '原本仕様', 1, '台', 10000, 10000,
+                                      row_id=f'item-{number}', section=section))
+            categories.append(Category(f'架空工種{index}', items))
+        e = Estimate('', '検証用 御中', '小計改ページの再現', '2026/11/03', '30日',
+                     categories, 0, .1, pour_layout=True, source_count=3)
+        pages = plan(e)['pages']
+        self.assertEqual([row['no'] for page in pages for row in page if row['kind']=='item'],
+                         list(range(1, number + 1)))
+        for page in pages:
+            for pos, row in enumerate(page):
+                if row['kind'] == 'subtotal':
+                    self.assertGreater(pos, 0, '分類小計だけで次ページを始めない')
+                    self.assertEqual(page[pos-1]['kind'], 'item')
+                    self.assertIs(page[pos-1]['category'], row['category'])
+        result, workbook = self.output(e)
+        with fitz.open(stream=result.pdf_data, filetype='pdf') as pdf:
+            self.assertEqual(len(pdf), len(pages) + 2)
+        self.assertEqual(e.subtotal, number * 10000)
+
     def output(self,e):
         result=fill_estimate_v2(e,save_to_disk=False)
         self.assertTrue(result.ok,result.errors)
