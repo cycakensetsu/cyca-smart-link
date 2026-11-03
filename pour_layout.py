@@ -126,6 +126,11 @@ def plan(estimate):
                 cut = len(previous) - 6
                 while cut > 1 and previous[cut - 1]['kind'] in ('category', 'section'):
                     cut -= 1
+                # Rebalancing a tiny following trade must not move only the
+                # preceding trade's subtotal. Keep that closing row with its
+                # last item; the retained prefix already fit on this page.
+                if previous[cut]['kind'] == 'subtotal':
+                    cut += 1
                 pages.append(previous[:cut])
                 pages.extend(_chunk(previous[cut:] + block))
                 tiny_page = False
