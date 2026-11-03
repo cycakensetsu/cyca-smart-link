@@ -5,9 +5,43 @@ import unittest
 from unittest.mock import patch
 import app_release
 import importlib
+import sys
 
 
 class ReleaseRefreshTest(unittest.TestCase):
+    def test_real_importlib_finalization_eviction_recovers_without_losing_release(self):
+        with tempfile.TemporaryDirectory() as temp:
+            marker=Path(temp)/'evicted-once'
+            name='synthetic_once_evicted_module'
+            (Path(temp)/(name+'.py')).write_text(
+                'import sys\nfrom pathlib import Path\n'
+                f'marker=Path({str(marker)!r})\n'
+                'if not marker.exists():\n    marker.write_text("1")\n    sys.modules.pop(__name__)\n'
+                'ready=True\n')
+            with patch.object(sys,'path',[temp,*sys.path]),patch.dict(sys.modules),\
+                 patch.object(app_release,'_MODULES',(name,)),\
+                 patch.object(app_release,'_loaded_fingerprint',None),\
+                 patch.object(app_release,'_source_fingerprint',return_value='eviction-recovered'):
+                app_release.ensure_current_modules()
+                self.assertTrue(sys.modules[name].ready)
+                self.assertEqual(app_release._loaded_fingerprint,'eviction-recovered')
+
+    def test_repeated_eviction_is_bounded_and_business_keyerror_is_not_retried(self):
+        for evict,expected_attempts in [(True,3),(False,1)]:
+            with self.subTest(evict=evict),tempfile.TemporaryDirectory() as temp:
+                count=Path(temp)/'attempts';name='synthetic_bounded_eviction_module'
+                source=('import sys\nfrom pathlib import Path\n'+f'p=Path({str(count)!r})\n'
+                        'p.write_text(str(int(p.read_text())+1) if p.exists() else "1")\n')
+                source+=('sys.modules.pop(__name__)\n' if evict else f'raise KeyError({name!r})\n')
+                (Path(temp)/(name+'.py')).write_text(source)
+                with patch.object(sys,'path',[temp,*sys.path]),patch.dict(sys.modules),\
+                     patch.object(app_release,'_MODULES',(name,)),\
+                     patch.object(app_release,'_loaded_fingerprint',None),\
+                     patch.object(app_release,'_source_fingerprint',return_value='must-not-complete'):
+                    with self.assertRaises(KeyError):app_release.ensure_current_modules()
+                    self.assertEqual(int(count.read_text()),expected_attempts)
+                    self.assertIsNone(app_release._loaded_fingerprint)
+
     def test_watcher_eviction_reimports_but_real_import_failure_is_not_hidden(self):
         import sys
         old=SimpleNamespace()
