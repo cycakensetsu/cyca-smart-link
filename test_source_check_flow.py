@@ -36,6 +36,11 @@ render_archive(st)
             ids=[s['id'] for s in at.session_state['_review_sources']]
             self.assertEqual(len(at.get('download_button')),0)
             self.assertNotIn('review_consult',[b.key for b in at.button])
+            self.assertTrue(all(at.checkbox(key='review_source_ok_'+sid).disabled for sid in ids))
+            for field in at.text_input:
+                if field.label=='原本で仕様・注記を確認した内容と理由':
+                    field.input('架空原本2ページの該当行の仕様と注記を原本照合済み')
+            at.run()
             for sid in ids[:-1]:
                 at.checkbox(key='review_source_ok_'+sid).check().run()
                 self.assertEqual(list(at.exception),[])
@@ -68,6 +73,8 @@ st.session_state['source_result']=source
             self.assertEqual(list(at.exception),[])
             self.assertTrue(at.checkbox(key='review_source_ok_'+sid).disabled)
             at.text_input(key='review_amount_notes_'+sid).set_value('架空試験：今回は明細の金額を採用').run()
+            self.assertTrue(at.checkbox(key='review_source_ok_'+sid).disabled)
+            next(t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由').input('架空原本1ページの仕様・注記・行位置を原本照合済み').run()
             self.assertFalse(at.checkbox(key='review_source_ok_'+sid).disabled)
             at.checkbox(key='review_source_ok_'+sid).check().run()
             self.assertTrue(at.session_state['source_result']['confirmed'])

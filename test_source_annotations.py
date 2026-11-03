@@ -20,7 +20,8 @@ PDF = b'%PDF-1.7\nsynthetic scan source bytes; not parsed by these network tests
 
 
 def payload(name='a.pdf', pages=(1, 2), notes=None):
-    return {'元ファイル': name, '確認ページ': list(pages), '原本備考': notes or []}
+    return {'schema_version': 2, '元ファイル': name, '確認ページ': list(pages),
+            '原本備考': notes or [], '行照合': []}
 
 
 class SourceAnnotationsTest(unittest.TestCase):
@@ -168,6 +169,40 @@ class SourceAnnotationsTest(unittest.TestCase):
             self.assertEqual(rows[0][key], value)
         self.assertEqual(summaries[0]['改小計'], 100)
         self.assertEqual(summaries[-1]['annotation_review']['status'], 'needs_review')
+
+    def test_same_annotation_call_retains_independent_row_evidence_without_changing_main_records(self):
+        from estimate_pipeline import build_intermediate_dataframe, normalize_summary_data
+        from estimate_review import review_rows
+        from source_amounts import _annotation_reviews
+        from row_evidence_review import compare_row_evidence
+        main_row = {'品名':'架空壁材', '仕様':'テストププレミアム', '備考':'施工範囲A',
+                    '数量':2, '単位':'枚', '単価':50, '金額':100,
+                    '見積元':'架空社', '工事種別':'塗装工事'}
+        independent = payload(pages=(1,))
+        independent['行照合'] = [{'ページ':1, '見積区分':'塗装工事', '品名':'架空壁材',
+            '仕様':'テストプレミアム', '備考':'施工範囲A', '原文':'架空壁材\nテストプレミアム\n施工範囲A'}]
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)/'a.pdf'; path.write_bytes(PDF)
+            with patch('source_extraction.call_gemini_with_retry', return_value=SimpleNamespace(
+                    text=json.dumps({'detail_data':[main_row]}), model_name='main')) as first, \
+                    patch('source_annotations.call_gemini_with_retry', return_value=SimpleNamespace(
+                    text=json.dumps(independent), model_name='independent')) as second:
+                summaries, records, models, errors = extract_job(
+                    object(), GeminiPage('a.pdf',1,1,parts=['existing image']), path, 1,
+                    primary_model='configured', fallback_models=[], network_gate=threading.BoundedSemaphore(1))
+            first.assert_called_once(); second.assert_called_once()
+            self.assertEqual(records[0], {**main_row, '__source_name':'a.pdf', '__page_number':1})
+            self.assertEqual(errors, [])
+            self.assertEqual(models, ['main', 'independent'])
+            frame, _ = build_intermediate_dataframe(records)
+            original = {'id':hashlib.sha256(PDF).hexdigest(), 'name':'a.pdf', 'pages':1}
+            original['amount_reading'] = {'annotation_reviews':_annotation_reviews(
+                'a.pdf', PDF, normalize_summary_data(summaries))}
+            result = compare_row_evidence(review_rows(frame,[original]), original)
+            self.assertEqual(result['status'], 'needs_review')
+            self.assertEqual(result['findings'][0]['fields'], ['仕様'])
+            self.assertEqual(result['findings'][0]['expected'], {'仕様':'テストプレミアム'})
+            self.assertEqual(path.read_bytes(), PDF)
 
     def test_main_and_annotation_calls_share_gate_and_each_worker_reuses_its_own_client(self):
         lock = threading.Lock(); active = 0; peak = 0; client_active = set(); calls = []

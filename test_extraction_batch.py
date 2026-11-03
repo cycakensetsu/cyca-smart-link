@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import tempfile
 import threading
 import unittest
@@ -17,7 +18,11 @@ class BatchTest(unittest.TestCase):
             calls = []
             def read(*args, **kwargs):
                 calls.append(True); kwargs['on_model_start']('fake', 1)
-                return [], [{'__source_name':'a.pdf', '__page_number':1, '品名':'検証品目',
+                review = {'schema_version':2, 'status':'completed', 'source_name':'a.pdf',
+                          'sha256':hashlib.sha256(b'original').hexdigest(), 'checked_pages':[1],
+                          'row_evidence':[{'ページ':1, '見積区分':'', '品名':'検証品目',
+                                           '仕様':'', '備考':'', '原文':'検証品目'}]}
+                return [{'__source_name':'a.pdf', '__page_number':1, 'annotation_review':review}], [{'__source_name':'a.pdf', '__page_number':1, '品名':'検証品目',
                     '数量':1, '単位':'式', '単価':100, '金額':100}], [], []
             store = OriginalVault(Path(temp)/'first', 'owner')
             options = dict(client_factory=lambda:None, primary_model='fake', fallback_models=[],
@@ -31,6 +36,8 @@ class BatchTest(unittest.TestCase):
                 **{**options, 'checkpoint_store':restored, 'cache':{}}))
             self.assertEqual(calls, [True]); self.assertTrue(resumed[0]['cached'])
             self.assertEqual(resumed[-1]['results'][0][1][0]['金額'], 100)
+            self.assertEqual(resumed[-1]['results'][0][0][0]['annotation_review']['schema_version'], 2)
+            self.assertEqual(resumed[-1]['results'][0][0][0]['annotation_review']['row_evidence'][0]['原文'], '検証品目')
             # Another login has no access to this owner's saved reading.
             other = OriginalVault(Path(temp)/'first', 'other')
             list(extract_batch([job], {id(job):path}, 1, **{**options, 'checkpoint_store':other}))

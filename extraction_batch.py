@@ -81,7 +81,7 @@ def extraction_notice(errors, *, empty=True):
 
 def pipeline_version():
     digest=hashlib.sha256()
-    for name in ('extraction_batch','source_extraction','source_annotations','source_table','source_sections',
+    for name in ('extraction_batch','source_extraction','source_annotations','row_evidence_review','source_table','source_sections',
                  'document_scopes','estimate_pipeline','gemini_resilience','cyca_reference','source_amounts','markup_rules','pdf_worker','complete_document_cache'):
         digest.update((Path(__file__).parent/(name+'.py')).read_bytes())
     return digest.hexdigest()

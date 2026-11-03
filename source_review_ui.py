@@ -200,10 +200,11 @@ def _render_items(st, rows, sid):
         import pandas as pd
         from estimate_review import clean
         st.caption('原本を見ながら直してください。訂正理由も残します。合計に合わせるための架空の品目は追加できません。')
-        columns = ['品名','仕様','数量','単位','原価単価','原価金額','訂正理由','行ID']
+        columns = ['品名','仕様','備考','数量','単位','原価単価','原価金額','訂正理由','行ID']
         frame = pd.DataFrame(rows).reindex(columns=columns)
         config = {'行ID':None, '原価単価':st.column_config.NumberColumn('仕入単価', format='localized'),
-                  '原価金額':st.column_config.NumberColumn('仕入金額', format='localized'),'訂正理由':'直した理由'}
+                  '原価金額':st.column_config.NumberColumn('仕入金額', format='localized'),
+                  '備考':'原本の注記（社内確認用）','訂正理由':'直した理由'}
         for field in ('数量','原価単価','原価金額'):
             try:
                 values = [None if clean(value)=='' else value for value in frame[field]]
@@ -417,6 +418,9 @@ def _render_source_details(st, source, reading, rows, detail_rows):
     for label, value in zip(['工事金額（税抜）', '消費税', '合計（税込）'], [net, show_tax, show_gross]):
         st.markdown(f'**{label}　{value:,}円**' if value is not None else f'**{label}　未確認**')
     problems=[]
+    from row_evidence_gate import render as render_row_evidence
+    if not render_row_evidence(st, rows, source):
+        problems.append('仕様・注記を原本と照合した内容が未入力です。「仕様・注記の読み取りを見比べる」で確認してください。')
     if reading.get('read_failed'): problems.append('原本を読み取れませんでした。画像として保存した原本をもう一度読み込んでください。')
     if source.get('read_errors'): problems.append('読み取れていないページがあります。この見積をもう一度読み込んでください。')
     try:
@@ -466,7 +470,7 @@ def _render_source_details(st, source, reading, rows, detail_rows):
     if source['tax_basis'] not in ('税抜','非課税') or source['tax_rate'] is None:
         problems.append('通常と異なる見積です。原本の税の扱いを確認してください。')
     from estimate_review import digest
-    signature = digest([source.get(k) for k in ('tax_basis','tax_rate','net_total','tax','gross_total','amount_notes_resolution')] + [rows])
+    signature = digest([source.get(k) for k in ('tax_basis','tax_rate','net_total','tax','gross_total','amount_notes_resolution','row_evidence_confirmation')] + [rows])
     last = st.session_state.get('_review_source_signature_' + sid)
     if problems or (last is not None and last != signature):
         st.session_state['review_source_ok_' + sid] = False

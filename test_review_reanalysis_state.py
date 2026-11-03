@@ -74,6 +74,10 @@ class ReanalysisStateTest(unittest.TestCase):
             sources=at.session_state['_review_sources']
             keys=['review_source_ok_'+s['id'] for s in sources[:4]]+['review_reference_only_'+sources[4]['id']]
             originals=at.session_state['_review_original_rows']
+            for field in at.text_input:
+                if field.label=='原本で仕様・注記を確認した内容と理由':
+                    field.input('架空原本の仕様・注記と行位置を原本確認済み')
+            at.run()
             for index,key in enumerate(keys,1):
                 at.checkbox(key=key).check().run()
                 self.assertEqual(list(at.exception),[])
@@ -82,6 +86,9 @@ class ReanalysisStateTest(unittest.TestCase):
             self.assertEqual(list(at.exception),[])
             self.assertEqual(at.session_state['probe_confirmed'],[False]*5)
             self.assertEqual(at.session_state['_review_original_rows'],originals)
+            for field in at.text_input:
+                if field.label=='原本で仕様・注記を確認した内容と理由':
+                    self.assertEqual(field.value, '')
             for key in keys:
                 checkbox=at.checkbox(key=key)
                 self.assertFalse(checkbox.value)
@@ -92,6 +99,10 @@ class ReanalysisStateTest(unittest.TestCase):
             self.assertTrue(any('あと5件' in message.value for message in at.info))
             at.run()
             self.assertEqual(at.session_state['probe_confirmed'],[False]*5)
+            for field in at.text_input:
+                if field.label=='原本で仕様・注記を確認した内容と理由':
+                    field.input('読み直した架空原本の仕様・注記を改めて照合済み')
+            at.run()
             for index,key in enumerate(keys,1):
                 at.checkbox(key=key).check().run()
                 self.assertEqual(list(at.exception),[])

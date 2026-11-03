@@ -1409,8 +1409,11 @@ def _best_adjustment_index(group: pd.DataFrame) -> Optional[int]:
     return sorted(candidates, reverse=True)[0][2]
 
 
-def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_similar: bool = True) -> pd.DataFrame:
+def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_similar: bool = True,
+                           *, allow_low_price_cap_override: bool = False) -> pd.DataFrame:
     from markup_rules import LUMP_MAX_ADD, LUMP_MAX_RATIO, quantity_steps, exact_remainder
+    if type(allow_low_price_cap_override) is not bool:
+        raise ValueError('指定額を優先する設定を確認してください。')
     out = detail_df.copy()
     issues = validate_intermediate(out)
     if issues:
@@ -1431,7 +1434,8 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_simi
                 pooled.at[indices[0], "数量"] = out.loc[indices, "数量"].sum()
                 pooled.at[indices[0], "原価金額"] = out.loc[indices, "原価金額"].sum()
             try:
-                allocated = _allocate_group_markup(pooled, target_total, pool_similar=False)
+                allocated = _allocate_group_markup(pooled, target_total, pool_similar=False,
+                    allow_low_price_cap_override=allow_low_price_cap_override)
                 for indices in groups.values():
                     rate = allocated.at[indices[0], "見積単価"]
                     for idx in indices:
@@ -1459,7 +1463,7 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_simi
             continue
         lump = normalize_text(row["単位"]) in ("式", "一式")
         steps[idx], natural_steps[idx] = quantity_steps(qty, lump)
-        cap_rate = _markup_unit_cap(rate)
+        cap_rate = None if allow_low_price_cap_override and not lump else _markup_unit_cap(rate)
         cap = increment if cap_rate is None else max(0, int(math.floor(cap_rate * qty - amount)))
         if lump:
             cap = min(cap, int(amount * LUMP_MAX_RATIO), LUMP_MAX_ADD)

@@ -13,7 +13,8 @@ def _numeric(value):
 
 def apply_correction(state, current_rows, row_id, fields):
     allowed = {'品名','仕様','数量','単位','原価単価','原価金額','部位','ページ','見積元','訂正理由'}
-    if set(fields) != allowed or not str(fields.get('訂正理由') or '').strip():
+    # Older callers omit the note field; preserve the existing note in that case.
+    if set(fields) not in (allowed, allowed | {'備考'}) or not str(fields.get('訂正理由') or '').strip():
         raise ValueError('原本を確認して直した理由を入力してください。')
     by_id = {r['行ID']: copy.deepcopy(r) for r in current_rows}
     if row_id not in by_id or len(by_id) != len(current_rows):
@@ -47,6 +48,8 @@ def render_item_correction(st, rows, sid):
             for field,label in [('品名','品名'),('仕様','仕様・寸法'),('部位','施工場所・部位'),('見積元','見積書の業者名')]:
                 widget = st.text_area if field=='仕様' else st.text_input
                 fields[field] = widget(label,value=str(row.get(field) or ''),key=prefix+'_'+field)
+            fields['備考'] = st.text_area('原本の注記（社内確認用）',value=str(row.get('備考') or ''),key=prefix+'_備考')
+            st.caption('この注記は原本の読み取りを直す欄です。お客様向け備考には自動で転記しません。')
             for field,label in [('数量','数量'),('原価単価','仕入単価'),('原価金額','仕入金額'),('ページ','原本のページ')]:
                 fields[field] = st.number_input(label,value=_numeric(row.get(field)),step=1.0,key=prefix+'_'+field)
             fields['単位'] = st.text_input('単位',value=str(row.get('単位') or ''),key=prefix+'_単位')

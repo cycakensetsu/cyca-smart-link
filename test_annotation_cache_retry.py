@@ -11,7 +11,7 @@ from gemini_resilience import GeminiPage
 
 def result(status):
     return ([dict(__source_name='a.pdf',__page_number=1,改小計=100,
-                  annotation_review={'status':status})],
+                  annotation_review={'status':status,'schema_version':2,'row_evidence':[]})],
             [dict(__source_name='a.pdf',__page_number=1,品名='原本行',数量=1,単位='式',単価=100,金額=100)],
             ['synthetic-model'],[])
 

@@ -18,7 +18,7 @@ from source_annotations import annotation_generation_config, verify_scanned_anno
 
 class AnnotationGenerationConfigTest(unittest.TestCase):
     def test_sdk_adapter_preserves_json_schema_required_types_and_extra_key_bans(self):
-        data = {'元ファイル': 'a.pdf', '確認ページ': [1], '原本備考': []}
+        data = {'schema_version': 2, '元ファイル': 'a.pdf', '確認ページ': [1], '原本備考': [], '行照合': []}
         response = types.HttpResponse(headers={}, body=json.dumps({
             'candidates': [{'content': {'role': 'model', 'parts': [{'text': json.dumps(data)}]},
                             'finishReason': 'STOP'}]}))
@@ -35,7 +35,7 @@ class AnnotationGenerationConfigTest(unittest.TestCase):
         self.assertEqual(config['responseMimeType'], 'application/json')
         schema = config['responseJsonSchema']
         self.assertFalse(schema['additionalProperties'])
-        self.assertEqual(set(schema['required']), {'元ファイル', '確認ページ', '原本備考'})
+        self.assertEqual(set(schema['required']), {'schema_version', '元ファイル', '確認ページ', '原本備考', '行照合'})
         self.assertEqual(set(schema['properties']), set(schema['required']))
         self.assertEqual(schema['properties']['元ファイル']['type'], 'string')
         self.assertEqual(schema['properties']['確認ページ']['items'], {'type': 'integer'})
@@ -43,6 +43,10 @@ class AnnotationGenerationConfigTest(unittest.TestCase):
         self.assertFalse(item['additionalProperties'])
         self.assertEqual(set(item['required']), {'ページ', '原文'})
         self.assertEqual(item['properties'], {'ページ': {'type': 'integer'}, '原文': {'type': 'string'}})
+        row = schema['properties']['行照合']['items']
+        self.assertFalse(row['additionalProperties'])
+        self.assertEqual(set(row['required']), {'ページ', '見積区分', '品名', '仕様', '備考', '原文'})
+        self.assertEqual(schema['properties']['schema_version']['enum'], [2])
 
     def test_main_read_still_supports_the_original_two_argument_adapter(self):
         calls = []
