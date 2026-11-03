@@ -152,7 +152,7 @@ def review_vault_spec_history(store, current):
             inspected_bytes += size
             try:
                 raw = json.loads(read())
-            except (ValueError, TypeError, OSError):
+            except (ValueError, TypeError):
                 continue
             yield match[1], raw
     try:

@@ -234,7 +234,7 @@ def available_drafts(store):
             current = latest.get(value['work_id'])
             if current is None or when > current[0]:
                 latest[value['work_id']] = (when, match[1], value)
-        except (ValueError, TypeError, KeyError, OSError):
+        except (ValueError, TypeError, KeyError):
             continue
     return [{'id': key, **value} for _, key, value in
             sorted(latest.values(), key=lambda item: (item[0], item[1]), reverse=True)]

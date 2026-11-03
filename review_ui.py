@@ -27,7 +27,33 @@ def vault(st):
         st.stop()
 
 
-def _render_archive_restore(st):
+class _ArchiveListingView:
+    """One panel's read-only listing, never shared across sessions or reruns.
+
+    Snapshot failures too, so three observers do not repeat the same timeout.
+    Restore/writes always use the original vault and immediately rerun the UI.
+    """
+    def __init__(self, store):
+        self._store = store
+        self._listing = None
+        self._error = None
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def entries(self):
+        if self._error is not None:
+            raise self._error
+        if self._listing is None:
+            try:
+                self._listing = tuple(self._store.entries())
+            except (ValueError, OSError) as exc:
+                self._error = exc
+                raise
+        return iter(self._listing)
+
+
+def _render_archive_restore(st, listing_store=None):
     from vault_archive import restore_archive
     notice = st.session_state.pop('_vault_restore_notice', '')
     if notice:
@@ -51,19 +77,20 @@ def _render_archive_restore(st):
     if notice:
         st.success(notice)
     from saved_read_resume import render_saved_reads
-    render_saved_reads(st)
+    render_saved_reads(st, store=listing_store)
 
 
 def render_archive(st):
     if not st.session_state.get('_review_export_ready'):
         fresh = not st.session_state.get('_review_extraction_id')
         with st.expander('保存した見積を開く・作業データを戻す', expanded=fresh):
+            listing_store = _ArchiveListingView(vault(st)) if fresh else None
             if fresh:
                 from storage_health import render_storage_status
-                render_storage_status(st, vault(st))
+                render_storage_status(st, listing_store)
                 from saved_quotes import render_saved_quotes
-                render_saved_quotes(st, vault(st))
-            _render_archive_restore(st)
+                render_saved_quotes(st, listing_store)
+            _render_archive_restore(st, listing_store=listing_store)
             if st.session_state.get('_review_extraction_id'):
                 st.caption('原本・読み取り結果と、自動保存済みの訂正・宛名・金額設定をPCへ保存できます。まだ保存していない入力は含みません。')
                 render_backup_download(st, 'intake')

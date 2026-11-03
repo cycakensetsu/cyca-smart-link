@@ -18,6 +18,9 @@ from storage3 import SyncStorageClient
 
 from estimate_review import OriginalVault, canonical, digest
 from saved_quotes import completed_quotes
+from saved_read_resume import available_reads
+from storage_health import storage_status
+from review_ui import _ArchiveListingView
 from shared_storage import SharedVault, SupabaseObjects, configuration, object_path, configured_vault
 from shared_storage_migration import migrate_archive
 from test_work_drafts import working
@@ -224,6 +227,44 @@ class SharedStorageTest(unittest.TestCase):
         self.assertEqual(len(list(self.host('cold').entries())),105)
         marker.write_bytes(b'unexpected content')
         with self.assertRaises(OSError):list(self.host('bad-marker').entries())
+
+    def test_content_transport_failure_is_not_an_empty_draft_or_read_list(self):
+        a=self.host('writer');state=working(a);save_draft(state,a)
+        current=json.loads(a.get_entry('extractions/'+state['_review_extraction_id']+'.json'))
+        self.service.read_error_after_write=True
+        for query in (available_drafts, available_reads):
+            before=len(self.service.requests)
+            with self.assertRaises(OSError):query(self.host(query.__name__))
+            downloads=[p for method,p in self.service.requests[before:]
+                       if method=='GET' and p.startswith('object/')]
+            self.assertEqual(len(downloads),1, 'Stop at the first transport failure')
+        from source_spec_history import review_vault_spec_history
+        before=len(self.service.requests)
+        history=review_vault_spec_history(self.host('history'),current)
+        self.assertTrue(history['history_unavailable'])
+        self.assertEqual(sum(method=='GET' and path.startswith('object/')
+                             for method,path in self.service.requests[before:]),1)
+        self.service.read_error_after_write=False
+        self.assertTrue(available_drafts(self.host('recovered-drafts')))
+        self.assertTrue(available_reads(self.host('recovered-reads')))
+
+    def test_archive_observers_share_one_paginated_listing_only_for_this_render(self):
+        a=self.host('writer');save_draft(working(a),a)
+        for i in range(127-len(list(a.entries()))):a.snapshot('uploads',{'index':i})
+        view=_ArchiveListingView(self.host('reader'))
+        before=len(self.service.requests)
+        storage_status(view);completed_quotes(view);available_reads(view)
+        lists=[p for _,p in self.service.requests[before:] if p.startswith('object/list/')]
+        self.assertEqual(len(lists),2, '127 objects need two pages, fetched once')
+        a.snapshot('uploads',{'new other-host record':'visible on next render'})
+        self.assertEqual(len(list(view.entries())),127)
+        self.assertEqual(len(list(_ArchiveListingView(self.host('next-render')).entries())),128)
+        self.service.outage=True
+        failed=_ArchiveListingView(self.host('failed-render'));before=len(self.service.requests)
+        for _ in range(3):
+            with self.assertRaises(OSError):list(failed.entries())
+        self.assertEqual(len(self.service.requests)-before,1,
+                         'Do not repeat a failed listing for each panel observer')
 
     def test_migration_preflights_before_any_upload_and_is_retryable_and_additive(self):
         old=OriginalVault(self.root/'legacy','owner');state=working(old);save_draft(state,old)

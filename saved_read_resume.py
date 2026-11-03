@@ -69,7 +69,7 @@ def available_reads(store, current_sources=None):
             raw = json.loads(read())
             if digest(raw) != match[1] or not _eligible(raw, current_sources):
                 continue
-        except (ValueError, TypeError, OSError):
+        except (ValueError, TypeError):
             continue
         results.append({'id': match[1], 'files': len(raw['sources']), 'rows': len(raw['rows']),
                         'names': [s['name'] for s in raw['sources']]})
@@ -139,10 +139,11 @@ def apply_saved_read(st, extraction_id):
     st.session_state['_review_resumed_from'] = extraction_id
 
 
-def render_saved_reads(st):
+def render_saved_reads(st, store=None):
     from review_ui import vault
     try:
-        reads = available_reads(vault(st), st.session_state.get('_review_sources'))
+        reads = available_reads(store if store is not None else vault(st),
+                                st.session_state.get('_review_sources'))
     except (ValueError, OSError):
         st.caption('保存した読み取り結果を確認できません。原本の保管先を確認してください。')
         return
