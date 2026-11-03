@@ -33,6 +33,29 @@ def _source_fingerprint():
     return result.hexdigest()
 
 
+def _refresh_module(name):
+    # Cloud's source watcher mutates sys.modules outside our release lock. An
+    # eviction can race with importlib's final pop even on an initial import.
+    # Retry only that precise importlib failure, never a module's own KeyError.
+    for attempt in range(3):
+        module = sys.modules.get(name)
+        try:
+            if module is None:
+                return importlib.import_module(name)
+            return importlib.reload(module)
+        except ImportError:
+            if module is None or sys.modules.get(name) is module or attempt == 2:
+                raise
+        except KeyError as exc:
+            last = exc.__traceback__
+            while last.tb_next is not None:
+                last = last.tb_next
+            code = last.tb_frame.f_code
+            if (exc.args != (name,) or code.co_filename != '<frozen importlib._bootstrap>'
+                    or code.co_name not in ('_load_unlocked', '_exec') or attempt == 2):
+                raise
+
+
 def ensure_current_modules():
     global _loaded_fingerprint
     with _lock:
@@ -41,17 +64,5 @@ def ensure_current_modules():
             return
         importlib.invalidate_caches()
         for name in _MODULES:
-            module = sys.modules.get(name)
-            if module is None:
-                importlib.import_module(name)
-            else:
-                try:
-                    importlib.reload(module)
-                except ImportError:
-                    # Streamlit's watcher can evict this object after get().
-                    # Reimport only that eviction; real dependency errors must
-                    # still surface instead of hiding a broken deployment.
-                    if sys.modules.get(name) is module:
-                        raise
-                    importlib.import_module(name)
+            _refresh_module(name)
         _loaded_fingerprint = fingerprint
