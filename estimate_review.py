@@ -272,6 +272,102 @@ def allocate(rows, targets):
     return out
 
 
+def _natural_price_warnings(source_rows, priced_rows, targets):
+    """Flag awkward customer prices or a small item carrying most of the profit."""
+    warnings = []
+    positive = []
+    for source, priced in zip(source_rows, priced_rows.to_dict('records')):
+        cost = float(source['原価金額'])
+        sale = float(priced['見積金額'])
+        markup = sale - cost
+        if cost <= 0:
+            continue
+        name = str(source.get('品名') or '明細')
+        qty = float(source['数量'])
+        lump = str(source.get('単位') or '') in ('式', '一式')
+        if markup > 0 and not lump and qty > 0:
+            rate = float(priced['見積単価'])
+            base_rate = float(source['原価単価'])
+            step = 100 if rate >= 10000 else 50 if rate >= 1000 else 10 if rate >= 100 else 1
+            def neat(value):
+                return abs(value / step - round(value / step)) < 1e-7
+            if not neat(rate) and not neat(rate - base_rate):
+                warnings.append(f'{name}の見積単価に端数があります（{rate:,.2f}円）。')
+        positive.append((name, cost, max(0, markup)))
+    total_cost = sum(cost for _, cost, _ in positive)
+    total_markup = sum(markup for _, _, markup in positive)
+    if len(positive) >= 2 and total_cost > 0 and total_markup > 0:
+        for name, cost, markup in positive:
+            cost_share, markup_share = cost / total_cost, markup / total_markup
+            if markup_share > .65 and cost_share < .45 and markup_share > 2.5 * cost_share:
+                warnings.append(f'{name}に利益が偏っています（上乗せの{markup_share:.0%}）。')
+    if any(t.allow_low_price_cap_override for t in targets):
+        warnings.append('指定額を優先するため、通常の単価倍率上限を超える設定です。')
+    return warnings
+
+
+def _profit_proposals(rows, targets, manual_discount, context):
+    """Price alternatives are suggestions; an explicit matching choice is required."""
+    if manual_discount or not targets or any(t.mode != '上乗せ額' for t in targets):
+        return None, {}
+    signature = digest(context)
+    allocations = {}
+    exact_error = ''
+    try:
+        exact = allocate(rows, targets)
+        exact_warnings = _natural_price_warnings(rows, exact, targets)
+    except ValueError as exc:
+        exact, exact_warnings, exact_error = None, [], str(exc)
+    if exact is not None and not exact_warnings:
+        return {'signature': signature, 'requires_confirmation': False, 'options': []}, {'automatic': exact}
+
+    options = []
+    if exact is not None:
+        allocations['no_discount'] = exact
+        options.append({'id': 'no_discount', 'label': '値引きなしで希望額に合わせる',
+                        'markup': sum(integer(x) for x in exact['上乗せ額']),
+                        'discount': 0, 'final_profit': sum(integer(x) for x in exact['上乗せ額']),
+                        'warnings': exact_warnings})
+
+    # A quote-wide fixed-yen target is the only case where one customer discount
+    # can unambiguously preserve the requested final profit.
+    if len(targets) == 1 and targets[0].scope == '全体':
+        requested = integer(targets[0].value)
+        increments = {step - requested % step for step in (100, 500, 1000, 5000)
+                      if requested % step}
+        increments.update((100, 500, 1000, 2000, 5000))
+        best = None
+        for extra in sorted(n for n in increments if 0 < n <= 5000):
+            proposed = Target('全体', '全体', '上乗せ額', requested + extra,
+                              targets[0].allow_low_price_cap_override)
+            try:
+                candidate = allocate(rows, [proposed])
+            except ValueError:
+                continue
+            warnings = _natural_price_warnings(rows, candidate, [proposed])
+            if exact is not None and len(warnings) >= len(exact_warnings):
+                continue
+            rank = (len(warnings), extra)
+            if best is None or rank < best[0]:
+                best = (rank, candidate, warnings, extra)
+            if not warnings:
+                break
+        if best is not None:
+            _, candidate, warnings, extra = best
+            allocations['rounding_discount'] = candidate
+            gross = sum(integer(x) for x in candidate['上乗せ額'])
+            options.append({'id': 'rounding_discount', 'label': '自然な単価に寄せて端数を値引きする',
+                            'markup': gross, 'discount': -extra,
+                            'final_profit': gross - extra, 'warnings': warnings})
+    if not options:
+        raise ValueError(exact_error or '指定額を自然な単価で配分できません。上乗せ額を確認してください。')
+    if any(option['final_profit'] != sum(integer(t.value) for t in targets)
+           for option in options):
+        raise ValueError('配分案の最終利益が指定額と一致しません。')
+    return {'signature': signature, 'requires_confirmation': True,
+            'options': options, 'exact_error': exact_error}, allocations
+
+
 def _price_rounded_source(group, total, *, allow_low_price_cap_override=False):
     """Source costs stay immutable; only customer unit prices are calculated.
 
@@ -351,7 +447,8 @@ def reference_material_allowed(original_rows, source):
     return True
 
 
-def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, metadata=None, resolutions=None):
+def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, metadata=None,
+                resolutions=None, pricing_choice=None):
     """Return a complete reviewable snapshot. Corrections never change raw data."""
     metadata = dict(metadata or {})
     metadata['出力デザイン'] = '既存横型流し込み（工種別ページ・配置確認版2026-10-27）'
@@ -449,6 +546,8 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
     rates = {s.get("tax_rate") for s in sources if not s.get("reference_only")}
     if len(rates) > 1:
         issue("税率混在", [], "仕入の税率が混在しています。顧客向け税率との対応を確認してください。")
+    profit_plan = None
+    selected_plan = None
     try:
         frame = pd.DataFrame(accepted)
         if frame.empty:
@@ -471,7 +570,28 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
             for check in validate_intermediate(frame.loc[[idx]], {}):
                 if allowed_rounding and '単価×数量' in check['内容']:continue
                 issue("明細検算", [row['行ID']], check["内容"], "停止")
-        allocated = allocate(accepted, targets) if not any(i["レベル"] == "停止" for i in issues) else frame
+        if any(i["レベル"] == "停止" for i in issues):
+            allocated = frame
+        else:
+            context = [edited_rows, sources, [t.__dict__ for t in targets], discount]
+            profit_plan, proposed_rows = _profit_proposals(accepted, targets, discount, context)
+            if profit_plan is None:
+                allocated = allocate(accepted, targets)
+            elif not profit_plan['requires_confirmation']:
+                allocated = proposed_rows['automatic']
+            else:
+                choice_id = pricing_choice.get('id') if isinstance(pricing_choice, dict) else None
+                signature = pricing_choice.get('signature') if isinstance(pricing_choice, dict) else None
+                selected_plan = next((option for option in profit_plan['options']
+                                      if option['id'] == choice_id and signature == profit_plan['signature']), None)
+                if selected_plan is None:
+                    issue('利益配分案', [], '単価または利益配分に確認が必要です。提示した案を選ぶまで見積書を確定できません。', '停止')
+                    allocated = proposed_rows.get('no_discount', frame)
+                else:
+                    allocated = proposed_rows[selected_plan['id']]
+                    discount = selected_plan['discount']
+                    if discount:
+                        metadata['値引き理由'] = '自然な単価へ調整した端数値引き（利用者が案を選択）'
     except (ValueError, TypeError, KeyError) as exc:
         issue("配分・数値", [], str(exc), "停止")
         allocated = pd.DataFrame(accepted)
@@ -510,8 +630,10 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
               "粗利益": net - cost, "粗利益率": (net - cost) / net if net else None}
     payload = {"原本明細": original_rows, "確認明細": edited_rows, "計算明細": priced, "原本": sources,
                "目標": [t.__dict__ for t in targets], "値引き": discount, "表題": metadata,
-               "指摘": issues, "確認記録": resolutions, "合計": totals, "schema": 1}
+               "利益配分案": selected_plan, "指摘": issues, "確認記録": resolutions,
+               "合計": totals, "schema": 1}
     return {"fingerprint": digest(payload), "payload": payload,
+            "profit_plan": profit_plan,
             "unresolved": [i for i in issues if i["レベル"] == "停止" or not str(resolutions.get(i["id"], "")).strip()]}
 
 
