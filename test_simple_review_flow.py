@@ -33,6 +33,10 @@ st.session_state['source_result']=source
             self.assertEqual(source['net_total'],100000)
             self.assertEqual(source['tax_rate'],.10)
             self.assertFalse(source['confirmed'])
+            self.assertTrue(at.checkbox(key='review_source_ok_'+sid).disabled)
+            self.assertEqual(len(at.warning),1)
+            next(t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由').input(
+                '合成原本の合計を確認し、合成明細の仕様・注記との対応を照合済み').run()
             self.assertEqual(len(at.warning),0)
             self.assertFalse(at.checkbox(key='review_source_ok_'+sid).disabled)
             at.checkbox(key='review_source_ok_'+sid).check().run()
@@ -47,6 +51,9 @@ st.session_state['source_result']=source
         with tempfile.TemporaryDirectory() as temp:
             at=AppTest.from_string(self.app(temp,amount=90000)).run()
             source=at.session_state['source_result']
+            self.assertTrue(at.checkbox(key='review_source_ok_'+source['id']).disabled)
+            next(t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由').input(
+                '合成原本と仕様・注記を照合。金額差は別途未解決のまま').run()
             self.assertEqual(len(at.warning),1)
             self.assertIn('10,000円違います',at.warning[0].value)
             self.assertEqual(len(at.error),0)

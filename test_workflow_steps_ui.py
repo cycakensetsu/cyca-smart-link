@@ -25,6 +25,8 @@ class WorkflowStepsUITest(unittest.TestCase):
             at=AppTest.from_string(app_source(temp)).run()
             sid=at.session_state['_review_sources'][0]['id']
             at.number_input(key='review_net_'+sid).set_value(100000).run()
+            self.assertTrue(at.checkbox(key='review_source_ok_'+sid).disabled)
+            next(t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由').input('合成原本1ページの仕様Aと行注記を照合済み').run()
             at.checkbox(key='review_source_ok_'+sid).check().run()
             target=next(n for n in at.number_input if n.key.startswith('review_target_'))
             self.assertEqual(target.label,'上乗せする利益（円）')
@@ -43,6 +45,8 @@ class WorkflowStepsUITest(unittest.TestCase):
             self.assertTrue(any(f'href="#cyca-source-{source_id}"' in h.value for h in at.html))
             self.assertTrue(any('名前を押すと、その資料に戻れます' in i.value for i in at.info))
             at.number_input(key='review_net_'+source_id).set_value(100000).run()
+            self.assertTrue(at.checkbox(key='review_source_ok_'+source_id).disabled)
+            next(t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由').input('合成原本1ページの仕様Aと行注記を照合済み').run()
             at.checkbox(key='review_source_ok_'+source_id).check().run()
             at.text_input(key='review_customer').set_value('架空のお客様 御中')
             at.text_input(key='review_project').set_value('工程確認・提出不可')

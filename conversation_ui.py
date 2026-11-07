@@ -10,7 +10,7 @@ def widget_fingerprint(state):
     prefixes = ('review_rows_', 'review_target_', 'review_cap_override_', 'review_basis_', 'review_tax_',
                 'review_net_', 'review_gross_', 'review_source_ok_')
     names = {'review_scope', 'review_target_mode', 'review_discount', 'review_discount_reason',
-             'review_customer', 'review_project', 'review_date', 'review_customer_tax', 'review_page_breaks'}
+             'review_customer', 'review_project', 'review_date', 'review_customer_tax', 'review_page_breaks', 'review_pricing_choice'}
     return digest({key: state[key] for key in state if key in names or key.startswith(prefixes)})
 
 
@@ -37,6 +37,8 @@ def apply_pending(st, store):
         for field, key in mapping.items():
             st.session_state[key] = after['metadata'][field]
         st.session_state['review_discount'] = after['discount']
+        from pricing_options_ui import set_choice
+        set_choice(st.session_state, None)
         st.session_state['review_page_breaks'] = after['metadata'].get('改ページ', [])
         st.session_state['_review_requested_pages'] = after['metadata'].get('希望ページ', {})
         targets = after['targets']
@@ -72,7 +74,7 @@ def change_description(c, context):
     if c['kind'] == 'target':
         return f"{c['scope']}・{c['key']}：{c['mode']} → {c['value']:g}" + ('円' if c['mode'] == '上乗せ額' else '%' if c['mode'] == '粗利益率' else '倍')
     if c['kind'] == 'discount':
-        return f"顧客値引き → {c['value']:,}円（{c['reason']}）"
+        return f"比較する値引き案 → {c['value']:,}円（{c['reason']}）。金額の比較後に採用した場合だけ反映します。"
     if c['kind'] == 'autopages':
         return 'ページ分け → 自動で見やすく分け直す'
     if c['kind'] == 'pagebreak':

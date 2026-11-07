@@ -202,6 +202,12 @@ def _render_items(st, rows, sid):
         st.caption('原本を見ながら直してください。訂正理由も残します。合計に合わせるための架空の品目は追加できません。')
         columns = ['品名','仕様','備考','数量','単位','原価単価','原価金額','訂正理由','行ID']
         frame = pd.DataFrame(rows).reindex(columns=columns)
+        # Missing optional text initially becomes float/NaN in pandas. After
+        # clean() writes it as an empty string, Streamlit sees a different
+        # editor schema and discards the user's first edit. Canonical dtypes
+        # must be set before registering both editors, including all-empty data.
+        for field in ('品名','仕様','備考','単位','訂正理由','行ID'):
+            frame[field] = pd.Series([str(clean(value)) for value in frame[field]], dtype='string')
         config = {'行ID':None, '原価単価':st.column_config.NumberColumn('仕入単価', format='localized'),
                   '原価金額':st.column_config.NumberColumn('仕入金額', format='localized'),
                   '備考':'原本の注記（社内確認用）','訂正理由':'直した理由'}
@@ -220,9 +226,17 @@ def _render_items(st, rows, sid):
             by_id[change['行ID']].update({k:clean(v) for k,v in change.items()})
         updated = list(by_id.values())
         with st.expander('詳しい設定（必要なときだけ）'):
-            advanced_columns = ['品名','工事種別','部位','ページ','見積元','顧客備考','集計のみ','採用','除外理由','行ID']
+            st.caption('「単価固定」は仕入単価のままにする品目だけ選びます。その行には利益を配分しません。')
+            advanced_columns = ['品名','工事種別','部位','ページ','見積元','顧客備考','集計のみ','単価固定','採用','除外理由','行ID']
             advanced_frame = pd.DataFrame(updated).reindex(columns=advanced_columns)
-            for field, default in [('集計のみ',False),('採用',True)]:
+            for field in ('品名','工事種別','部位','見積元','顧客備考','除外理由','行ID'):
+                advanced_frame[field] = pd.Series([str(clean(value)) for value in advanced_frame[field]], dtype='string')
+            try:
+                advanced_frame['ページ'] = pd.to_numeric(pd.Series(
+                    [None if clean(value)=='' else value for value in advanced_frame['ページ']]), errors='raise').astype('Float64')
+            except (ValueError, TypeError):
+                pass  # Keep an unreadable source page as evidence, never guess it.
+            for field, default in [('集計のみ',False),('単価固定',False),('採用',True)]:
                 advanced_frame[field] = pd.Series([default if clean(value)=='' else bool(value)
                                                    for value in advanced_frame[field]],dtype='boolean')
             advanced = st.data_editor(advanced_frame, hide_index=True, num_rows='fixed',

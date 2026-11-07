@@ -73,20 +73,27 @@ class EstimateReviewTest(unittest.TestCase):
                     self.assertEqual(d["unresolved"], [])
                     self.assertEqual(d["payload"]["合計"]["税抜売価"],expected)
 
-    def test_discount_after_markup_and_tax(self):
+    def test_discount_is_only_a_proposal_until_selected_and_preserves_final_profit(self):
         m={**self.meta,"値引き理由":"端数値引き"}
-        d=self.draft(targets=[Target("全体","全体","上乗せ額",10000)], discount=-3000,meta=m)
+        targets=[Target('全体','全体','上乗せ額',10000)]
+        d=self.draft(targets=targets, discount=-1000,meta=m)
         self.assertFalse(d["unresolved"])
-        self.assertEqual(d["payload"]["合計"]["税抜売価"],107000)
-        self.assertEqual(d["payload"]["合計"]["税額"],10700)
-        self.assertEqual(d["payload"]["合計"]["粗利益"],7000)
+        self.assertEqual(d['payload']['値引き'],0)
+        from pricing_options import choice_for
+        adopted=build_draft(self.rows,self.rows,[self.source],targets,-1000,m,
+                            pricing_choice=choice_for(d['pricing_options'],True))
+        self.assertFalse(adopted['unresolved'])
+        self.assertEqual(adopted['payload']['合計']['売価小計'],111000)
+        self.assertEqual(adopted['payload']['合計']['税抜売価'],110000)
+        self.assertEqual(adopted['payload']['合計']['税額'],11000)
+        self.assertEqual(adopted['payload']['合計']['粗利益'],10000)
 
-    def test_discount_requires_reason(self):
-        self.assertTrue(self.draft(discount=-1)["unresolved"])
+    def test_unselected_discount_never_applies_without_a_reason_or_goal(self):
+        self.assertEqual(self.draft(discount=-1)['payload']['値引き'],0)
 
     def test_positive_or_excess_discount_blocked(self):
-        for v in (1,-100001):
-            self.assertTrue(self.draft(discount=v)["unresolved"])
+        self.assertTrue(self.draft(discount=1)["unresolved"])
+        self.assertEqual(self.draft(discount=-100001)['payload']['値引き'],0)
 
     def test_targets_reject_invalid_or_overlapping_inputs(self):
         for t in (Target("全体","全体","粗利益率",100),Target("全体","全体","掛け率",.5),
@@ -214,7 +221,15 @@ class EstimateReviewTest(unittest.TestCase):
         self.assertFalse(d['unresolved'])
         self.assertEqual(d['payload']['計算明細'][1]['見積金額'],-10000)
         self.assertEqual(d['payload']['合計']['仕入原価'],90000)
-        self.assertEqual(d['payload']['合計']['税抜売価'],99000)
+        self.assertEqual(d['payload']['合計']['税抜売価'],100000)
+        from pricing_options import choice_for
+        adopted=build_draft(rows,rows,[{**self.source,'net_total':90000}],
+                      [Target('全体','全体','上乗せ額',10000)],-1000,self.meta,
+                      pricing_choice=choice_for(d['pricing_options'],True))
+        self.assertFalse(adopted['unresolved'])
+        self.assertEqual(adopted['payload']['計算明細'][1]['見積金額'],-10000)
+        self.assertEqual(adopted['payload']['合計']['税抜売価'],100000)
+        self.assertEqual(adopted['payload']['合計']['粗利益'],10000)
 
     def test_reusing_same_document_is_blocked(self):
         self.assertTrue(self.draft(sources=[self.source,self.source])['unresolved'])

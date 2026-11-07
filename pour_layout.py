@@ -72,14 +72,19 @@ def plan(estimate):
             compact_rows.append({'kind':'category','index':index,'category':category})
         item_rows, number = _detail_item_rows(category, number)
         compact_rows.extend(item_rows)
-    compact = (estimate.source_count == 1 and bool(normal) and len(compact_rows) + 4 <= 20
-               and _fits(compact_rows+[{'kind':'compact_'+n} for n in ('subtotal','discount','net','tax')])
+    total_rows = [('subtotal', estimate.subtotal)]
+    if estimate.discount:
+        total_rows.append(('discount', estimate.discount))
+    total_rows += [('net', estimate.net_total), ('tax', estimate.tax)]
+    compact_plan = compact_rows+[{'kind':'compact_'+n} for n,_ in total_rows]
+    # Omitting a zero discount must not admit a squeezed eight-point blank box.
+    compact_has_room = (len(compact_plan)==20 or sum(entry_height(r) for r in compact_plan)<=20*22-18)
+    compact = (estimate.source_count == 1 and bool(normal) and len(compact_rows) + len(total_rows) <= 20
+               and _fits(compact_plan) and compact_has_room
                and not estimate.page_breaks)
     if compact:
         rows = compact_rows
-        rows += [{'kind': 'compact_' + name, 'amount': value} for name, value in
-                 [('subtotal', estimate.subtotal), ('discount', estimate.discount),
-                  ('net', estimate.net_total), ('tax', estimate.tax)]]
+        rows += [{'kind': 'compact_' + name, 'amount': value} for name, value in total_rows]
         return {'compact': True, 'pages': [rows], 'first_detail': 2, 'summary_pages':0}
     logical = _build_detail_rows(estimate)
     pages = []
@@ -242,10 +247,12 @@ def build_outputs(estimate, template_path):
                 _set(ws, row, 6, label)
                 compact_cells[kind] = row
         if layout['compact']:
-            subtotal, discount, net, tax = (compact_cells['compact_' + key] for key in ('subtotal', 'discount', 'net', 'tax'))
+            subtotal, net, tax = (compact_cells['compact_' + key] for key in ('subtotal', 'net', 'tax'))
             ws.cell(subtotal, 7).value = '=SUM(' + ','.join(page_refs) + ')'
-            _set(ws, discount, 7, estimate.discount)
-            ws.cell(net, 7).value = f'=G{subtotal}+G{discount}'
+            discount = compact_cells.get('compact_discount')
+            if discount is not None:
+                _set(ws, discount, 7, estimate.discount)
+            ws.cell(net, 7).value = f'=G{subtotal}+G{discount}' if discount else f'=G{subtotal}'
             ws.cell(tax, 7).value = f'=ROUNDDOWN(G{net}*{estimate.tax_rate},0)'
             _set(ws, 24, 6, '税込合計')
             _set(ws, 23, 1, '各明細金額は税抜です。消費税は合計欄に計上しています。')
@@ -279,12 +286,16 @@ def build_outputs(estimate, template_path):
             category_offset+=len(chunks[page_index])
             if page_index==0:
                 summary['G22']='=SUM('+','.join("'"+title+"'!G3:G18" for title in summary_names)+')'
-                _set(summary,23,7,estimate.discount)
-                summary['G24']='=G22+G23'
+                _set(summary,23,7,estimate.discount if estimate.discount else None)
+                summary['G24']='=G22+G23' if estimate.discount else '=G22'
                 summary['G25']=f'=ROUNDDOWN(G24*{estimate.tax_rate},0)'
                 summary['G26']='=G24+G25'
             else:
                 for row in (22,23,24,25,26):summary.cell(row,7).value=f"='{SUMMARY_SHEET}'!G{row}"
+            summary.row_dimensions[23].hidden = not bool(estimate.discount)
+            if not estimate.discount:
+                for col in range(1,9):
+                    _set(summary,23,col,None)
             if len(summary_names)>1:
                 _set(summary,22,5,'全体小計')
                 _set(summary,21,1,'合計欄は、まとめ全ページを合わせた金額です。')

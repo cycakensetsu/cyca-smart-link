@@ -963,7 +963,7 @@ def _write_detail_sheet(wb: Workbook, estimate: Estimate):
     row += 1  # 1行空ける
     summary = [
         ("小計", estimate.subtotal),
-        ("値引き", estimate.discount),
+        *([("値引き", estimate.discount)] if estimate.discount else []),
         ("税抜合計", estimate.net_total),
         ("消費税", estimate.tax),
         ("税込合計", estimate.grand_total),
@@ -1240,6 +1240,17 @@ def fill_estimate_v2(
             return FillResult(False, [str(exc)], warnings, None, file_name, [], summary)
         return FillResult(True, [], warnings, data, file_name, names, summary, pdf_data)
 
+    if print_ready:
+        # Legacy twenty-row pagination predates measured Japanese text heights.
+        # Reflow only overflowing legacy pages through the existing shared
+        # physical planner; do not shrink text, drop notes or mutate the input.
+        from print_text_height import entry_height, grid_fits
+        legacy_pages = _paginate_detail_rows(_build_detail_rows(estimate)) if any(not c.summary_only for c in estimate.categories) else []
+        if any(not grid_fits([entry_height(row) for row in page]) for page in legacy_pages):
+            from dataclasses import replace
+            return fill_estimate_v2(replace(estimate, pour_layout=True, source_count=max(2, estimate.source_count)),
+                template_path=template_path, save_to_disk=save_to_disk, print_ready=print_ready)
+
     # 2) テンプレートを読み込み、値だけ書き込む（元テンプレートには絶対に触らない）
     template_before = template_path.read_bytes()
     wb = load_workbook(template_path)
@@ -1272,6 +1283,14 @@ def fill_estimate_v2(
         from print_layout import split_print_pages, render_estimate_pdf
         split_print_pages(wb, estimate)
         pdf_data = render_estimate_pdf(estimate)
+
+    if not estimate.discount:
+        summary_ws = wb[SUMMARY_SHEET] if print_ready else wb[QUOTE_SHEET]
+        discount_row = SUMMARY_DISCOUNT_ROW-SUMMARY_BAND_ROW+1 if print_ready else SUMMARY_DISCOUNT_ROW
+        summary_ws.row_dimensions[discount_row].hidden = True
+        for cell in summary_ws[discount_row]:
+            if isinstance(cell.value, str) and '値引' in cell.value.replace(' ', '').replace('　', ''):
+                cell.value = None
 
     # 5) 別名保存 ＆ バイト取得
     output = BytesIO()

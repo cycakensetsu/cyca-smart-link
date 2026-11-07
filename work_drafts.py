@@ -21,7 +21,7 @@ _NAMES = {'review_customer', 'review_project', 'review_date', 'review_discount',
           'review_discount_reason', 'review_customer_tax', 'review_scope',
           'review_target_mode', 'review_page_breaks', 'review_instruction',
           '_review_assistant_rows', '_review_chat', '_review_requested_pages',
-          '_review_conversation_record'}
+          '_review_conversation_record', 'review_pricing_choice'}
 _KEYS = re.compile(rf'(?:review_(?:target|basis|tax|net|gross|tax_amount|tax_exists|'
                    rf'missing_gross|resolve_totals|amount_notes|reference_only|source_page)_{_HEX}'
                    rf'|review_resolution_group_{_HEX}(?:_both)?'
@@ -78,6 +78,10 @@ def validate_draft(value, owner=None):
         if name in state and state[name] not in options:
             raise ValueError('保存した金額設定を確認できません。')
     for name, item in state.items():
+        if name == 'review_pricing_choice':
+            from pricing_options import valid_choice
+            if not valid_choice(item):
+                raise ValueError('保存した値引き案の選択を確認できません。')
         text = name in {'review_customer', 'review_project', 'review_date',
                         'review_discount_reason', 'review_instruction', '_review_conversation_record'}
         text = text or bool(re.fullmatch(rf'review_(?:basis|tax|amount_notes)_{_HEX}', name))

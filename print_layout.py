@@ -286,7 +286,11 @@ def render_estimate_pdf(estimate):
             if summary_pages>1:
                 text('合計欄は、まとめ全ページを合わせた金額です。',x,yy-33,8)
             sy=yy-34
-            for label,amount in [('全体小計' if summary_pages>1 else '小計',estimate.subtotal),('値引き',estimate.discount),('税抜合計',estimate.net_total),('消費税',estimate.tax),('税込合計',estimate.grand_total)]:
+            totals = [('全体小計' if summary_pages>1 else '小計',estimate.subtotal)]
+            if estimate.discount:
+                totals.append(('値引き',estimate.discount))
+            totals += [('税抜合計',estimate.net_total),('消費税',estimate.tax),('税込合計',estimate.grand_total)]
+            for label,amount in totals:
                 c.setFillColor(navy if label=='税込合計' else tint);c.rect(x+542,sy-19,105,19,fill=1,stroke=0)
                 c.setStrokeColor(rule);c.rect(x+542,sy-19,105,19,fill=0,stroke=1);c.rect(x+647,sy-19,94,19,fill=0,stroke=1)
                 text(label,x+594,sy-13,9,white if label=='税込合計' else navy,'center')

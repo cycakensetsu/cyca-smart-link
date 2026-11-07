@@ -874,6 +874,11 @@ def build_cost_basis_dataframe(summary_data: Dict, detail_df: pd.DataFrame, tax_
     df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
     for col in ["数量", "原価単価", "原価金額", "上乗せ額", "見積単価", "見積金額"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+    # Retain the real quantity/price grid for callers of the legacy summary-only
+    # profit API. An invented quantity-1 summary can otherwise receive a 5,000
+    # yen profit that its actual quantity-2 lump line cannot represent.
+    if detail_df is not None and not detail_df.empty:
+        df.attrs['_markup_details'] = detail_df.to_dict('records')
     return df, vendor_summaries
 
 
@@ -1313,6 +1318,12 @@ def validate_intermediate(df: pd.DataFrame, totals: Optional[Dict[str, int]] = N
 
 def apply_profit(df: pd.DataFrame, profit_mode: str, profit_val: float = 0, company_profits: Optional[Dict[str, float]] = None, detail_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """固定・率指定も明細で配分し、会社別集計の丸めによる上乗せ増減を防ぐ。"""
+    if detail_df is None and df.attrs.get('_markup_details'):
+        candidate = pd.DataFrame(df.attrs['_markup_details'])
+        summary_cost = df.groupby('見積元',sort=False)['原価金額'].sum().to_dict()
+        detail_cost = candidate.groupby('見積元',sort=False)['原価金額'].sum().to_dict()
+        if summary_cost == detail_cost:
+            detail_df = candidate
     if profit_mode == "見積元（会社）ごとに金額を指定する":
         return apply_company_profit_to_details(detail_df if detail_df is not None else df, df, company_profits)[1][OUTPUT_COLUMNS]
     detail = detail_df if detail_df is not None else df
@@ -1411,7 +1422,7 @@ def _best_adjustment_index(group: pd.DataFrame) -> Optional[int]:
 
 def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_similar: bool = True,
                            *, allow_low_price_cap_override: bool = False) -> pd.DataFrame:
-    from markup_rules import LUMP_MAX_ADD, LUMP_MAX_RATIO, quantity_steps, exact_remainder
+    from markup_rules import LUMP_MAX_ADD, LUMP_MAX_RATIO, quantity_steps, exact_remainder, natural_rate_tick, measured_add_cap, fixed_price
     if type(allow_low_price_cap_override) is not bool:
         raise ValueError('指定額を優先する設定を確認してください。')
     out = detail_df.copy()
@@ -1422,7 +1433,7 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_simi
         # The same work on different floors should retain the same unit price.
         groups = {}
         for idx, row in out.iterrows():
-            if normalize_text(row["単位"]) in ("式", "一式") or float(row["原価金額"]) <= 0:
+            if normalize_text(row["単位"]) in ("式", "一式") or float(row["原価金額"]) <= 0 or fixed_price(row.get('単価固定', False)):
                 key = (idx,)
             else:
                 name = re.sub(r"\d+階", "", normalize_text(row["品名"]))
@@ -1456,21 +1467,33 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_simi
     out["見積金額"] = pd.to_numeric(out["原価金額"]).astype(float)
     if not increment:
         return out
+    positive_cost = sum(float(r['原価金額']) for _, r in out.iterrows() if float(r['原価金額']) > 0)
+    profit_ratio = increment / positive_cost if positive_cost else 0
     weights, caps, steps, natural_steps = {}, {}, {}, {}
     for idx, row in out.iterrows():
         amount, rate, qty = (float(row[col]) for col in ("原価金額", "原価単価", "数量"))
         if amount <= 0 or rate <= 0 or qty <= 0:
             continue
+        if fixed_price(row.get('単価固定', False)):
+            continue
         lump = normalize_text(row["単位"]) in ("式", "一式")
         steps[idx], natural_steps[idx] = quantity_steps(qty, lump)
-        cap_rate = None if allow_low_price_cap_override and not lump else _markup_unit_cap(rate)
-        cap = increment if cap_rate is None else max(0, int(math.floor(cap_rate * qty - amount)))
+        if not lump:
+            from fractions import Fraction
+            fraction = Fraction(str(qty)).limit_denominator(1000)
+            tick = math.lcm(fraction.denominator, natural_rate_tick(rate))
+            natural_steps[idx] = int(fraction * tick)
+        cap = measured_add_cap(amount, profit_ratio, allow_low_price_cap_override)
+        cap = increment if cap is None else cap
         if lump:
             cap = min(cap, int(amount * LUMP_MAX_RATIO), LUMP_MAX_ADD)
         caps[idx] = cap // steps[idx] * steps[idx]
-        weights[idx] = amount * _unit_price_factor(rate) * _item_class_factor(row["品名"]) * (2.0 if lump else 3.0)
+        # A 147,315-yen steel line is not a small material because its unit is kg.
+        # Limit class preference so that one material cannot become the sole sink.
+        factor = min(1.2, max(.6, _item_class_factor(row['品名'])))
+        weights[idx] = amount * factor
     if sum(caps.values()) < increment:
-        raise ValueError(f"指定の上乗せ {increment:,}円は配分上限を超えています。一式は5,000円刻み・原価50％以内・最大5万円です。上乗せ額を減らしてください。")
+        raise ValueError(f"指定の上乗せ {increment:,}円を、固定単価・配分上限を守って配分できません。一式は5,000円刻み・原価50％以内・最大5万円です。条件を確認してください。")
     desired = dict.fromkeys(weights, 0.0)
     active = {i for i in weights if caps[i] > 0}
     remaining = float(increment)
@@ -1502,9 +1525,14 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_simi
         if extra is not None:
             break
     if extra is None:
-        # A feasible allocation may require moving an earlier rounded allocation.
-        extra = exact_remainder(increment, [(i, steps[i], caps[i]) for i in preferred])
-        allocations = dict.fromkeys(weights, 0)
+        # Rebalance within a bounded rounding neighborhood of the fair allocation.
+        # Never reset the fair allocation and solve the entire profit as coins.
+        radius = min(10000, max(natural_steps.values()))
+        lower = {i: max(0, allocations[i] - max(radius, natural_steps[i])) // steps[i] * steps[i] for i in weights}
+        upper = {i: min(caps[i], allocations[i] + max(radius, natural_steps[i])) for i in weights}
+        extra = exact_remainder(increment - sum(lower.values()),
+            [(i, steps[i], upper[i] - lower[i]) for i in preferred])
+        allocations = lower
     if extra is None:
         raise ValueError("指定額を単価×数量と一式5,000円刻みで正確に配分できません。上乗せ額を変更してください。端数を一式へ寄せる処理は行いません。")
     for i in weights:

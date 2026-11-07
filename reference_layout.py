@@ -143,8 +143,9 @@ def build_reference_outputs(estimate, draft=False):
     sumrefs=','.join(f'G{row}' for row,_ in summary_values)
     set_cell(summary,subrow,1,len(estimate.categories)+1);set_cell(summary,subrow,2,'小 計')
     set_cell(summary,subrow,7,f'=SUM({sumrefs})',True)
-    set_cell(summary,discountrow,2,'値 引 き');set_cell(summary,discountrow,7,estimate.discount)
-    set_cell(summary,31,7,f'=G{subrow}+G{discountrow}',True)
+    if estimate.discount:
+        set_cell(summary,discountrow,2,'値 引 き');set_cell(summary,discountrow,7,estimate.discount)
+    set_cell(summary,31,7,f'=G{subrow}+G{discountrow}' if estimate.discount else f'=G{subrow}',True)
     set_cell(summary,30,8,'税込合計')
     set_cell(summary,31,8,f'=G31+ROUNDDOWN(G31*{estimate.tax_rate},0)',True)
 
@@ -243,8 +244,9 @@ def build_reference_outputs(estimate, draft=False):
                 xx+=cw
             yy-=rowheight
         foot(page);c.showPage()
-    sums=list(summary_values)+[(subrow,[len(estimate.categories)+1,'小 計','','','','',estimate.subtotal,'']),
-                               (discountrow,['','値 引 き','','','','',estimate.discount,''])]
+    sums=list(summary_values)+[(subrow,[len(estimate.categories)+1,'小 計','','','','',estimate.subtotal,''])]
+    if estimate.discount:
+        sums.append((discountrow,['','値 引 き','','','','',estimate.discount,'']))
     render_table('工 事 内 容',sums,estimate.net_total,2)
     for index,page in enumerate(pages,1):
         render_table(f'工 事 内 容 明 細 {index}',[(row,e['values']) for row,e in enumerate(page,3)],

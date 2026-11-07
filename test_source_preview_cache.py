@@ -109,6 +109,13 @@ st.session_state['checked_sources']=sources
             self.assertEqual(list(at.exception),[])
             self.assertEqual(at.session_state['render_count'],10)
             source_ids=[source['id'] for source in at.session_state['checked_sources']]
+            self.assertTrue(all(at.checkbox(key='review_source_ok_'+sid).disabled for sid in source_ids))
+            comparisons=[t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由']
+            self.assertEqual(len(comparisons),10)
+            for field in comparisons:
+                field.input('この合成原本の仕様・注記を該当する合成明細と照合済み')
+            at.run()
+            self.assertEqual(at.session_state['render_count'],0)
             for number,sid in enumerate(source_ids,1):
                 at.checkbox(key='review_source_ok_'+sid).check().run()
                 self.assertEqual(list(at.exception),[])
