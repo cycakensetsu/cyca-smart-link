@@ -209,6 +209,12 @@ class SourceSectionsTest(unittest.TestCase):
         for mode,value in [('上乗せ額',0),('上乗せ額',100000),('掛け率',1.2),('粗利益率',20)]:
             target=Target('全体','全体',mode,value)
             draft=build_draft(rows,copy.deepcopy(rows),[source],[target],metadata=metadata)
+            if draft['profit_plan'] and draft['profit_plan']['requires_confirmation']:
+                self.assertIn('利益配分案',[i['種類'] for i in draft['unresolved']])
+                self.assertEqual(draft['payload']['値引き'],0)
+                choice={'signature':draft['profit_plan']['signature'],'id':'no_discount'}
+                draft=build_draft(rows,copy.deepcopy(rows),[source],[target],metadata=metadata,
+                                  pricing_choice=choice)
             self.assertEqual(draft['unresolved'],[])
             self.assertEqual(draft['payload']['合計']['仕入原価'],110095)
             self.assertEqual(draft['payload']['合計']['税抜売価'],target_total(110095,target))
