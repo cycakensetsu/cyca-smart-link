@@ -317,7 +317,10 @@ def _render_review_plan(st,api_key,original,rows,sources):
         draft = build_draft(original, rows, sources, targets, discount, metadata)
         plan = draft.get('profit_plan')
         if plan and plan['requires_confirmation']:
-            st.warning('希望利益を正確に合わせると、端数単価または偏った配分になります。案を選ぶまで確定・出力しません。')
+            if any(option['id'] == 'manual_discount' for option in plan['options']):
+                st.warning('手入力の値引きがあります。端数単価または偏った配分も確認し、案を選ぶまで確定・出力しません。')
+            else:
+                st.warning('希望利益を正確に合わせると、端数単価または偏った配分になります。案を選ぶまで確定・出力しません。')
             if plan['exact_error']:
                 st.caption('値引きなし案をその金額で作れない理由：' + plan['exact_error'])
             options = plan['options']

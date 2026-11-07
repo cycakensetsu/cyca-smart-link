@@ -263,13 +263,33 @@ def allocate(rows, targets):
         total = target_total(cost, t)
         if group.get('__source_rounding_approved', pd.Series(False,index=group.index)).any():
             allocated = _price_rounded_source(group, total,
-                allow_low_price_cap_override=t.allow_low_price_cap_override)
+                allow_low_price_cap_override=t.allow_low_price_cap_override,
+                balanced=t.mode == '上乗せ額' and t.scope == '全体')
         else:
-            allocated = _allocate_group_markup(group, total,
+            allocator = _review_group_markup if t.mode == '上乗せ額' and t.scope == '全体' else _allocate_group_markup
+            allocated = allocator(group, total,
                 allow_low_price_cap_override=t.allow_low_price_cap_override)
         for col in ("見積単価", "見積金額", "上乗せ額"):
             out.loc[allocated.index, col] = allocated[col].astype(float)
     return out
+
+
+def _review_group_markup(group, total, *, allow_low_price_cap_override=False):
+    """Try a bounded cost-proportional distribution before legacy feasibility."""
+    if sum(float(row['原価金額']) > 0 for _, row in group.iterrows()) < 2:
+        return _allocate_group_markup(group, total,
+            allow_low_price_cap_override=allow_low_price_cap_override)
+    for multiplier in (1.5, 2.0, 2.5):
+        try:
+            return _allocate_group_markup(group, total,
+                allow_low_price_cap_override=allow_low_price_cap_override,
+                balance_multiplier=multiplier)
+        except ValueError:
+            continue
+    # An exact requested total may be infeasible under balanced caps. Keep the
+    # prior allocator as a reviewable proposal, never as silent approval.
+    return _allocate_group_markup(group, total,
+        allow_low_price_cap_override=allow_low_price_cap_override)
 
 
 def _natural_price_warnings(source_rows, priced_rows, targets):
@@ -299,7 +319,7 @@ def _natural_price_warnings(source_rows, priced_rows, targets):
     if len(positive) >= 2 and total_cost > 0 and total_markup > 0:
         for name, cost, markup in positive:
             cost_share, markup_share = cost / total_cost, markup / total_markup
-            if markup_share > .65 and cost_share < .45 and markup_share > 2.5 * cost_share:
+            if markup_share > .05 and markup_share > 2.5 * cost_share:
                 warnings.append(f'{name}に利益が偏っています（上乗せの{markup_share:.0%}）。')
     if any(t.allow_low_price_cap_override for t in targets):
         warnings.append('指定額を優先するため、通常の単価倍率上限を超える設定です。')
@@ -308,7 +328,7 @@ def _natural_price_warnings(source_rows, priced_rows, targets):
 
 def _profit_proposals(rows, targets, manual_discount, context):
     """Price alternatives are suggestions; an explicit matching choice is required."""
-    if manual_discount or not targets or any(t.mode != '上乗せ額' for t in targets):
+    if not targets or any(t.mode != '上乗せ額' for t in targets):
         return None, {}
     signature = digest(context)
     allocations = {}
@@ -318,6 +338,17 @@ def _profit_proposals(rows, targets, manual_discount, context):
         exact_warnings = _natural_price_warnings(rows, exact, targets)
     except ValueError as exc:
         exact, exact_warnings, exact_error = None, [], str(exc)
+    if manual_discount:
+        if exact is None:
+            raise ValueError(exact_error or '上乗せ額を配分できません。')
+        if not exact_warnings:
+            return {'signature': signature, 'requires_confirmation': False, 'options': []}, {'automatic': exact}
+        markup = sum(integer(x) for x in exact['上乗せ額'])
+        option = {'id': 'manual_discount', 'label': '手入力の値引きと単価を確認する',
+                  'markup': markup, 'discount': integer(manual_discount),
+                  'final_profit': markup + integer(manual_discount), 'warnings': exact_warnings}
+        return {'signature': signature, 'requires_confirmation': True,
+                'options': [option], 'exact_error': ''}, {'manual_discount': exact}
     if exact is not None and not exact_warnings:
         return {'signature': signature, 'requires_confirmation': False, 'options': []}, {'automatic': exact}
 
@@ -368,7 +399,8 @@ def _profit_proposals(rows, targets, manual_discount, context):
             'options': options, 'exact_error': exact_error}, allocations
 
 
-def _price_rounded_source(group, total, *, allow_low_price_cap_override=False):
+def _price_rounded_source(group, total, *, allow_low_price_cap_override=False,
+                          balanced=False):
     """Source costs stay immutable; only customer unit prices are calculated.
 
     Validation has already required human confirmation of the printed facts,
@@ -382,7 +414,8 @@ def _price_rounded_source(group, total, *, allow_low_price_cap_override=False):
             pricing.at[idx,'原価金額']=line_amount(row['数量'],row['原価単価'])
     baseline=sum(integer(v) for v in pricing['原価金額'])
     if total >= baseline:
-        result=_allocate_group_markup(pricing,total,
+        allocator = _review_group_markup if balanced else _allocate_group_markup
+        result=allocator(pricing,total,
             allow_low_price_cap_override=allow_low_price_cap_override)
     else:
         difference=baseline-total
@@ -586,11 +619,11 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
                                       if option['id'] == choice_id and signature == profit_plan['signature']), None)
                 if selected_plan is None:
                     issue('利益配分案', [], '単価または利益配分に確認が必要です。提示した案を選ぶまで見積書を確定できません。', '停止')
-                    allocated = proposed_rows.get('no_discount', frame)
+                    allocated = proposed_rows.get('no_discount', proposed_rows.get('manual_discount', frame))
                 else:
                     allocated = proposed_rows[selected_plan['id']]
                     discount = selected_plan['discount']
-                    if discount:
+                    if discount and selected_plan['id'] == 'rounding_discount':
                         metadata['値引き理由'] = '自然な単価へ調整した端数値引き（利用者が案を選択）'
     except (ValueError, TypeError, KeyError) as exc:
         issue("配分・数値", [], str(exc), "停止")

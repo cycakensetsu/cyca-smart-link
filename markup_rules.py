@@ -6,8 +6,10 @@ import math
 LUMP_STEP = 5000
 LUMP_MAX_ADD = 50000
 LUMP_MAX_RATIO = 0.5
-RULE_VERSION = "2026-10-05"
-RULE_DESCRIPTION = "一式は5,000円刻み・原価の50％以内・最大5万円。実数量の高単価工事を優先し、指定額と明細合計を一致させます。"
+RULE_VERSION = "2026-11-07"
+RULE_DESCRIPTION = ("全体の上乗せ額指定では、原価比に応じて全明細へ配分し、一式は5,000円刻みを優先します。"
+                    "それ以外の指定では、一式は原価の50％以内・最大5万円です。"
+                    "指定額と明細合計を一致させ、不自然な単価や利益の偏りは確認を求めます。")
 
 
 def line_amount(qty, rate):
