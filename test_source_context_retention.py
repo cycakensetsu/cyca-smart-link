@@ -51,6 +51,13 @@ class SourceContextRetentionTest(unittest.TestCase):
         self.assertEqual([r['原価単価'] for r in rows], [100] * 3)
         self.assertEqual([r['ページ'] for r in rows], [2] * 3)
 
+    def test_inclusive_note_in_a_merged_remark_cell_remains_source_scope(self):
+        from source_amounts import _original_notes
+        lines=[(1,'品名 数量 単価 金額 備考'),(1,'材料費'),(1,'運搬費込み'),(1,'加工費')]
+        notes,records=_original_notes('a.pdf',lines,{})
+        self.assertIn({'元ファイル':'a.pdf','ページ':1,'原文':'運搬費込み'},records)
+        self.assertIn('1ページ：運搬費込み',notes)
+
     def test_scan_notes_only_summary_is_retained_with_exact_file_page_and_verbatim_text(self):
         original_note = '工程：下塗り→中塗り→上塗り\n使用材料：架空製品TEST-A（２回）'
         summary = {'page_role': 'detail_page', 'summary_data': {
@@ -168,6 +175,26 @@ class SourceContextRetentionTest(unittest.TestCase):
             for field in ('数量', '単位', '単価', '金額', '__page_number', '__source_name'):
                 self.assertEqual(result[field], original[field])
         self.assertEqual(actual_summaries[0]['原本備考'], summaries[0]['原本備考'])
+
+    def test_short_ocr_name_cannot_copy_one_remark_to_two_native_rows(self):
+        from source_table import reconcile_native_pdf
+        records = [dict(detail(page=1),品名='工事',単位='式',単価=25000,金額=25000,
+                        備考='この行だけの条件')]
+        native = [dict(records[0],品名=name,備考='') for name in ('工事A','工事B')]
+        with patch('source_table.reconcile_cyca_reference',return_value=None), \
+             patch('source_table.read_native_tables',return_value=(native,[50000],'')):
+            actual,_=reconcile_native_pdf('a.pdf',records,[])
+        self.assertEqual([r['備考'] for r in actual],['',''])
+
+    def test_unique_short_name_retains_note_without_inventing_a_second_row(self):
+        from source_table import reconcile_native_pdf
+        record=dict(detail(page=1),品名='下地材',備考='運搬費込み')
+        native=[dict(record,品名='下地材 規格TEST',備考='')]
+        with patch('source_table.reconcile_cyca_reference',return_value=None), \
+             patch('source_table.read_native_tables',return_value=(native,[100],'')):
+            actual,_=reconcile_native_pdf('a.pdf',[record],[])
+        self.assertEqual(actual[0]['備考'],'運搬費込み')
+        self.assertEqual(actual[0]['品名'],'下地材 規格TEST')
 
     def test_native_remark_recovery_needs_unique_same_source_page_and_never_overwrites_printed_remark(self):
         from source_table import reconcile_native_pdf

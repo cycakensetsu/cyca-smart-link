@@ -55,7 +55,7 @@ def _original_notes(name, lines, summaries):
     from estimate_pipeline import original_source_notes
     records = []
     note_indices = {i for i, (_, text) in enumerate(lines)
-                    if re.search('上記に含|別途|対象外|除く|除外|含まない|含めない|含みません|含んでいません|入っておりません|見積範囲|施工範囲|含まれ|条件|工程|使用材料|使用塗料|材料|※', text)}
+                    if re.search('上記に含|込み|含む|別途|対象外|除く|除外|含まない|含めない|含みません|含んでいません|入っておりません|見積範囲|施工範囲|含まれ|条件|工程|使用材料|使用塗料|材料|※', text)}
     for position in sorted(note_indices):
         page = lines[position][0]
         for index in range(max(0, position - 1), min(len(lines), position + 2)):

@@ -6,8 +6,8 @@ import math
 LUMP_STEP = 5000
 LUMP_MAX_ADD = 50000
 LUMP_MAX_RATIO = 0.5
-RULE_VERSION = "2026-11-07"
-RULE_DESCRIPTION = "原価総額を基準に分散配分。一式は5,000円刻み・原価の50％以内・最大5万円。値引きは選んだ案だけ反映します。"
+RULE_VERSION = "2026-11-07.1"
+RULE_DESCRIPTION = "全体の上乗せ額は原価比で分散し、自然な単価を優先。一式は5,000円刻み、業者別・工種別では原価50％以内・最大5万円。固定単価は維持し、値引きは選んだ案だけ反映します。"
 
 
 def fixed_price(value=False):

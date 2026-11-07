@@ -1420,8 +1420,47 @@ def _best_adjustment_index(group: pd.DataFrame) -> Optional[int]:
     return sorted(candidates, reverse=True)[0][2]
 
 
+def _balanced_natural_allocation(desired, caps, quanta, target):
+    """Choose exact, readable prices closest to the cost-weighted targets."""
+    indices = list(desired)
+    for width in (1, 2, 3, 5, 8):
+        states = {0: (0.0, ())}
+        for position, idx in enumerate(indices):
+            quantum = quanta[idx]
+            centre = round(desired[idx] / quantum)
+            choices = [n * quantum for n in range(max(0, centre - width), centre + width + 1)
+                       if n * quantum <= caps[idx]]
+            if not choices:
+                states = {}
+                break
+            scale = max(quantum, desired[idx] * .3, 1000)
+            next_states = {}
+            for running, (penalty, prior) in states.items():
+                for amount in choices:
+                    subtotal = running + amount
+                    if subtotal > target:
+                        continue
+                    score = penalty + ((amount - desired[idx]) / scale) ** 2
+                    earlier = next_states.get(subtotal)
+                    if earlier is None or score < earlier[0]:
+                        next_states[subtotal] = (score, prior + (amount,))
+            if len(next_states) > 30000:
+                remaining = sum(desired[i] for i in indices[position + 1:])
+                scale = max(remaining * .25, 1000)
+                best = sorted(next_states, key=lambda total: next_states[total][0]
+                              + ((target - total - remaining) / scale) ** 2)[:30000]
+                next_states = {total: next_states[total] for total in best}
+            states = next_states
+            if not states:
+                break
+        if target in states:
+            return dict(zip(indices, states[target][1]))
+    return None
+
+
 def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_similar: bool = True,
-                           *, allow_low_price_cap_override: bool = False) -> pd.DataFrame:
+                           *, allow_low_price_cap_override: bool = False,
+                           balance_multiplier: Optional[float] = None) -> pd.DataFrame:
     from markup_rules import LUMP_MAX_ADD, LUMP_MAX_RATIO, quantity_steps, exact_remainder, natural_rate_tick, measured_add_cap, fixed_price
     if type(allow_low_price_cap_override) is not bool:
         raise ValueError('指定額を優先する設定を確認してください。')
@@ -1446,7 +1485,8 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_simi
                 pooled.at[indices[0], "原価金額"] = out.loc[indices, "原価金額"].sum()
             try:
                 allocated = _allocate_group_markup(pooled, target_total, pool_similar=False,
-                    allow_low_price_cap_override=allow_low_price_cap_override)
+                    allow_low_price_cap_override=allow_low_price_cap_override,
+                    balance_multiplier=balance_multiplier)
                 for indices in groups.values():
                     rate = allocated.at[indices[0], "見積単価"]
                     for idx in indices:
@@ -1483,17 +1523,20 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_simi
             fraction = Fraction(str(qty)).limit_denominator(1000)
             tick = math.lcm(fraction.denominator, natural_rate_tick(rate))
             natural_steps[idx] = int(fraction * tick)
-        cap = measured_add_cap(amount, profit_ratio, allow_low_price_cap_override)
-        cap = increment if cap is None else cap
-        if lump:
-            cap = min(cap, int(amount * LUMP_MAX_RATIO), LUMP_MAX_ADD)
+        if balance_multiplier is not None and positive_cost > 0:
+            cap = min(increment, math.floor(increment * amount / positive_cost * balance_multiplier))
+        else:
+            cap = measured_add_cap(amount, profit_ratio, allow_low_price_cap_override)
+            cap = increment if cap is None else cap
+            if lump:
+                cap = min(cap, int(amount * LUMP_MAX_RATIO), LUMP_MAX_ADD)
         caps[idx] = cap // steps[idx] * steps[idx]
-        # A 147,315-yen steel line is not a small material because its unit is kg.
-        # Limit class preference so that one material cannot become the sole sink.
         factor = min(1.2, max(.6, _item_class_factor(row['品名'])))
         weights[idx] = amount * factor
     if sum(caps.values()) < increment:
-        raise ValueError(f"指定の上乗せ {increment:,}円を、固定単価・配分上限を守って配分できません。一式は5,000円刻み・原価50％以内・最大5万円です。条件を確認してください。")
+        rule = ('全体の指定上乗せ額を原価比に応じて配る上限です。' if balance_multiplier is not None
+                else '一式は5,000円刻み・原価50％以内・最大5万円です。')
+        raise ValueError(f"指定の上乗せ {increment:,}円を、固定単価・配分上限を守って配分できません。{rule}条件を確認してください。")
     desired = dict.fromkeys(weights, 0.0)
     active = {i for i in weights if caps[i] > 0}
     remaining = float(increment)
@@ -1508,22 +1551,25 @@ def _allocate_group_markup(detail_df: pd.DataFrame, target_total: int, pool_simi
             desired[i] = float(caps[i])
             remaining -= caps[i]
         active -= limited
-    allocations = {i: int(desired[i] // natural_steps[i]) * natural_steps[i] for i in weights}
-    residual = increment - sum(allocations.values())
-    preferred = sorted(weights, key=lambda i: (desired[i] - allocations[i]) / natural_steps[i])
-    extra = None
-    rounding_room = {}
-    for i in weights:
-        room = natural_steps[i]
-        if float(out.at[i, "数量"]) == 1 and normalize_text(out.at[i, "単位"]) not in ("式", "一式"):
-            room = max(room, int(min(float(out.at[i, "原価金額"]) * 0.2, 5000)))
-        rounding_room[i] = min(caps[i] - allocations[i], room)
-    for quantum in (natural_steps, steps):
-        # Each row absorbs at most one rounding step before trying a smaller
-        # rate quantum. This prevents the residual concentrating on one row.
-        extra = exact_remainder(residual, [(i, quantum[i], rounding_room[i]) for i in preferred])
-        if extra is not None:
-            break
+    balanced = None
+    if balance_multiplier is not None:
+        balanced = _balanced_natural_allocation(desired, caps, natural_steps, increment)
+    if balanced is not None:
+        allocations, extra = balanced, {}
+    else:
+        allocations = {i: int(desired[i] // natural_steps[i]) * natural_steps[i] for i in weights}
+        residual = increment - sum(allocations.values())
+        preferred = sorted(weights, key=lambda i: (desired[i] - allocations[i]) / natural_steps[i])
+        extra = None
+        rounding_room = {}
+        for i in weights:
+            room = natural_steps[i]
+            if float(out.at[i, "数量"]) == 1 and normalize_text(out.at[i, "単位"]) not in ("式", "一式"):
+                room = max(room, int(min(float(out.at[i, "原価金額"]) * 0.2, 5000)))
+            rounding_room[i] = min(caps[i] - allocations[i], room)
+        extra = exact_remainder(residual, [(i, natural_steps[i], rounding_room[i]) for i in preferred])
+        if extra is None:
+            extra = exact_remainder(residual, [(i, steps[i], rounding_room[i]) for i in preferred])
     if extra is None:
         # Rebalance within a bounded rounding neighborhood of the fair allocation.
         # Never reset the fair allocation and solve the entire profit as coins.
