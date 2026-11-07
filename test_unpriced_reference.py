@@ -126,6 +126,8 @@ class UnpricedReferenceTest(unittest.TestCase):
             self.assertNotIn('採用',at.dataframe[0].value.columns)
             self.assertNotIn('集計のみ',at.dataframe[0].value.columns)
             self.assertTrue(any(e.label=='詳しい設定（必要なときだけ）' for e in at.expander))
+            self.assertTrue(at.checkbox(key='review_source_ok_'+quote_id).disabled)
+            next(t for t in at.text_input if t.label=='原本で仕様・注記を確認した内容と理由').input('合成見積の仕様A・注記を原本と照合済み').run()
             at.checkbox(key='review_source_ok_'+quote_id).check().run()
             self.assertNotIn('review_consult',[b.key for b in at.button])
             for key in ('_review_preview','_review_approval','_review_result'):

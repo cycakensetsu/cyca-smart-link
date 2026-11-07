@@ -287,7 +287,7 @@ def _render_review_plan(st,api_key,original,rows,sources):
             if override:
                 st.caption('この対象だけ、実数量の単価倍率上限を超えて配分します。一式の上限・数量・仕入額は変えません。')
             targets.append(Target(scope, key, mode, value, override))
-        discount = st.number_input("顧客向け値引き（0円以下）", max_value=0, value=0, step=1000, key="review_discount")
+        discount = st.number_input("比較したい値引き案の額（0円以下・入力だけでは未適用）", max_value=0, value=0, step=1000, key="review_discount")
         reason = st.text_input("顧客値引きの理由", key="review_discount_reason")
         st.caption("仕入側の値引きは原本明細の負数行として保持します。顧客値引きとは別に計算します。")
         metadata = {
@@ -314,42 +314,30 @@ def _render_review_plan(st,api_key,original,rows,sources):
     resolutions = {}
     pricing_choice = None
     try:
-        draft = build_draft(original, rows, sources, targets, discount, metadata)
-        plan = draft.get('profit_plan')
-        if plan and plan['requires_confirmation']:
-            st.warning('希望利益を正確に合わせると、端数単価または偏った配分になります。案を選ぶまで確定・出力しません。')
-            if plan['exact_error']:
-                st.caption('値引きなし案をその金額で作れない理由：' + plan['exact_error'])
-            options = plan['options']
-            st.dataframe(pd.DataFrame([{
-                '案': option['label'],
-                '上乗せ額': f"{option['markup']:,}円",
-                '値引き額': f"{-option['discount']:,}円",
-                '最終利益額': f"{option['final_profit']:,}円",
-                '確認点': ' '.join(option['warnings']) or '自然な単価と配分',
-            } for option in options]), hide_index=True, width='stretch')
-            labels = {option['id']: option['label'] for option in options}
-            chosen = st.radio('採用する配分案を選択', [''] + list(labels),
-                              format_func=lambda key: labels.get(key, 'まだ選択しない'),
-                              key='review_profit_choice_' + plan['signature'])
-            if chosen:
-                pricing_choice = {'signature': plan['signature'], 'id': chosen}
-                draft = build_draft(original, rows, sources, targets, discount, metadata,
-                                    pricing_choice=pricing_choice)
+        from pricing_options_ui import render_options, reconcile_choice, reconcile_inputs, KEY as pricing_key
+        if reconcile_inputs(st.session_state, rows, targets, metadata['顧客税率'], discount):
+            st.info('金額条件が変わったため、値引き案の採用を解除しました。')
+        draft = build_draft(original, rows, sources, targets, discount, metadata,
+                            pricing_choice=st.session_state.get(pricing_key))
+        options = draft.get('pricing_options')
+        if options and reconcile_choice(st.session_state, options):
+            st.info('金額条件が変わったため、値引き案の採用を解除しました。')
+            draft = build_draft(original, rows, sources, targets, discount, metadata)
+        render_options(st, options)
         from review_findings_ui import render_findings
         resolutions=render_findings(st,draft,all(source.get('confirmed') for source in sources))
         draft = build_draft(original, rows, sources, targets, discount, metadata, resolutions,
-                            pricing_choice=pricing_choice)
+                            pricing_choice=st.session_state.get(pricing_key))
     except (ValueError, TypeError, KeyError) as exc:
         st.error(str(exc))
         return
     totals = draft["payload"]["合計"]
     st.text('宛名：' + metadata['宛名'] + '　／　工事名称：' + metadata['工事名称'])
     st.metric('仕入原価（税抜）', f"{totals['仕入原価']:,}円")
-    st.metric('利益（値引き前）', f"{totals['売価小計'] - totals['仕入原価']:,}円")
+    st.metric('最終利益（値引き後・税抜）', f"{totals['粗利益']:,}円")
     st.metric('お客様への税込見積額', f"{totals['税込売価']:,}円")
     if totals['顧客値引き']:
-        st.caption(f"顧客値引き：{totals['顧客値引き']:,}円 ／ 値引き後の粗利益：{totals['粗利益']:,}円")
+        st.caption(f"採用済みの顧客値引き：{totals['顧客値引き']:,}円 ／ 値引き後の粗利益：{totals['粗利益']:,}円")
     with st.expander('原価・売価・税・粗利益の内訳を確認'):
         st.dataframe(pd.DataFrame([totals]), hide_index=True, width="stretch")
     with st.expander('品目ごとの金額・工種別の内訳を見る'):

@@ -49,7 +49,6 @@ def render(st, rows, source):
     if needed is None:
         source.pop('row_evidence_confirmation', None)
         return True
-    st.warning('金額が合っていても、仕様・注記の対応は未確認です。左の原本で該当箇所を見比べてください。')
     with st.expander('仕様・注記の読み取りを見比べる', expanded=True):
         for item in needed['result']['findings']:
             label = ('原本' if not item.get('name') else str(item['name']))
@@ -63,4 +62,10 @@ def render(st, rows, source):
         reason = st.text_input('原本で仕様・注記を確認した内容と理由',
                               key='review_row_evidence_' + needed['signature'])
     source['row_evidence_confirmation'] = {'signature': needed['signature'], 'reason': reason}
-    return verified(rows, source)
+    ready = verified(rows, source)
+    # The owning source panel already presents one actionable blocking warning.
+    # Do not keep showing an unconditional "unverified" warning after the
+    # exact comparison has been recorded, or duplicate that panel's warning.
+    st.caption('仕様・注記を原本と照合した記録があります。' if ready else
+               '金額が合っていても、仕様・注記の対応を原本で見比べ、確認した内容と理由を記録してください。')
+    return ready

@@ -5,7 +5,7 @@ import unicodedata
 
 # The specification and four-character units need real space on paper. Keep
 # the same eight-column frame on every customer summary/detail page.
-TABLE_WIDTHS = (26, 175, 270, 38, 52, 75, 90, 71.8897637795277)
+TABLE_WIDTHS = (26, 175, 258, 50, 52, 75, 90, 71.8897637795277)
 TABLE_XLSX_WIDTH = 788.625  # Preserve the existing template's total width.
 
 

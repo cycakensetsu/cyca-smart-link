@@ -11,8 +11,8 @@ import sys
 import threading
 
 _ROOT = Path(__file__).resolve().parent
-_MODULES = ('login_ui', 'pdf_worker', 'product_design', 'work_effects', 'estimate_pipeline', 'row_evidence_review', 'row_evidence_gate', 'print_text_height', 'template_fill_test_v2', 'horizontal_estimate_flow',
-            'print_layout', 'reference_layout', 'estimate_review', 'vault_archive', 'shared_storage', 'saved_quotes', 'storage_health',
+_MODULES = ('login_ui', 'pdf_worker', 'product_design', 'work_effects', 'markup_rules', 'estimate_pipeline', 'row_evidence_review', 'row_evidence_gate', 'print_text_height', 'template_fill_test_v2', 'horizontal_estimate_flow',
+            'print_layout', 'reference_layout', 'estimate_review', 'pricing_options', 'pricing_options_ui', 'vault_archive', 'shared_storage', 'saved_quotes', 'storage_health',
             'cyca_reference', 'source_table', 'gemini_request_gate', 'gemini_resilience', 'source_sections', 'document_scopes', 'source_annotations', 'source_extraction', 'extraction_batch', 'complete_document_cache', 'source_variants', 'source_amounts', 'source_rounding', 'source_spec_history', 'item_correction_ui', 'source_review_ui', 'workflow_steps_ui', 'review_input_ui', 'review_findings_ui',
             'conversation_assistant', 'conversation_ui', 'pour_layout',
             'output_preview_ui', 'review_ui', 'saved_read_resume', 'work_drafts', 'browser_backups', 'legacy_exports')

@@ -45,8 +45,9 @@ class UnitPriceComparisonTest(unittest.TestCase):
         cost = sum(source['net_total'] for source in sources)
         self.assertEqual(draft['payload']['合計']['仕入原価'], cost)
         self.assertEqual(draft['payload']['合計']['売価小計'], cost)
-        self.assertEqual(draft['payload']['合計']['顧客値引き'], customer_discount)
-        self.assertEqual(draft['payload']['合計']['税抜売価'], cost + customer_discount)
+        # A suggested customer discount is inert until separately adopted.
+        self.assertEqual(draft['payload']['合計']['顧客値引き'], 0)
+        self.assertEqual(draft['payload']['合計']['税抜売価'], cost)
         self.assertFalse(any(item['レベル'] == '停止' for item in draft['payload']['指摘']))
         return draft
 
@@ -65,7 +66,7 @@ class UnitPriceComparisonTest(unittest.TestCase):
         discounts = [row['見積金額'] for row in draft['payload']['計算明細']
                      if row['品名'] == '調整値引き']
         self.assertEqual(discounts, [-1000, -2000])
-        self.assertEqual(draft['payload']['合計']['税抜売価'], 194000)
+        self.assertEqual(draft['payload']['合計']['税抜売価'], 197000)
 
     def test_positive_lump_sum_and_measured_work_still_need_rate_confirmation(self):
         for unit in ('式', '㎡'):
