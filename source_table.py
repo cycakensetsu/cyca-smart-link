@@ -20,6 +20,47 @@ def number(value):
     return float(text) if re.fullmatch(r"-?\d+(?:\.\d+)?", text) else None
 
 
+def native_cell_text(page, bounds, extracted):
+    """Order printed glyphs by layout only if no characters are added/lost.
+
+    Table extraction can place a separately drawn decimal point after a whole
+    label. Sorted text from the exact cell retains its physical position; the
+    character multiset guard rejects clipping or neighboring-cell leakage.
+    """
+    if not bounds or not extracted:
+        return extracted
+    ordered = page.get_text('text', clip=bounds, sort=True).strip()
+    return ordered if Counter(compact(ordered)) == Counter(compact(extracted)) else extracted
+
+
+_NATIVE_UNITS = r'㎡|m2|m²|m|式|枚|ヶ所|箇所|個|本|台|基|人工|坪|kg|t'
+
+
+def native_header_columns(cells):
+    """Find a net amount column without treating a tax-inclusive amount as cost."""
+    headers = [compact(cell) for cell in cells]
+    def one(pattern):
+        found = [i for i, value in enumerate(headers) if re.fullmatch(pattern, value)]
+        return found[0] if len(found) == 1 else None
+    quantity = one(r'数量(?:\(単位\))?')
+    price = one(r'単価(?:\((?:税抜き?|税別|円)\))?')
+    amount = one(r'(?:見積)?金額(?:\((?:税抜き?|税別|円|税抜・円|税別・円)\))?|税(?:抜き?|別)金額')
+    if None in (quantity, price, amount) or not quantity < price < amount:
+        return None
+    unit = one(r'単位')
+    return quantity, unit if unit is not None and quantity < unit < price else None, price, amount
+
+
+def native_quantity_unit(quantity_cell, unit_cell=None):
+    quantity = re.fullmatch(r'(\d+(?:\.\d+)?)(?:(' + _NATIVE_UNITS + r'))?', compact(quantity_cell))
+    if not quantity:
+        return None
+    unit = quantity.group(2) or compact(unit_cell)
+    if not re.fullmatch(_NATIVE_UNITS, unit):
+        return None
+    return float(quantity.group(1)), '㎡' if unit in ('m2', 'm²') else unit
+
+
 @isolated_pdf
 def attach_native_dimensions(path, records):
     """Retain printed W/H cells only beside an exact, unique priced row.
@@ -118,30 +159,33 @@ def read_native_tables(path):
             for table in page.find_tables().tables:
                 columns = None
                 section = ""
-                for cells in table.extract():
-                    headers = [compact(c) for c in cells]
-                    if "数量" in headers and "単価" in headers and "金額" in headers:
-                        columns = (headers.index("数量"), headers.index("単価"), headers.index("金額"))
+                for row_index, cells in enumerate(table.extract()):
+                    bounds = table.rows[row_index].cells
+                    cells = [native_cell_text(page, bounds[i], cell) for i, cell in enumerate(cells)]
+                    detected = native_header_columns(cells)
+                    if detected:
+                        columns = detected
                         continue
                     if columns is None:
                         continue
-                    qcol, pcol, acol = columns
+                    qcol, ucol, pcol, acol = columns
                     name = " ".join(str(c).replace("\n", " ") for c in cells[:qcol] if c).strip()
                     if not name:
                         continue
-                    if compact(name) in ("小計", "税抜合計", "税抜小計"):
+                    total_label = compact(cells[pcol])
+                    if compact(name) in ("小計", "税抜合計", "税抜小計") or total_label in ("小計", "税抜合計", "税抜小計"):
                         subtotal = number(cells[acol])
                         if subtotal is not None:
                             subtotals.append(int(subtotal))
                         continue
-                    qtytext = compact(cells[qcol])
-                    match = re.fullmatch(r"(\d+(?:\.\d+)?)(㎡|m2|m²|m|式|枚|ヶ所|箇所|個|本|台|基|人工|坪|kg|t)", qtytext)
-                    if not match:
-                        if name.startswith(("（", "(")):
-                            section = name.strip("（）() ")
+                    parsed = native_quantity_unit(cells[qcol], cells[ucol] if ucol is not None else None)
+                    if not parsed:
+                        if (name and not compact(cells[qcol]) and not compact(cells[pcol])
+                                and not compact(cells[acol])):
+                            section = name[1:-1].strip() if (name.startswith(('（', '('))
+                                and name.endswith(('）', ')'))) else name
                         continue
-                    qty, unit = float(match.group(1)), match.group(2)
-                    unit = "㎡" if unit in ("m2", "m²") else unit
+                    qty, unit = parsed
                     price, amount = number(cells[pcol]), number(cells[acol])
                     if amount is None or qty <= 0:
                         return [], [], ""
@@ -230,7 +274,16 @@ def reconcile_native_pdf(path, records, summaries):
     for idx, row in enumerate(native, 1):
         matches=[r for r in records if number(r.get('数量'))==row['数量']
                  and number(r.get('単価'))==row['単価'] and number(r.get('金額'))==row['金額']
-                 and compact(r.get('品名'))==compact(row['品名'])]
+                 and compact(r.get('品名'))
+                 and compact(r.get('品名')) in compact(row['品名'])
+                 # A shortened OCR name must not donate context to two native
+                 # rows with identical money. Require the reverse match too.
+                 and sum(number(r.get('数量')) == other['数量']
+                         and number(r.get('単価')) == other['単価']
+                         and number(r.get('金額')) == other['金額']
+                         and number(r.get('__page_number')) == number(other.get('__page_number'))
+                         and compact(r.get('品名')) in compact(other['品名'])
+                         for other in native) == 1]
         if len(matches)==1:
             for field in ('工事種別','部位'):
                 if not row.get(field) and matches[0].get(field):row[field]=matches[0][field]

@@ -47,6 +47,13 @@ class ProfitProposalsTest(unittest.TestCase):
         self.assertEqual(draft['payload']['値引き'], 0)
         self.assertIsNone(draft['payload']['利益配分案'])
 
+    def test_two_equal_lump_costs_share_large_global_markup_evenly(self):
+        draft = draft_for([('工事A', 1, '式', 100000), ('工事B', 1, '式', 100000)], 120000)
+        self.assertEqual(draft['unresolved'], [])
+        self.assertFalse(draft['profit_plan']['requires_confirmation'])
+        self.assertEqual([row['上乗せ額'] for row in draft['payload']['計算明細']], [60000, 60000])
+        self.assertEqual(draft['payload']['合計']['粗利益'], 120000)
+
     def test_awkward_exact_amount_blocks_approval_and_offers_two_clear_choices(self):
         draft = draft_for(self.ODD, 100001)
         self.assertTrue(draft['profit_plan']['requires_confirmation'])
@@ -90,6 +97,27 @@ class ProfitProposalsTest(unittest.TestCase):
         self.assertTrue(result.data.startswith(b'PK'))
         self.assertTrue(result.pdf_data.startswith(b'%PDF'))
 
+    def test_manual_discount_cannot_bypass_awkward_price_confirmation(self):
+        rows, sources, metadata = quote_fixture(self.ODD)
+        metadata['値引き理由'] = '利用者が入力した提案'
+        target = [Target('全体', '全体', '上乗せ額', 100001)]
+        pending = build_draft(rows, copy.deepcopy(rows), sources, target, -1, metadata)
+        self.assertIn('利益配分案', [issue['種類'] for issue in pending['unresolved']])
+        self.assertFalse(preview_allowed(pending))
+        self.assertEqual(pending['payload']['値引き'], 0)
+        self.assertEqual(pending['payload']['合計']['粗利益'], 100001)
+        proposal = next(o for o in pending['profit_plan']['options'] if o['id']=='rounding_discount')
+        self.assertEqual(proposal['final_profit'], 100001)
+        self.assertEqual(proposal['markup']+proposal['discount'],100001)
+        choice = {'signature':pending['profit_plan']['signature'],'id':'rounding_discount'}
+        chosen = build_draft(rows, copy.deepcopy(rows), sources, target, -1, metadata,pricing_choice=choice)
+        self.assertEqual(chosen['unresolved'], [])
+        self.assertEqual(chosen['payload']['値引き'],-1)
+        self.assertEqual(chosen['payload']['合計']['粗利益'],100001)
+        changed = build_draft(rows, copy.deepcopy(rows), sources, target, -2, metadata,pricing_choice=choice)
+        self.assertIn('利益配分案',[i['種類'] for i in changed['unresolved']])
+        self.assertEqual(changed['payload']['値引き'],0)
+
     def test_old_choice_is_invalid_after_markup_or_detail_changes(self):
         pending = draft_for(self.ODD, 100001)
         old_choice = {'signature': pending['profit_plan']['signature'], 'id': 'rounding_discount'}
@@ -130,6 +158,14 @@ class ProfitProposalsTest(unittest.TestCase):
                                {**source[1], '見積単価': 90000, '見積金額': 90000}])
         warnings = _natural_price_warnings(source, priced, [])
         self.assertTrue(any('利益が偏って' in warning for warning in warnings))
+
+    def test_small_cost_item_with_nineteen_percent_of_profit_is_flagged(self):
+        source = [{'品名': '小工事', '数量': 1, '単位': '式', '原価単価': 1000, '原価金額': 1000},
+                  {'品名': '主工事', '数量': 1, '単位': '式', '原価単価': 99000, '原価金額': 99000}]
+        priced = pd.DataFrame([{**source[0], '見積単価': 20000, '見積金額': 20000},
+                               {**source[1], '見積単価': 180000, '見積金額': 180000}])
+        self.assertTrue(any('利益が偏って' in warning
+                            for warning in _natural_price_warnings(source, priced, [])))
 
 
 if __name__ == '__main__':
