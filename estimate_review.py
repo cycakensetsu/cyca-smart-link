@@ -314,6 +314,8 @@ def _natural_price_warnings(source_rows, priced_rows, targets):
             if not neat(rate) and not neat(rate - base_rate):
                 warnings.append(f'{name}の見積単価に端数があります（{rate:,.2f}円）。')
         positive.append((name, cost, max(0, markup)))
+    from round_pricing import price_flags
+    warnings.extend(message for _, message in price_flags(source_rows, priced_rows.to_dict('records')))
     total_cost = sum(cost for _, cost, _ in positive)
     total_markup = sum(markup for _, _, markup in positive)
     if len(positive) >= 2 and total_cost > 0 and total_markup > 0:
@@ -607,11 +609,11 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
                 issue("明細検算", [row['行ID']], check["内容"], "停止")
         if not any(i["レベル"] == "停止" for i in issues):
             from pricing_options import build_options, selected
-            options = build_options(accepted, targets, metadata.get('顧客税率', .10), requested_discount)
+            options = build_options(accepted, targets, metadata.get('顧客税率', .10), requested_discount, metadata.get('個別単価案'))
             warnings = (_natural_price_warnings(accepted,pd.DataFrame(options['no_discount']['rows']),targets)
                         if options['no_discount'] else [])
             options['warnings'] = warnings
-            options['requires_confirmation'] = bool(warnings) or options['no_discount'] is None
+            options['requires_confirmation'] = bool(warnings) or options['no_discount'] is None or metadata.get('個別単価案') is not None
             entries = []
             for key, variant in [('no_discount',options['no_discount']),('rounding_discount',options['proposal'])]:
                 if variant:
@@ -632,7 +634,7 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
             if options['requires_confirmation'] and pricing_choice is None:
                 issue('利益配分案', [], '端数単価または利益の偏りを確認し、値引きなし・値引き調整のどちらかを選んでください。', '停止')
             elif pricing_choice is not None:
-                selected_plan=next(e for e in entries if e['id']==('rounding_discount' if plan['totals']['顧客値引き'] else 'no_discount'))
+                selected_plan=next(e for e in entries if e['id']==('rounding_discount' if pricing_choice.get('mode') == 'discount_adjustment' else 'no_discount'))
             allocated = pd.DataFrame(plan['rows'])
             discount = plan['totals']['顧客値引き']
             if discount and not str(metadata.get('値引き理由', '')).strip():
@@ -678,7 +680,7 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
     payload = {"原本明細": original_rows, "確認明細": edited_rows, "計算明細": priced, "原本": sources,
                "目標": [t.__dict__ for t in targets], "値引き": discount, "表題": metadata,
                "利益配分案": selected_plan, "指摘": issues, "確認記録": resolutions, "合計": totals, "schema": 1}
-    if pricing_choice and discount:
+    if pricing_choice:
         payload['金額調整の選択'] = dict(pricing_choice)
     if options and discount and net-cost != options['desired_profit']:
         raise ValueError('値引き後の利益が指定額と一致しません。')

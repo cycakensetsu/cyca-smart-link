@@ -26,13 +26,13 @@ def reconcile_choice(state, options):
     return False
 
 
-def reconcile_inputs(state, rows, targets, tax_rate, requested_discount):
+def reconcile_inputs(state, rows, targets, tax_rate, requested_discount, rounding=None):
     """Clear even invalid edits before validation, so undo cannot revive consent."""
     choice = state.get(KEY)
     if not choice:
         return False
     try:
-        current = input_context([r for r in rows if r.get('採用',True)], targets, tax_rate, requested_discount)
+        current = input_context([r for r in rows if r.get('採用',True)], targets, tax_rate, requested_discount, rounding)
         matches = choice.get('context_id') == current
     except (ValueError, TypeError, KeyError):
         matches = False
@@ -70,6 +70,10 @@ def render_options(st, options):
         for column in comparison:
             comparison[column] = comparison[column].map(lambda value: f'{value:,}円')
         st.dataframe(comparison.rename_axis('比較項目').reset_index(), hide_index=True, width='stretch')
+    if proposal:
+        st.caption('単価を整える案では通常の配分上限を超える場合があります。各単価と値引き額を確認して選んでください。')
+        import pandas as pd
+        st.dataframe(pd.DataFrame(proposal['rows'])[[c for c in ('品名','数量','単位','原価単価','見積単価','見積金額') if c in proposal['rows'][0]]], hide_index=True, width='stretch')
     if options['proposal_error']:
         st.caption(options['proposal_error'])
     st.caption('指定利益と、見積総額をキリのよい金額にすることは別です。原価・指定利益は変更していません。')

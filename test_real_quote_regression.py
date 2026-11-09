@@ -68,8 +68,11 @@ class RealQuoteRegressionTest(unittest.TestCase):
 
     def test_original_quote_has_balanced_natural_prices_and_exports(self):
         draft = self.draft(self.markup)
+        if draft['profit_plan']['requires_confirmation']:
+            self.assertFalse(preview_allowed(draft))
+            from pricing_options import choice_for
+            draft = self.draft(self.markup, choice=choice_for(draft['pricing_options'], False))
         self.assertEqual(draft['unresolved'], [])
-        self.assertFalse(draft['profit_plan']['requires_confirmation'])
         self.assertEqual(draft['payload']['合計']['仕入原価'], self.cost)
         self.assertEqual(draft['payload']['合計']['税抜売価'], self.cost + self.markup)
         self.assertEqual(draft['payload']['合計']['税込売価'],
@@ -132,3 +135,39 @@ class RealQuoteRegressionTest(unittest.TestCase):
         self.assertFalse(any('読み間違い' in row['品名'] for row in records))
         noted = next(row for row in records if row['品名'].startswith(self.expected['note_item']))
         self.assertEqual(noted['備考'], self.expected['note_text'])
+
+
+    def test_explicit_round_prices_preserve_net_profit_and_export(self):
+        from pricing_options import choice_for
+        setting = self.expected.get('rounding_case')
+        if not setting:
+            self.skipTest('optional private rounding case not set')
+        rates = {}
+        for fragment, rate in setting['rates'].items():
+            matches = [r for r in self.rows if fragment in r['品名']]
+            self.assertEqual(len(matches), 1)
+            rates[matches[0]['行ID']] = rate
+        config = {'step':50,'limit':100000,'rates':rates,'welfare_reason':'利用者指定額を原本と比較した検証用提案'}
+        meta = dict(self.meta, 個別単価案=config)
+        targets = [Target('全体','全体','上乗せ額',self.markup)]
+        pending = build_draft(self.rows,copy.deepcopy(self.rows),[self.source],targets,0,meta)
+        self.assertFalse(preview_allowed(pending))
+        choice = choice_for(pending['pricing_options'],True)
+        draft = build_draft(self.rows,copy.deepcopy(self.rows),[self.source],targets,0,meta,pricing_choice=choice)
+        self.assertEqual(draft['unresolved'],[])
+        self.assertEqual(draft['payload']['合計']['粗利益'],self.markup)
+        self.assertEqual(draft['payload']['値引き'],setting['discount'])
+        for original, priced in zip(self.rows,draft['payload']['計算明細']):
+            for key in ('数量','原価単価','原価金額'):
+                self.assertEqual(original[key],priced[key])
+            if original['行ID'] in rates:
+                self.assertEqual(priced['見積単価'],rates[original['行ID']])
+        result=build_approved_estimate(draft,approve(draft,'原本検証'))
+        self.assertTrue(result.ok,result.errors)
+        self.assertTrue(result.data.startswith(b'PK'))
+        self.assertTrue(result.pdf_data.startswith(b'%PDF'))
+        output=os.environ.get('CYCA_REAL_QUOTE_OUTPUT_DIR')
+        if output:
+            os.makedirs(output,exist_ok=True)
+            with open(os.path.join(output,'round-pricing-validation.pdf'),'wb') as f:f.write(result.pdf_data)
+            with open(os.path.join(output,'round-pricing-validation.xlsx'),'wb') as f:f.write(result.data)
