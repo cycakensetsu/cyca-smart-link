@@ -8,10 +8,10 @@ from decimal import Decimal, ROUND_CEILING
 from markup_rules import fixed_price, line_amount, measured_add_cap
 
 
-def input_context(rows, targets, tax_rate, requested_discount):
+def input_context(rows, targets, tax_rate, requested_discount, rounding=None):
     from estimate_review import clean, digest, integer
     facts = [{k:clean(v) for k,v in r.items() if k != '__source_rounding_approved'} for r in rows]
-    return digest([facts,[t.__dict__ for t in targets],tax_rate,integer(requested_discount)])
+    return digest([facts,[t.__dict__ for t in targets],tax_rate,integer(requested_discount)] + ([] if rounding is None else [rounding]))
 
 
 def totals(rows, discount, tax_rate):
@@ -55,7 +55,7 @@ def _extra_targets(groups, extra):
             for (t,_,_,profit),share in zip(groups,shares)]
 
 
-def build_options(rows, targets=(), tax_rate=.10, requested_discount=0):
+def build_options(rows, targets=(), tax_rate=.10, requested_discount=0, rounding=None):
     from estimate_review import allocate, clean, digest, integer
     rows = [{k:clean(v) for k,v in r.items()} for r in rows]
     requested_discount = integer(requested_discount)
@@ -64,11 +64,15 @@ def build_options(rows, targets=(), tax_rate=.10, requested_discount=0):
     if tax_rate not in (0, .08, .10):
         raise ValueError('顧客税率を確認してください。')
     groups = _groups(rows, targets)
-    context = input_context(rows, targets, tax_rate, requested_discount)
+    context = input_context(rows, targets, tax_rate, requested_discount, rounding)
     desired_profit = sum(g[3] for g in groups)
     # Keep an alternative a small rounding adjustment, never a disguised large
     # markup/discount. Larger business decisions need a different explicit goal.
     limit = min(50000, max(1000, desired_profit//10))
+    if rounding is not None:
+        from round_pricing import validate_settings
+        validate_settings(rounding, rows)
+        limit = rounding['limit']
     try:
         base = allocate(rows, targets).to_dict('records')
         base_error = ''
@@ -78,7 +82,12 @@ def build_options(rows, targets=(), tax_rate=.10, requested_discount=0):
     proposal_error = ''
     if desired_profit > 0:
         try:
-            if requested_discount:
+            if rounding is not None:
+                from round_pricing import custom_candidate
+                if requested_discount:
+                    raise ValueError('個別単価案では手入力の値引きを0円にしてください。指定利益との差額を案で表示します。')
+                candidate = custom_candidate(rows, targets, base, rounding)
+            elif requested_discount:
                 if -requested_discount > limit:
                     raise ValueError(f'値引き案が端数調整の目安（{limit:,}円以内）を超えます。指定利益を変えず、調整額を見直してください。')
                 candidate = allocate(rows, _extra_targets(groups, -requested_discount)).to_dict('records')
@@ -92,12 +101,12 @@ def build_options(rows, targets=(), tax_rate=.10, requested_discount=0):
                                 or r['上乗せ額'] <= 0 or r.get('__source_rounding_approved')):
                             continue
                         rate = Decimal(str(r['見積単価']))
-                        tick = Decimal(10 if rate < 1000 else 100 if rate < 50000 else 1000)
+                        tick = Decimal(50 if rate < 1000 else 100 if rate < 50000 else 1000)
                         rounded = float((rate/tick).to_integral_value(rounding=ROUND_CEILING)*tick)
                         amount = line_amount(r['数量'], rounded)
                         cap = measured_add_cap(float(r['原価金額']), profit/positive if positive else 0,
                                                target.allow_low_price_cap_override)
-                        if cap is not None and amount-int(r['原価金額']) > cap:
+                        if cap is not None and amount-int(r['原価金額']) > cap + line_amount(r['数量'], tick):
                             continue
                         r.update(見積単価=rounded, 見積金額=amount, 上乗せ額=amount-int(r['原価金額']))
             else:
@@ -116,9 +125,11 @@ def build_options(rows, targets=(), tax_rate=.10, requested_discount=0):
                     raise ValueError('原価・数量・固定単価を守れる端数調整案がありません。条件の確認が必要です。')
             desired_net = sum(int(r['原価金額']) for r in rows)+desired_profit
             discount = desired_net-sum(int(r['見積金額']) for r in candidate)
-            if -limit <= discount < 0:
+            if -limit <= discount < 0 or (rounding is not None and discount == 0):
                 proposal = {'rows':candidate, 'totals':totals(candidate, discount, tax_rate)}
                 proposal['id'] = digest([context, proposal])
+            elif rounding is not None and discount >= 0:
+                proposal_error = ('丸い単価の案は指定利益まであと' + f'{discount:,}円不足しています。単価を上げてください。') if discount else '調整値引きが0円です。この案を選ぶには単価を再調整してください。'
             elif discount < -limit:
                 proposal_error = f'単価を丸めると調整額が{-discount:,}円となり、端数調整の目安{limit:,}円を超えるため提案していません。'
         except ValueError as exc:

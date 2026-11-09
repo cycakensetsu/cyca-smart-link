@@ -21,12 +21,14 @@ _NAMES = {'review_customer', 'review_project', 'review_date', 'review_discount',
           'review_discount_reason', 'review_customer_tax', 'review_scope',
           'review_target_mode', 'review_page_breaks', 'review_instruction',
           '_review_assistant_rows', '_review_chat', '_review_requested_pages',
-          '_review_conversation_record', 'review_pricing_choice'}
+          '_review_conversation_record', 'review_pricing_choice', 'review_round_enabled',
+          'review_round_step', 'review_round_limit', 'review_round_low_floor', 'review_round_welfare_reason'}
 _KEYS = re.compile(rf'(?:review_(?:target|basis|tax|net|gross|tax_amount|tax_exists|'
                    rf'missing_gross|resolve_totals|amount_notes|reference_only|source_page)_{_HEX}'
                    rf'|review_resolution_group_{_HEX}(?:_both)?'
                    rf'|review_row_evidence_{_HEX}'
                    rf'|review_cap_override_{_HEX}'
+                   rf'|review_round_(?:override|rate)_{_HEX}'
                    rf'|_review_reference_(?:previous|saved)_{_HEX})')
 
 
@@ -74,22 +76,27 @@ def validate_draft(value, owner=None):
             for m in history)):
         raise ValueError('保存した相談履歴を確認できません。')
     for name, options in [('review_scope', ('全体', '業者別', '工種別')),
-                          ('review_target_mode', ('上乗せ額', '掛け率', '粗利益率'))]:
+                          ('review_target_mode', ('上乗せ額', '掛け率', '粗利益率')),
+                          ('review_round_step', (10, 50, 100)),
+                          ('review_round_low_floor', (0, 100, 150, 200))]:
         if name in state and state[name] not in options:
             raise ValueError('保存した金額設定を確認できません。')
+    if 'review_round_limit' in state and (type(state['review_round_limit']) is not int
+            or not 0 <= state['review_round_limit'] <= 1000000):
+        raise ValueError('保存した値引き上限を確認できません。')
     for name, item in state.items():
         if name == 'review_pricing_choice':
             from pricing_options import valid_choice
             if not valid_choice(item):
                 raise ValueError('保存した値引き案の選択を確認できません。')
         text = name in {'review_customer', 'review_project', 'review_date',
-                        'review_discount_reason', 'review_instruction', '_review_conversation_record'}
+                        'review_discount_reason', 'review_instruction', '_review_conversation_record', 'review_round_welfare_reason'}
         text = text or bool(re.fullmatch(rf'review_(?:basis|tax|amount_notes)_{_HEX}', name))
         text = text or bool(re.fullmatch(rf'review_resolution_group_{_HEX}', name))
         text = text or bool(re.fullmatch(rf'review_row_evidence_{_HEX}', name))
-        numeric = name in {'review_discount', 'review_customer_tax'} or bool(
+        numeric = name in {'review_discount', 'review_customer_tax', 'review_round_step', 'review_round_limit', 'review_round_low_floor'} or bool(re.fullmatch(rf'review_round_rate_{_HEX}', name)) or bool(
             re.fullmatch(rf'review_(?:target|net|gross|tax_amount|missing_gross|source_page)_{_HEX}', name))
-        boolean = bool(re.fullmatch(rf'review_(?:tax_exists|resolve_totals|reference_only)_{_HEX}', name)
+        boolean = name == 'review_round_enabled' or bool(re.fullmatch(rf'review_round_override_{_HEX}', name)) or bool(re.fullmatch(rf'review_(?:tax_exists|resolve_totals|reference_only)_{_HEX}', name)
                        or re.fullmatch(rf'review_cap_override_{_HEX}', name)
                        or re.fullmatch(rf'review_resolution_group_{_HEX}_both', name)
                        or re.fullmatch(rf'_review_reference_previous_{_HEX}', name))

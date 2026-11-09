@@ -11,6 +11,8 @@ def widget_fingerprint(state):
                 'review_net_', 'review_gross_', 'review_source_ok_')
     names = {'review_scope', 'review_target_mode', 'review_discount', 'review_discount_reason',
              'review_customer', 'review_project', 'review_date', 'review_customer_tax', 'review_page_breaks', 'review_pricing_choice'}
+    if state.get('review_round_enabled'):
+        prefixes = ('review_round_',) + prefixes
     return digest({key: state[key] for key in state if key in names or key.startswith(prefixes)})
 
 

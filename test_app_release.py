@@ -9,6 +9,12 @@ import sys
 
 
 class ReleaseRefreshTest(unittest.TestCase):
+    def test_round_pricing_is_refreshed_before_its_consumers(self):
+        names = app_release._MODULES
+        self.assertLess(names.index('markup_rules'), names.index('round_pricing'))
+        self.assertLess(names.index('round_pricing'), names.index('pricing_options'))
+        self.assertLess(names.index('round_pricing'), names.index('review_ui'))
+
     def test_real_importlib_finalization_eviction_recovers_without_losing_release(self):
         with tempfile.TemporaryDirectory() as temp:
             marker=Path(temp)/'evicted-once'

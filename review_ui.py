@@ -309,13 +309,17 @@ def _render_review_plan(st,api_key,original,rows,sources):
     with st.expander('話して・文字で相談する（相談して決めたいとき）',
                      expanded=bool(st.session_state.get('_review_proposal') or st.session_state.get('_review_assistant_notice'))):
         render_conversation(st, api_key, working_context(rows, sources, targets, discount, metadata), show_heading=False)
-    decision_context = digest([rows, sources, [target.__dict__ for target in targets], discount])
+    from round_pricing import render_settings
+    rounding = render_settings(st, rows, targets, digest)
+    if rounding is not None:
+        metadata['個別単価案'] = rounding
+    decision_context = digest([rows, sources, [target.__dict__ for target in targets], discount, rounding])
     prepare_profit_choices(st.session_state, decision_context)
     resolutions = {}
     pricing_choice = None
     try:
         from pricing_options_ui import render_options, reconcile_choice, reconcile_inputs, KEY as pricing_key
-        if reconcile_inputs(st.session_state, rows, targets, metadata['顧客税率'], discount):
+        if reconcile_inputs(st.session_state, rows, targets, metadata['顧客税率'], discount, rounding):
             st.info('金額条件が変わったため、値引き案の採用を解除しました。')
         draft = build_draft(original, rows, sources, targets, discount, metadata,
                             pricing_choice=st.session_state.get(pricing_key))
