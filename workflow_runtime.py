@@ -1,5 +1,6 @@
 """Explicit private configuration. No credentials, accounts, or OAuth flow created here."""
 from pathlib import Path
+from collections.abc import Mapping
 from document_delivery import DeliveryStore, GmailTransport
 from document_workflow_service import DocumentWorkflowService
 
@@ -37,17 +38,36 @@ def company_scope(config, actor):
     return actor  # Explicit single-user compatibility; not a shared workspace.
 
 
-def configured_service(config, owner):
-    company = company_scope(config, owner)
-    permissions = None
-    if config.get('company_id'):
-        permissions = config.get('member_permissions', {}).get(owner)
-        if not isinstance(permissions, list) or 'read' not in permissions:
-            raise ValueError('社員の操作権限が未設定です。')
-    store = configured_store(config)
+def actor_gmail_config(config, actor):
+    """Resolve only from trusted server configuration, never request content.
+    Multi-user configurations never fall back to legacy global credentials.
+    """
+    company_scope(config, actor)
+    accounts = config.get('gmail_accounts')
+    multi = len(config.get('company_members', [])) > 1 or accounts is not None
+    if multi:
+        if accounts is None or (isinstance(accounts, Mapping) and actor not in accounts):
+            return dict(sender='', google_oauth_credentials_file=None, gmail_enabled=False)
+        if not isinstance(accounts, Mapping) or not isinstance(accounts.get(actor), Mapping):
+            raise ValueError('この利用者のGmail設定が不正です。')
+        account = accounts[actor]
+    else:
+        account = config
+    from document_delivery import address
+    sender = account.get('sender')
+    if sender:
+        address(sender)
+    elif account.get('gmail_enabled') or account.get('google_oauth_credentials_file'):
+        raise ValueError('Gmail送信元が未設定です。')
+    return dict(sender=sender or '',
+                google_oauth_credentials_file=account.get('google_oauth_credentials_file'),
+                gmail_enabled=bool(account.get('gmail_enabled', False)))
+
+
+def configured_transport(account):
     transport = None
-    credentials_path = config.get('google_oauth_credentials_file')
-    if credentials_path and config.get('gmail_enabled', False):
+    credentials_path = account.get('google_oauth_credentials_file')
+    if credentials_path and account.get('gmail_enabled', False):
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
         path = Path(credentials_path).expanduser()
@@ -56,7 +76,20 @@ def configured_service(config, owner):
         credentials = Credentials.from_authorized_user_file(str(path))
         service = build('gmail','v1',credentials=credentials,cache_discovery=False)
         transport = GmailTransport(service)
-    return DocumentWorkflowService(store,owner,transport,company_id=company,permissions=permissions)
+    return transport
+
+
+def configured_service(config, owner):
+    company = company_scope(config, owner)
+    permissions = None
+    if config.get('company_id'):
+        permissions = config.get('member_permissions', {}).get(owner)
+        if not isinstance(permissions, list) or 'read' not in permissions:
+            raise ValueError('社員の操作権限が未設定です。')
+    account = actor_gmail_config(config, owner)
+    store = configured_store(config)
+    return DocumentWorkflowService(store,owner,configured_transport(account),company_id=company,
+                                   permissions=permissions,sender=account['sender'])
 
 
 def configured_api(config, *, vault_factory):
@@ -73,11 +106,13 @@ def configured_api(config, *, vault_factory):
     token_owners=dict(config.get('api_token_owners',{}))
     if not token_owners or any(actor not in members for actor in token_owners.values()):
         raise ValueError('API利用者の認可設定を確認してください。')
-    runtime=configured_service(config,members[0])
-    InvoiceRegistry(runtime.store)
-    estimates,documents=make_resolvers(vault_factory,runtime.store)
-    return create_app(store=runtime.store,token_owners=token_owners,
+    store=configured_store(config)
+    accounts={actor:actor_gmail_config(config,actor) for actor in members}
+    mailboxes={actor:{"sender":account["sender"],"transport":configured_transport(account)} for actor,account in accounts.items()}
+    InvoiceRegistry(store)
+    estimates,documents=make_resolvers(vault_factory,store)
+    return create_app(store=store,token_owners=token_owners,
                       actor_companies={actor:company for actor in members},
                       actor_permissions=dict(config.get('member_permissions',{})),resolve_estimate=estimates,
                       resolve_document=documents,issuer=dict(config.get('issuer',{})),
-                      sender=config.get('sender'),transport=runtime.transport)
+                      actor_mailboxes=mailboxes)

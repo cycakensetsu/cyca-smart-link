@@ -16,6 +16,7 @@ def render_delivery(st, config, *, owner, document_id, filename, pdf, customer):
     except (ValueError, ImportError, OSError):
         st.warning('永続保存先またはGoogle連携が未設定です。PDFの確認・保存はできますが、送信はできません。')
         return
+    st.caption("送信元：" + workflow.sender)
     history=workflow.store.history(workflow.scope,document_id)
     if history:
         with st.expander('この書類の送信履歴（再接続後も保持）'):
@@ -54,7 +55,7 @@ def render_delivery(st, config, *, owner, document_id, filename, pdf, customer):
         try:
             address(recipient)
             import uuid
-            record = workflow.prepare_email(uuid.uuid4().hex,sender=config.get('sender',''),recipient=recipient,
+            record = workflow.prepare_email(uuid.uuid4().hex,sender=workflow.sender,recipient=recipient,
                 subject=subject,body=body,filename=filename,pdf=pdf,document_id=document_id)
             st.session_state[prefix+'_record']=record['id']
             st.session_state[prefix+'_inputs']=inputs

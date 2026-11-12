@@ -178,6 +178,9 @@ class GmailTransport:
         if not re.fullmatch('[a-f0-9]{32}', operation_id):
             raise ValueError('操作IDが不正です。')
         address(sender)
+        profile = self.service.users().getProfile(userId='me').execute()
+        if profile.get('emailAddress','').casefold() != sender.casefold():
+            raise ValueError('Gmail照合元が一致しません。')
         message_id = f'cyca-{operation_id}@{sender.split("@")[1]}'
         data = self.service.users().messages().list(userId='me', q=f'in:sent rfc822msgid:{message_id}', maxResults=2).execute()
         return data.get('messages', [])

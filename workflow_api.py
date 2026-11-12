@@ -8,7 +8,7 @@ from invoice_documents import build_invoice, invoice_fingerprint, render_invoice
 from document_workflow_service import DocumentWorkflowService
 
 
-def create_app(*, store, token_owners, resolve_estimate, issuer, resolve_document=None, sender=None, transport=None, actor_companies=None, actor_permissions=None):
+def create_app(*, store, token_owners, resolve_estimate, issuer, resolve_document=None, sender=None, transport=None, actor_companies=None, actor_permissions=None, actor_mailboxes=None):
     from fastapi import FastAPI, Depends, HTTPException
     from fastapi.security import HTTPBearer
     from fastapi.responses import Response
@@ -31,9 +31,22 @@ def create_app(*, store, token_owners, resolve_estimate, issuer, resolve_documen
             raise HTTPException(403,'会社の利用権限がありません。')
         return actor_companies[identity]
 
+    def mailbox(identity):
+        if actor_mailboxes is not None:
+            result=actor_mailboxes.get(identity)
+            if result is None:
+                return {'sender':'','transport':None}
+            if not isinstance(result,dict):
+                raise HTTPException(503,'この利用者のGmail設定が不正です。')
+            return result
+        if len(set(token_owners.values())) > 1:
+            return {'sender':'','transport':None}
+        return {'sender':sender,'transport':transport}
+
     def workflow(identity):
         permissions=None if actor_permissions is None else actor_permissions.get(identity,[])
-        return DocumentWorkflowService(store,identity,transport,company_id=scope(identity),permissions=permissions)
+        account=mailbox(identity)
+        return DocumentWorkflowService(store,identity,account.get('transport'),company_id=scope(identity),permissions=permissions,sender=account.get('sender') or '')
 
     def require(identity, action):
         try: workflow(identity).require(action)
@@ -64,11 +77,12 @@ def create_app(*, store, token_owners, resolve_estimate, issuer, resolve_documen
 
     @app.post('/deliveries/prepare')
     def prepare(request:dict,identity=Depends(owner)):
-        if resolve_document is None or not sender:
+        account=mailbox(identity)
+        if resolve_document is None or not account.get('sender'):
             raise HTTPException(503,'確定PDF保管先または送信元が未設定です。')
         try:
             document=resolve_document(scope(identity),request['document_id'])
-            return workflow(identity).prepare_email(request['request_key'],sender=sender,
+            return workflow(identity).prepare_email(request['request_key'],sender=account['sender'],
                 recipient=request['recipient'],subject=request['subject'],body=request['body'],
                 filename=document['filename'],pdf=document['pdf'],document_id=request['document_id'],
                 thread_id=request.get('thread_id'),reply_message_id=request.get('reply_message_id'))

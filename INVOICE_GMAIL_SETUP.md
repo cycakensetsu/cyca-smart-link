@@ -8,7 +8,7 @@
 - `document_workflow_service.py`: UIと将来の認証済みボット接続で共用する内部呼出API。HTTP APIアダプタは追加済み。公開・dotコネクタ登録は未実施。
 
 ## 現段階の制約（運用開始不可）
-実Gmail認可、会社共通の永続保存先、社員権限、認証済みdot用アダプタ、実機E2Eは未完了。正式保存・送信UIは配線済みですが、現環境では設定未投入のため有効化していません。この追加だけで自然文から本番送信できるとは扱わない。
+会社Gmailのローカル認可・読取接続確認は完了。会社共通の本番永続保存先、社員権限、認証済みdot用アダプタ、実機送信E2Eは未完了。正式保存・送信UIは配線済みですが、現環境では設定未投入のため有効化していません。この追加だけで自然文から本番送信できるとは扱わない。
 今回の旭土地建物向け実PDFを参照し、A4横の左右分割構成に適合。社印等の完全再現ではなく、所有者による最終見た目の確認が必要。
 
 ## 次の接続作業
@@ -53,13 +53,13 @@ Streamlit Secretsに `[invoice_workflow] enabled = true`、`[invoice_workflow.is
 
 短いDB transactionごとにadvisory transaction lockを取得し、複数サーバー・社員でのprepare/finalizeを直列化。DB一意indexでも会社＋宛先＋文書ID/PDFハッシュの重複を防ぐ。メールAPI呼出中はDBロックを持たない。
 
-Macに実Postgresサーバーがないため、現時点はmock driver/SQL構造を用いた7テストまで。Supabaseへの実接続・移行・権限・障害復旧・並行送信テストは未実施。これらを完了するまで本番送信を有効にしない。
+当初はmock driver/SQL構造のみを検証。その後の実Postgres隔離試験は下記参照。Supabaseへの実接続・移行・権限・障害復旧・並行送信テストは未実施。これらを完了するまで本番送信を有効にしない。
 
 確認済み公開元は `cycakensetsu/cyca-smart-link` の `main` / `extract_data.py`、Python3.13。2026-11-12確認時mainは108bf31。既存SecretsにはSupabase共通保存設定あり、新しいinvoice_workflow設定はなし。秘密の値は記録していない。
 
 ## 社員権限と最終検証
 共有運用は `company_id` / `company_members` に加え `member_permissions` をサーバーで設定。権限は `read`, `prepare`, `approve`, `send`。操作前に権限検査し、readなしで実行後だけエラーになる動作を防ぐ。取消にはapprove+readが必要。実際の所属・権限値は未設定。
-2026-11-12 最終関連47テスト成功（SQL/driverテスト8件を含む）。SQLite/偽Gmail/HTTP TestClient/Streamlit AppTest、架空請求PDFの視覚確認。実Postgres、実Gmail、実社員/本番E2Eは未検証。全体試験は521件中4失敗3エラー7skipで、同じ既存失敗は元ブランチで再現。追加の最終差分は関連テストで再検証。
+2026-11-12 最終関連47テスト成功（SQL/driverテスト8件を含む）。SQLite/偽Gmail/HTTP TestClient/Streamlit AppTest、架空請求PDFの視覚確認。この時点では実環境未検証。その後の実Postgres/実Gmail認可確認は下記参照。全体試験は521件中4失敗3エラー7skipで、同じ既存失敗は元ブランチで再現。追加の最終差分は関連テストで再検証。
 
 ## 2026-11-12 実PostgreSQL隔離試験
 所有者の承諾を得てHomebrew公式PostgreSQL17.11をMacへ導入。自動起動サービスは登録せず、既存本番とは別の/tmp専用clusterを使い、TCP待受なし・所有者専用Unix socketのみで実施。
@@ -68,6 +68,31 @@ Macに実Postgresサーバーがないため、現時点はmock driver/SQL構造
 本番Supabaseへの接続/移行、本番Gmail送信は未実施。実試験はローカルUnix socket限定であり、本番TLS接続・本番権限・Google認可の検証を代替しない。
 47件の既存関連回帰テストも再実行し、全件成功（skipなし）。
 
-## Gmail設定の現状
+## Gmail設定の初期調査（認可前の記録）
 会社アカウントのGoogle Cloud認証情報画面へアクセス可能。確認時に選択可能な既存プロジェクトは見当たらず、接続用project/OAuth clientの準備が必要。無料トライアルや課金は申し込んでいない。
 現在のGmail transportは送信にgmail.send、送信結果の照合検索にgmail.readonlyを要する。readonlyはメール閲覧権限を含むため、接続先アプリと会社アカウント、必要範囲を所有者に明示して認可を得てから設定する。OAuth秘密/refresh tokenはチャット・Git・顧客添付へ出さない。
+
+## 2026-11-12 Gmail本人認可・読取確認（送信なし）
+所有者の個別承諾を受け、会社Googleアカウントに専用Cloud project「CYCA Smart Link Gmail」を作成。請求先や有料トライアルは追加していない。Google APIユーザーデータポリシーへの同意、OAuthテスト構成、ローカル認可用Desktop client、Gmail API有効化、会社Gmailのみのテストユーザー登録を実施。
+未確認アプリの警告についても所有者了承後に続行。gmail.send と gmail.readonly のみ認可し、公式Gmail API getProfileで会社アカウントと一致することを検証。refresh tokenはGit外の専用保管先に本人限定権限で保存。秘密値や認可コードをドキュメントへ記載しない。
+実メール送信は0件。Streamlit公開版への認可情報投入、DB本番移行、公開API、dot連携の登録は未実施。
+
+### 継続運用と複数Gmailの注意
+- 現在External/Testing。Gmail scopeを含むrefresh tokenは7日で失効。自動再認可でこの制限を回避せず、期限切れは再接続が必要と明示する。
+- 各送信元は本人のOAuth認可とアカウント一致検証が必要。他社員へ会社トークンを暗黙共有しない。会社共通の採番/重複防止と、利用者別の送信元/権限を分離する。
+- 個人GmailはGoogleのInternalアプリ対象ではない。Internalは組織所有projectと同一Workspace/Cloud Identity組織内ユーザーが条件。
+- 本人/個人的に知る少人数の利用には審査例外があり得るが、全社・第三者への一般提供へ自動的に拡張しない。Production変更だけで審査済みにはならない。
+- gmail.sendはSensitive、gmail.readonlyはRestricted。一般公開でサーバーがRestrictedデータを扱う場合、例外を除きRestricted scope審査と年次セキュリティ評価が必要。対象ユーザー・実際のデータフローを確定して判断する。
+- 送信だけへscopeを減らす場合は、unknown照合を失わない別設計が必要。無断再送を許可する代替にはしない。
+公式資料（2026-11-12確認）:
+https://support.google.com/cloud/answer/15549945?hl=en
+https://developers.google.com/workspace/gmail/api/auth/scopes
+https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification
+https://developers.google.com/identity/protocols/oauth2/production-readiness/overview
+
+### 利用者別Gmail設定（本番への設定投入は別途）
+複数利用者はサーバー側 `gmail_accounts` にログインactorごとの `sender`, `google_oauth_credentials_file`, `gmail_enabled` を持たせる。リクエスト本文のsender/actorやファイルパスでこの対応を変更しない。各人の認可は本人のGoogle画面で行い、保存後のアカウント一致を検証する。
+共有会社では同じ文書/宛先の重複防止は会社全体で維持し、別の送信元へ変えて送信履歴のガードを逃れない。送信/照合はその利用者に対応したメールボックスだけで実行。会社内の閲覧・帳票作成権限とメール連携の有無は別として管理する。
+本番配置ではローカル認可JSONをリポジトリ/静的配信/共有PDFストレージへコピーしない。専用の秘密管理と実行ユーザーだけが読める一時ファイル等を設計・確認し、保存先が確定して許可されるまで転送しない。
+
+2026-11-13 利用者別Gmail分離を実装・独立レビュー済み。Streamlit Secrets実形式（AttrDict）も回帰試験へ追加。関連55テストすべて成功、diff --check正常。送信元偽装/他社員のsend・reconcile拒否、会社重複防止、Gmail未連携社員の帳票・閲覧維持を検証。実メール送信E2Eと本番配置は別途未完了。
