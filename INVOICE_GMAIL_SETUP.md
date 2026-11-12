@@ -60,3 +60,14 @@ Macに実Postgresサーバーがないため、現時点はmock driver/SQL構造
 ## 社員権限と最終検証
 共有運用は `company_id` / `company_members` に加え `member_permissions` をサーバーで設定。権限は `read`, `prepare`, `approve`, `send`。操作前に権限検査し、readなしで実行後だけエラーになる動作を防ぐ。取消にはapprove+readが必要。実際の所属・権限値は未設定。
 2026-11-12 最終関連47テスト成功（SQL/driverテスト8件を含む）。SQLite/偽Gmail/HTTP TestClient/Streamlit AppTest、架空請求PDFの視覚確認。実Postgres、実Gmail、実社員/本番E2Eは未検証。全体試験は521件中4失敗3エラー7skipで、同じ既存失敗は元ブランチで再現。追加の最終差分は関連テストで再検証。
+
+## 2026-11-12 実PostgreSQL隔離試験
+所有者の承諾を得てHomebrew公式PostgreSQL17.11をMacへ導入。自動起動サービスは登録せず、既存本番とは別の/tmp専用clusterを使い、TCP待受なし・所有者専用Unix socketのみで実施。
+`test_postgres_live.py` の9件すべて成功：8並列prepareが1記録、4並列請求書確定が1PDF、実DBのdoc/hash一意制約、会社スコープ、unknown時の新UUID/取消/再送拒否、非管理者runtimeとreadonly UPDATE拒否、migration/RLS、実MIME生成＋偽Gmail4並列で1送信。
+試験後pg_ctlで停止し、no server running・専用socket消失・brew services postgresql@17=noneを確認。Homebrewが作成した標準の空clusterは起動していない。
+本番Supabaseへの接続/移行、本番Gmail送信は未実施。実試験はローカルUnix socket限定であり、本番TLS接続・本番権限・Google認可の検証を代替しない。
+47件の既存関連回帰テストも再実行し、全件成功（skipなし）。
+
+## Gmail設定の現状
+会社アカウントのGoogle Cloud認証情報画面へアクセス可能。確認時に選択可能な既存プロジェクトは見当たらず、接続用project/OAuth clientの準備が必要。無料トライアルや課金は申し込んでいない。
+現在のGmail transportは送信にgmail.send、送信結果の照合検索にgmail.readonlyを要する。readonlyはメール閲覧権限を含むため、接続先アプリと会社アカウント、必要範囲を所有者に明示して認可を得てから設定する。OAuth秘密/refresh tokenはチャット・Git・顧客添付へ出さない。
