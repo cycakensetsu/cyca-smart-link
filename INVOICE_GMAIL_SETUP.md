@@ -96,3 +96,7 @@ https://developers.google.com/identity/protocols/oauth2/production-readiness/ove
 本番配置ではローカル認可JSONをリポジトリ/静的配信/共有PDFストレージへコピーしない。専用の秘密管理と実行ユーザーだけが読める一時ファイル等を設計・確認し、保存先が確定して許可されるまで転送しない。
 
 2026-11-13 利用者別Gmail分離を実装・独立レビュー済み。Streamlit Secrets実形式（AttrDict）も回帰試験へ追加。関連55テストすべて成功、diff --check正常。送信元偽装/他社員のsend・reconcile拒否、会社重複防止、Gmail未連携社員の帳票・閲覧維持を検証。実メール送信E2Eと本番配置は別途未完了。
+
+## 2026-11-13 本人宛て実送信試験
+所有者が指定した会社Gmail→同じ会社Gmailへテストメール1通を送信。架空の確認用請求PDFを添付し、請求/発注でない旨を明記。送信元/宛先一致、GmailのSENTとINBOXをAPIで照合し、永続ローカル台帳のsent状態も確認。固定の業務キーで二重送信を防止。顧客宛て送信なし。
+これはローカル台帳＋実GmailのE2E確認で、本番Supabase/Streamlit公開版/ボット経由の検証ではない。
