@@ -6,3 +6,7 @@ PyMuPDF
 Pillow
 reportlab
 storage3>=2.33,<3
+# Invoice workflow: optional in UI, available when private settings enable it.
+google-api-python-client>=2,<3
+google-auth>=2,<3
+psycopg[binary]>=3.2,<4

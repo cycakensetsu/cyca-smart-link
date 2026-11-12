@@ -1,8 +1,4 @@
 -r requirements.txt
-# Optional Gmail transport and authenticated bot HTTP adapter
-# Install only for the workflow server; OAuth is still required.
-google-api-python-client>=2,<3
-google-auth>=2,<3
+# Optional authenticated bot HTTP adapter (not started by Streamlit).
 fastapi>=0.115,<1
 uvicorn>=0.30,<1
-psycopg[binary]>=3.2,<4
