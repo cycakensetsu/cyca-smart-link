@@ -57,26 +57,79 @@ def actor_gmail_config(config, actor):
     sender = account.get('sender')
     if sender:
         address(sender)
-    elif account.get('gmail_enabled') or account.get('google_oauth_credentials_file'):
+    elif account.get('gmail_enabled') or account.get('google_oauth_credentials_file') or account.get('authorized_user') is not None:
         raise ValueError('Gmail送信元が未設定です。')
-    return dict(sender=sender or '',
-                google_oauth_credentials_file=account.get('google_oauth_credentials_file'),
-                gmail_enabled=bool(account.get('gmail_enabled', False)))
+    result = dict(sender=sender or '',
+                  google_oauth_credentials_file=account.get('google_oauth_credentials_file'),
+                  gmail_enabled=bool(account.get('gmail_enabled', False)))
+    if 'authorized_user' in account:
+        result['authorized_user'] = account['authorized_user']
+    return result
+
+
+GMAIL_REQUIRED_SCOPES = frozenset({
+    'https://www.googleapis.com/auth/gmail.send',
+    'https://www.googleapis.com/auth/gmail.readonly',
+})
+_AUTH_ERROR = 'Google認可情報を確認できません。非公開の設定と再接続状態を確認してください。'
+
+
+def validate_authorized_user(value):
+    """Validate private server config without reflecting any supplied value.
+    Never accept service accounts, arbitrary token endpoints, or missing scopes.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(_AUTH_ERROR)
+    info = dict(value)
+    if info.get('type', 'authorized_user') != 'authorized_user':
+        raise ValueError(_AUTH_ERROR)
+    for field in ('client_id', 'client_secret', 'refresh_token'):
+        item = info.get(field)
+        if not isinstance(item, str) or not item.strip() or any(c in item for c in '\r\n'):
+            raise ValueError(_AUTH_ERROR)
+    if info.get('token_uri', 'https://oauth2.googleapis.com/token') != 'https://oauth2.googleapis.com/token':
+        raise ValueError(_AUTH_ERROR)
+    if info.get('universe_domain', 'googleapis.com') != 'googleapis.com':
+        raise ValueError(_AUTH_ERROR)
+    scopes = info.get('scopes')
+    if isinstance(scopes, str):
+        scopes = scopes.split()
+    if (not isinstance(scopes, (list, tuple)) or not scopes
+            or any(not isinstance(scope, str) for scope in scopes)
+            or not GMAIL_REQUIRED_SCOPES.issubset(scopes)):
+        raise ValueError(_AUTH_ERROR)
+    info['scopes'] = list(scopes)
+    return info
 
 
 def configured_transport(account):
-    transport = None
     credentials_path = account.get('google_oauth_credentials_file')
-    if credentials_path and account.get('gmail_enabled', False):
+    info_present = account.get('authorized_user') is not None
+    if credentials_path and info_present:
+        raise ValueError('Google認可情報はファイルまたは非公開設定の一方だけを指定してください。')
+    if not account.get('gmail_enabled', False):
+        return None
+    if not credentials_path and not info_present:
+        return None
+    try:
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
-        path = Path(credentials_path).expanduser()
-        if not path.is_absolute() or not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o077:
-            raise ValueError('Google認可情報の非公開保存設定を確認してください。')
-        credentials = Credentials.from_authorized_user_file(str(path))
+        if info_present:
+            info = validate_authorized_user(account['authorized_user'])
+            credentials = Credentials.from_authorized_user_info(info)
+        else:
+            import json
+            path = Path(credentials_path).expanduser()
+            if not path.is_absolute() or not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o077:
+                raise ValueError(_AUTH_ERROR)
+            # Apply the same minimum checks to legacy private JSON files.
+            info = validate_authorized_user(json.loads(path.read_text(encoding='utf-8')))
+            credentials = Credentials.from_authorized_user_info(info)
         service = build('gmail','v1',credentials=credentials,cache_discovery=False)
-        transport = GmailTransport(service)
-    return transport
+        return GmailTransport(service)
+    except Exception:
+        # SDK/parser errors can include credential content. Never surface it.
+        raise ValueError(_AUTH_ERROR) from None
 
 
 def configured_service(config, owner):

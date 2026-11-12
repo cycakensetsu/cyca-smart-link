@@ -100,3 +100,19 @@ https://developers.google.com/identity/protocols/oauth2/production-readiness/ove
 ## 2026-11-13 本人宛て実送信試験
 所有者が指定した会社Gmail→同じ会社Gmailへテストメール1通を送信。架空の確認用請求PDFを添付し、請求/発注でない旨を明記。送信元/宛先一致、GmailのSENTとINBOXをAPIで照合し、永続ローカル台帳のsent状態も確認。固定の業務キーで二重送信を防止。顧客宛て送信なし。
 これはローカル台帳＋実GmailのE2E確認で、本番Supabase/Streamlit公開版/ボット経由の検証ではない。
+
+### Streamlit Secretsでの利用者別認可情報（サーバー設定のみ）
+
+Mac上の認可JSONファイルを参照できない公開サーバーでは、各 `invoice_workflow.gmail_accounts.<actor>` の `authorized_user` に、本人が認可したGoogle OAuth authorized-user情報を非公開設定として格納できます。Streamlit Secretsの `AttrDict` を含むMappingに対応しています。これは認可フローの代替ではなく、取得済み認可情報の読込方法です。本変更は公開サーバーへの転送や設定を実行しません。
+
+- 必須：`client_id`、`client_secret`、`refresh_token`、`scopes`。空の値は拒否します。
+- `type` は省略可能（Google `Credentials.to_json()` の互換性）。指定する場合は `authorized_user` のみ。
+- `scopes` は文字列配列または空白区切り文字列で、既存の認可に `https://www.googleapis.com/auth/gmail.send` と `https://www.googleapis.com/auth/gmail.readonly` の両方が必要です。文字列を書き足して権限を取得したことにしてはいけません。不足時は本人のGoogle再認可が必要です。
+- `token_uri` を指定する場合は `https://oauth2.googleapis.com/token` のみ。`universe_domain` を指定する場合は `googleapis.com` のみ。
+- `google_oauth_credentials_file` と `authorized_user` は**同時指定禁止**。既存の所有者限定JSONファイル方式も維持し、同じ必須項目・scope検証を行います。
+- `sender` と `gmail_enabled` は引き続きactor別。複数社員構成で他actorやグローバル認可情報へのフォールバックはしません。
+- 認可情報はブラウザー、API要求本文、Git、ログ、ダウンロード帳票には含めません。SDK・JSONの例外も固定メッセージへ置換します。
+- 実送信・送信済み照合時にはGoogleアカウントの実メールアドレスとactorの `sender` を再照合します。
+- トークンが更新されてもSecretsへの自動書戻しは行いません。失効・再認可時は管理者が非公開設定を更新します。Google Testingの期限など既存制約も変わりません。
+
+`authorized_user` の追加・移動は認証情報の取扱いです。対象プロジェクト・actor・保存先の許可を確認してから行い、値をチャットへ貼り付ける運用にしないでください。
