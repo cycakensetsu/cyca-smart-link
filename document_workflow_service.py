@@ -52,6 +52,12 @@ class DocumentWorkflowService:
         self.store.cancel_unsent(self.scope,operation_id)
         return self.review(operation_id)
 
+    def check_gmail_connection(self):
+        self.require('read')
+        if self.transport is None or not self.sender:
+            raise ValueError('Gmail接続が未設定です。')
+        return self.transport.check_connection(self.sender)
+
     def send_email(self, operation_id):
         self.require('send')
         self.require('read')
