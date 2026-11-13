@@ -8,6 +8,28 @@ def render_delivery(st, config, *, owner, document_id, filename, pdf, customer):
     prefix = 'delivery_' + hashlib.sha256((document_id+filename).encode()).hexdigest()[:16]
     st.subheader('PDFをGmailで送信')
     st.caption('本文に見積額は記載しません。宛先・本文・添付の内容をご確認ください。')
+    from delivery_instruction import extract_recipient
+    instruction = st.text_area('この書類を誰に送るか、文章で入力',
+                               placeholder='例：この見積書を user@example.com にメールで送って',
+                               key=prefix+'_instruction')
+    st.caption('文章からメールアドレス1件だけを取り出します。この操作では送信しません。')
+    if st.button('文章のメールアドレスを確認して宛先欄へ反映', key=prefix+'_extract'):
+        try:
+            selected = extract_recipient(instruction)
+        except ValueError as exc:
+            st.warning(str(exc))
+        else:
+            # This widget has not been instantiated in this run yet.
+            st.session_state[prefix+'_to'] = selected
+            # Keep committed message widgets through this early rerun.
+            for suffix in ('_subject', '_body'):
+                if prefix+suffix in st.session_state:
+                    st.session_state[prefix+suffix] = st.session_state[prefix+suffix]
+            # Discard only UI selection, never delete persisted delivery history.
+            st.session_state.pop(prefix+'_record', None)
+            st.session_state.pop(prefix+'_inputs', None)
+            st.session_state.pop(prefix+'_restored', None)
+            st.rerun()
     recipient = st.text_input('宛先メールアドレス', key=prefix+'_to')
     subject = st.text_input('件名',value=filename.removesuffix('.pdf'),key=prefix+'_subject')
     body = st.text_area('本文',value=f'{customer}\n\nいつもお世話になっております。\n添付の書類をご確認ください。\nどうぞよろしくお願いいたします。',key=prefix+'_body')
@@ -17,6 +39,14 @@ def render_delivery(st, config, *, owner, document_id, filename, pdf, customer):
         st.warning('永続保存先またはGoogle連携が未設定です。PDFの確認・保存はできますが、送信はできません。')
         return
     st.caption("送信元：" + workflow.sender)
+    if st.button('Gmail接続を確認（送信しません）', key=prefix+'_connection'):
+        try:
+            verified_sender = workflow.check_gmail_connection()
+        except Exception:
+            st.error('Gmail接続を確認できません。認可と送信元の設定を確認してください。送信はしていません。')
+        else:
+            st.success('Gmail接続を確認しました。送信元：' + verified_sender)
+
     history=workflow.store.history(workflow.scope,document_id)
     if history:
         with st.expander('この書類の送信履歴（再接続後も保持）'):

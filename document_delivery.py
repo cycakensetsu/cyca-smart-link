@@ -162,6 +162,18 @@ class GmailTransport:
     def __init__(self, service):
         self.service = service
 
+    def check_connection(self, sender):
+        """Read only the authenticated profile, never list or send messages."""
+        try:
+            address(sender)
+            profile = self.service.users().getProfile(userId='me').execute(num_retries=0)
+            actual = profile.get('emailAddress')
+            if not isinstance(actual,str) or actual.casefold()!=sender.casefold():
+                raise ValueError()
+            return sender
+        except Exception:
+            raise ValueError('Gmail接続を確認できません。認可と送信元の設定を確認してください。') from None
+
     def send(self, payload, pdf, operation_id):
         import base64
         profile = self.service.users().getProfile(userId='me').execute()
