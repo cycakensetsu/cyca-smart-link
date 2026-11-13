@@ -15,6 +15,11 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def delivery_fingerprint(payload):
+    """The canonical fingerprint used by the outbox and Gmail audit header."""
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
 def address(value):
     if not isinstance(value, str) or not re.fullmatch(r'[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+', value):
         raise ValueError('メールアドレスを確認してください。')
@@ -57,7 +62,7 @@ class DeliveryStore:
                        filename=filename, document_id=document_id, thread_id=thread_id,
                        reply_message_id=reply_message_id, pdf_sha256=hashlib.sha256(pdf).hexdigest())
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
+        fingerprint = delivery_fingerprint(payload)
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM deliveries WHERE owner=? AND request_key=?',
@@ -142,7 +147,9 @@ class DeliveryStore:
         row = self.get(owner,key)
         if row['state'] not in ('sending','unknown'):
             return row
-        results = transport.find(key, row['payload']['sender'])
+        if delivery_fingerprint(row['payload']) != row['fingerprint']:
+            raise ValueError('保存した送信内容の整合性を確認できません。')
+        results = transport.find(key, row['payload']['sender'], payload=row['payload'], approved_at=row['approved_at'])
         if len(results) == 1 and results[0].get('id'):
             with self.connect() as db:
                 db.execute("UPDATE deliveries SET state='sent',gmail_id=?,thread_id=?,error=NULL,updated_at=? WHERE id=? AND owner=? AND state IN ('sending','unknown')", (results[0]['id'],results[0].get('threadId'),now(),key,owner))
@@ -163,6 +170,8 @@ class GmailTransport:
         message = EmailMessage()
         message['From'] = payload['sender']; message['To'] = payload['recipient']
         message['Subject'] = payload['subject']
+        message['X-CYCA-Operation-ID'] = operation_id
+        message['X-CYCA-Payload-SHA256'] = delivery_fingerprint(payload)
         message['Message-ID'] = f'<cyca-{operation_id}@{payload["sender"].split("@")[1]}>'
         if payload.get('reply_message_id'):
             message['In-Reply-To'] = payload['reply_message_id']
@@ -174,13 +183,101 @@ class GmailTransport:
             request['threadId'] = payload['thread_id']
         return self.service.users().messages().send(userId='me',body=request).execute(num_retries=0)
 
-    def find(self, operation_id, sender):
+    def find(self, operation_id, sender, *, payload, approved_at):
+        """Bounded, read-only sent scan. A partial scan can NEVER prove a send.
+
+        Gmail may rewrite Message-ID. New sends carry an exact operation marker
+        and the outbox fingerprint. Old messages require the original Message-ID.
+        Metadata does not prove attachment bytes; missing markers remain unknown.
+        """
+        from email.utils import getaddresses
+        from email.header import decode_header, make_header
         if not re.fullmatch('[a-f0-9]{32}', operation_id):
             raise ValueError('操作IDが不正です。')
         address(sender)
+        if not isinstance(payload,dict) or payload.get('sender','').casefold() != sender.casefold():
+            raise ValueError('保存した送信元が一致しません。')
+        address(payload.get('recipient'))
+        try:
+            approved = datetime.fromisoformat(approved_at)
+            if approved.tzinfo is None:
+                raise ValueError()
+            epoch = int(approved.astimezone(timezone.utc).timestamp())
+            current = int(datetime.now(timezone.utc).timestamp())
+            if epoch <= 0 or epoch > current + 300:
+                raise ValueError()
+        except (ValueError, TypeError, OverflowError):
+            raise ValueError('送信承認日時を確認できません。再送は行いません。') from None
+        fingerprint = delivery_fingerprint(payload)
         profile = self.service.users().getProfile(userId='me').execute()
         if profile.get('emailAddress','').casefold() != sender.casefold():
             raise ValueError('Gmail照合元が一致しません。')
-        message_id = f'cyca-{operation_id}@{sender.split("@")[1]}'
-        data = self.service.users().messages().list(userId='me', q=f'in:sent rfc822msgid:{message_id}', maxResults=2).execute()
-        return data.get('messages', [])
+        old_message_id = f'<cyca-{operation_id}@{sender.split("@")[1]}>'
+        fields = ['X-CYCA-Operation-ID','X-CYCA-Payload-SHA256','Message-ID','From','To','Cc','Bcc','Subject']
+        def matches(message):
+            if (not isinstance(message,dict) or not isinstance(message.get('labelIds'),list)
+                    or not isinstance(message.get('payload'),dict)
+                    or not isinstance(message['payload'].get('headers'),list)):
+                raise ValueError('Gmail候補のメタデータを確認できません。')
+            if any(not isinstance(h,dict) or not isinstance(h.get('name'),str) or not isinstance(h.get('value'),str)
+                   for h in message['payload']['headers']):
+                raise ValueError('Gmail候補のヘッダーを確認できません。')
+            try:
+                internal = int(message['internalDate']) // 1000
+                if not epoch-300 <= internal <= current+300: return False
+                if 'SENT' not in message['labelIds']: return False
+                headers = {}
+                for header in message['payload']['headers']:
+                    headers.setdefault(header['name'].casefold(),[]).append(header['value'])
+                def single(name):
+                    values = headers.get(name.casefold(),[])
+                    return values[0] if len(values)==1 and isinstance(values[0],str) else None
+                def mailbox(name, expected):
+                    value = single(name)
+                    if value is None: return False
+                    addresses = getaddresses([value])
+                    return len(addresses)==1 and addresses[0][1].casefold()==expected.casefold()
+                if not mailbox('From',sender) or not mailbox('To',payload['recipient']): return False
+                if headers.get('cc') or headers.get('bcc'): return False
+                subject = single('Subject')
+                if subject is None or str(make_header(decode_header(subject))) != payload['subject']: return False
+                marker = single('X-CYCA-Operation-ID')
+                proof = single('X-CYCA-Payload-SHA256')
+                # RFC folding can leave outer whitespace in metadata values.
+                # Strip only edges, never internal whitespace or duplicate fields.
+                marker = marker.strip() if marker is not None else None
+                proof = proof.strip() if proof is not None else None
+                if marker is not None or proof is not None or 'x-cyca-operation-id' in headers or 'x-cyca-payload-sha256' in headers:
+                    return marker==operation_id and proof==fingerprint
+                # Legacy path: never accept rewritten Message-ID or subject alone.
+                return single('Message-ID')==old_message_id
+            except (KeyError,TypeError,ValueError,LookupError):
+                raise ValueError('Gmail候補のメタデータ解析が未完了です。') from None
+        found = {}; seen = set(); token = None; page_tokens = set()
+        for _ in range(5):
+            # Date-only query avoids interpolation of recipient-supplied search syntax.
+            args = dict(userId='me',labelIds=['SENT'],q=f'after:{max(0,epoch-300)} before:{current+301}',maxResults=100)
+            if token: args['pageToken']=token
+            page = self.service.users().messages().list(**args).execute(num_retries=0)
+            if not isinstance(page,dict) or not isinstance(page.get('messages',[]),list):
+                raise ValueError('Gmail候補の照合が未完了です。')
+            if len(page.get('messages',[])) > 100:
+                raise ValueError('Gmail候補がページ上限を超えました。')
+            for entry in page.get('messages',[]):
+                message_id = entry.get('id') if isinstance(entry,dict) else None
+                if not isinstance(message_id,str) or not message_id:
+                    raise ValueError('Gmail候補の照合が未完了です。')
+                if message_id in seen: continue
+                seen.add(message_id)
+                message = self.service.users().messages().get(userId='me',id=message_id,format='metadata',metadataHeaders=fields).execute(num_retries=0)
+                if not isinstance(message,dict) or message.get('id') != message_id:
+                    raise ValueError('Gmail候補のIDが一致しません。')
+                if matches(message):
+                    found[message_id]={'id':message_id,'threadId':message.get('threadId')}
+            token = page.get('nextPageToken')
+            if not token: return list(found.values())
+            if not isinstance(token,str) or token in page_tokens:
+                raise ValueError('Gmail候補のページ確認が未完了です。')
+            page_tokens.add(token)
+        # Even one matching result is insufficient when later pages were not read.
+        raise ValueError('Gmail候補が検索上限を超えました。送信結果は未確認のままです。')

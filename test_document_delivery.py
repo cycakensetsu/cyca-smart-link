@@ -10,7 +10,7 @@ class Fake:
         self.calls+=1
         if self.fail: raise TimeoutError('secret must not be logged')
         return {'id':'gmail-1','threadId':'thread-1'}
-    def find(self,key,sender): return [{'id':'gmail-1','threadId':'thread-1'}]
+    def find(self,key,sender,**kwargs): return [{'id':'gmail-1','threadId':'thread-1'}]
 
 class Tests(unittest.TestCase):
     def setUp(self):
@@ -43,6 +43,19 @@ class Tests(unittest.TestCase):
         self.store.approve('owner',revised,self.store.get('owner',revised)['fingerprint'],'owner')
         with self.assertRaises(RuntimeError): self.store.send('owner',revised,Fake(True))
         with self.assertRaises(ValueError): self.store.cancel_unsent('owner',revised)
+
+    def test_incomplete_or_ambiguous_reconciliation_keeps_unknown(self):
+        self.approve()
+        with self.assertRaises(RuntimeError):self.store.send('owner',self.key,Fake(True))
+        from unittest.mock import MagicMock
+        transport=MagicMock()
+        for result in ([],[{'id':'a'},{'id':'b'}]):
+            transport.find.return_value=result
+            self.assertEqual(self.store.reconcile('owner',self.key,transport)['state'],'unknown')
+        transport.find.side_effect=ValueError('bounded scan incomplete')
+        with self.assertRaises(ValueError):self.store.reconcile('owner',self.key,transport)
+        self.assertEqual(self.store.get('owner',self.key)['state'],'unknown')
+        with self.assertRaises(ValueError):self.store.send('owner',self.key,Fake())
 
     def test_owner_isolation(self):
         with self.assertRaises(KeyError): self.store.get('other',self.key)
@@ -102,5 +115,7 @@ class GmailMimeTests(unittest.TestCase):
         self.assertEqual(list(mime.iter_attachments())[0].get_content_type(),'application/pdf')
         self.assertEqual(service.result.kwargs,{'num_retries':0})
         self.assertEqual(mime['In-Reply-To'],'<original@example.com>')
+        self.assertEqual(mime['X-CYCA-Operation-ID'],'a'*32)
+        self.assertRegex(mime['X-CYCA-Payload-SHA256'],r'^[a-f0-9]{64}$')
 
 if __name__=='__main__': unittest.main()

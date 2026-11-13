@@ -35,7 +35,7 @@ class FakeTransport:
         self.calls+=1
         if self.fail:raise TimeoutError()
         return {'id':'message','threadId':'thread'}
-    def find(self,key,sender):return [{'id':'message','threadId':'thread'}]
+    def find(self,key,sender,**kwargs):return [{'id':'message','threadId':'thread'}]
 
 
 class PostgresContractTests(unittest.TestCase):

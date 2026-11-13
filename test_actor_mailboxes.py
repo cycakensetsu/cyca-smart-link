@@ -50,10 +50,10 @@ class MailboxTests(unittest.TestCase):
         from document_delivery import GmailTransport
         api=MagicMock()
         api.users.return_value.getProfile.return_value.execute.return_value={'emailAddress':'a@example.com'}
-        with self.assertRaises(ValueError): GmailTransport(api).find('a'*32,'b@example.com')
+        with self.assertRaises(ValueError): GmailTransport(api).find('a'*32,'b@example.com',payload={'sender':'b@example.com','recipient':'c@example.com','subject':'X'},approved_at='2026-01-01T00:00:00+00:00')
         api.users.return_value.messages.assert_not_called()
-        api.users.return_value.messages.return_value.list.return_value.execute.return_value={'messages':[{'id':'m'}]}
-        self.assertEqual(GmailTransport(api).find('a'*32,'a@example.com'),[{'id':'m'}])
+        api.users.return_value.messages.return_value.list.return_value.execute.return_value={'messages':[]}
+        self.assertEqual(GmailTransport(api).find('a'*32,'a@example.com',payload={'sender':'a@example.com','recipient':'c@example.com','subject':'X'},approved_at='2026-01-01T00:00:00+00:00'),[])
 
     def test_unconfigured_mailbox_does_not_block_read_or_invoice(self):
         try:
