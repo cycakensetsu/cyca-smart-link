@@ -36,6 +36,7 @@ def completed_quotes(store):
         if not isinstance(header, dict):
             continue
         result.append({'id': value['id'], 'when': when,
+                       'customer': str(header.get('宛名') or ''),
                        'title': str(header.get('工事名称') or header.get('project_name') or header.get('project') or '保存した見積書'),
                        'files': files})
     return sorted(result, key=lambda v: (v['when'], v['id']), reverse=True)
@@ -56,6 +57,8 @@ def render_saved_quotes(st, store):
             q = by_id[key]
             return f"{q['when'].astimezone(ZoneInfo('Asia/Tokyo')):%m/%d %H:%M} ｜ {q['title']} ｜ {key[-4:]}"
         chosen = st.selectbox('開く完成見積', list(by_id), format_func=label, key='saved_quote_choice')
+        from invoice_workflow_ui import render_invoice_workflow
+        render_invoice_workflow(st, store, chosen)
         # Do not download a large output on every rerun or expose a public link.
         if st.button('この完成見積を開く', key='saved_quote_open'):
             selected = by_id[chosen]
@@ -72,6 +75,18 @@ def render_saved_quotes(st, store):
             st.success('保存した完成ファイルを開けます。')
             st.download_button('保存済みPDFを開く・保存', ready[2]['pdf'],
                                file_name='CYCA_保存済み見積_'+chosen[:12]+'.pdf', key='saved_quote_pdf')
+            try:
+                delivery_config = st.secrets.get('invoice_workflow', {})
+            except (FileNotFoundError, KeyError):
+                delivery_config = {}
+            if delivery_config.get('enabled', False):
+                from document_delivery_ui import render_delivery
+                import re
+                title = re.sub(r'[\\/:*?"<>|]', '_', by_id[chosen]['title'])[:80]
+                day = by_id[chosen]['when'].astimezone(ZoneInfo('Asia/Tokyo')).strftime('%Y%m%d')
+                render_delivery(st, delivery_config, owner=st.session_state.get('username',''),
+                                document_id=chosen, filename=f'{title}見積書_{day}.pdf',
+                                pdf=ready[2]['pdf'], customer=by_id[chosen]['customer'])
             if ready[2].get('xlsx'):
                 st.download_button('保存済みNumbers用を開く・保存', ready[2]['xlsx'],
                                    file_name='CYCA_保存済み見積_'+chosen[:12]+'.xlsx', key='saved_quote_xlsx')

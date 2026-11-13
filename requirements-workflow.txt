@@ -1,0 +1,4 @@
+-r requirements.txt
+# Optional authenticated bot HTTP adapter (not started by Streamlit).
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
