@@ -137,9 +137,9 @@ def render_conversation(st, api_key, context, *, show_heading=True):
             for message in history:
                 with st.chat_message(message['role']):
                     st.write(message['content'])
-    st.caption('話すか、下に文字を入れて相談できます。')
+    st.caption('声で相談するなら下のマイクを押してください。ブラウザーに聞かれたら、マイクの使用を許可してください。声が使えないときは、下の入力欄に文字で入力できます。')
     with st.expander('音声・見積データの扱い'):
-        st.caption('相談ボタンを押すと、音声または文章と現在の見積内容を、読み取りに使っているAIで処理します。録音そのものは保管しません。反映した相談内容は社内用の記録に残ります。')
+        st.caption('マイクを押すだけでは送信しません。「この録音で相談する」を押したときだけ、録音と見積内容をAIで処理します。録音そのものは保管しません。反映した相談内容は社内用の記録に残ります。')
     audio = st.audio_input('マイクを押して今回の要望を話す（2分以内）', key='review_voice_' + str(st.session_state.get('_review_editor_epoch', 0)), disabled=not ready)
     if st.button('この録音で相談する', key='review_voice_consult', disabled=audio is None or not ready):
         _consult_audio(st, api_key, audio, history, context)
@@ -153,7 +153,7 @@ def render_conversation(st, api_key, context, *, show_heading=True):
         key='review_instruction', max_chars=4000,
         placeholder='例：利益を10万円確保したい。値引きは1万円。足場は別のページにして。')
     if not api_key:
-        st.info('音声・会話の利用には、既存のAI接続設定が必要です。')
+        st.info('音声・文字の相談は現在使えません。上乗せ金額は、相談せずに直接入力できます。')
     if st.button('この内容で相談する', key='review_consult', disabled=not ready or not instruction.strip()):
         _clear_unapplied_proposal(st.session_state)
         try:

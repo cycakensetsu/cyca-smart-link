@@ -223,4 +223,11 @@ def extract_job(client, page, path, n_files, *, primary_model, fallback_models,
             on_retry=on_retry, on_model_start=on_model_start)
         if annotation_model:
             models.append(annotation_model)
+    from source_subtotal_checks import evaluate_subtotals
+    subtotal_checks = evaluate_subtotals(page.source_name, records, summaries)
+    if subtotal_checks:
+        # Document scope can span all PDF pages or this individual image only.
+        # Keep this separate from printed grand totals and original rows.
+        summaries = list(summaries) + [{"__source_name": page.source_name,
+            "__page_number": page.page_number, "__subtotal_checks": subtotal_checks}]
     return summaries,records,models,errors

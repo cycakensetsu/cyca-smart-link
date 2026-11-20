@@ -17,7 +17,9 @@ def render_inputs(st, original, sources, store):
     # proposal refreshes editor keys. The original extraction remains untouched.
     st.session_state['_review_assistant_rows'] = copy.deepcopy(rows)
     confirmed_sources(st, sources)
-    remaining = [source for source in sources if not source.get('confirmed')]
+    from estimate_review import source_provisional_active
+    provisional = any(source_provisional_active(source, rows) for source in sources if not source.get('confirmed'))
+    remaining = [source for source in sources if not source.get('confirmed') and not source_provisional_active(source, rows)]
     if remaining:
         st.info(f'あと{len(remaining)}件を確認すると、金額を決める工程へ進めます。下の名前を押すと、その資料に戻れます。')
         for source in remaining:
@@ -27,6 +29,10 @@ def render_inputs(st, original, sources, store):
             st.html(f'<p><a href="#cyca-source-{source["id"]}">確認する：{escape(label)}</a></p>')
     else:
         from workflow_steps_ui import render_next_action
-        st.success('確認できました。次はお客様に出す金額を決めます。')
-        render_next_action(st, 3, '次へ：金額を決める')
+        if provisional:
+            st.info('次は、社内確認用の仮見積の金額を決めます。')
+            render_next_action(st, 3, '次へ：仮見積の金額を決める')
+        else:
+            st.success('確認できました。次はお客様に出す金額を決めます。')
+            render_next_action(st, 3, '次へ：金額を決める')
     return rows, sources

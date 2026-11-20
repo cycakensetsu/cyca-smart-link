@@ -424,13 +424,12 @@ if os.path.isfile(LOGO_PATH):
         st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
 else:
     st.markdown('<div class="header-block"><div class="main-header">CYCA smart Link <span class="beta-badge">ベータ版</span></div><div class="header-gradient-line"></div></div>', unsafe_allow_html=True)
-st.info("原本を確認 → 品目・数量を確認 → お客様に出す金額を決める → 仕上がりを見て出力")
-st.caption("本サービスはベータ版です。計算結果は目安であり、正式な見積には必ずご自身で内容をご確認ください。重要な意思決定の唯一の根拠としてご利用にならないでください。")
+st.caption("正式な見積書を作る前に、読み取った内容を元の見積書で確認してください。")
 
 # ==========================================
 # 画面レイアウト（2カラムで見やすく）
 # ==========================================
-with st.expander("従来の利益設定・出力形式を使う", expanded=False):
+with st.sidebar.expander("詳しい利益設定・従来の出力形式", expanded=False):
     col1, col2 = st.columns(2)
 
     with col1:
@@ -476,22 +475,20 @@ with st.expander("従来の利益設定・出力形式を使う", expanded=False
         else:
             st.caption("工事品目・仕様・数量・単位・単価・金額・備考の汎用 Excel を出力します。")
 
+with st.sidebar:
+    show_detailed_review = st.checkbox('詳細な確認・設定を表示する', value=False, key='expert_review_settings')
+guided_review_ui = profit_mode == REVIEW_MODE and not show_detailed_review
 st.markdown("---")
 effects_slot = st.container()
 workflow_slot = st.empty()
-from workflow_steps_ui import render_step_heading, render_workflow_status
-render_step_heading(st, 1)
-st.caption("PDF・写真を選べます。複数の業者分もまとめて選べます（1ファイル20MBまで）。")
-st.caption("見積を読み込んだ後は、マイクで今回の要望を伝えて相談できます。")
-
+resume_slot = st.empty()
+from workflow_steps_ui import render_workflow_status
+from beginner_intake_ui import render_intake, render_read_button, render_resume_action
 if '_upload_epoch' not in st.session_state:
     st.session_state['_upload_epoch'] = uuid.uuid4().hex
-uploaded_files = st.file_uploader(
-    "見積書のPDF・写真を選ぶ",
-    type=["pdf", "jpg", "jpeg", "png"],
-    accept_multiple_files=True,
-    max_upload_size=20,
-    key='estimate_upload_' + st.session_state['_upload_epoch'],
+uploaded_files = render_intake(
+    st, key='estimate_upload_' + st.session_state['_upload_epoch'],
+    guided=guided_review_ui, max_upload_size=20,
 )
 
 # 新しいアップロードへ切り替わったら、前回の会社別入力と完成ファイルを破棄する。
@@ -516,6 +513,7 @@ if st.session_state.get("_upload_signature") != upload_signature:
         cue(st, "upload")
 
 if profit_mode == REVIEW_MODE:
+    st.session_state["_review_beginner_guided"] = guided_review_ui
     from work_drafts import render_recovery
     render_recovery(st)
     with workflow_slot.container():
@@ -638,8 +636,10 @@ if uploaded_files:
         if format_choice == HORIZONTAL_FORMAT else "✨ AIでデータを解析 ＆ 利益計算を実行する ✨"
     )
     intake_panel = st.empty()
-    intake_panel.markdown(ready_panel([f.name for f in uploaded_files], analyze_label, read=bool(st.session_state.get("_review_original_rows"))), unsafe_allow_html=True)
-    analyze_clicked = st.button(analyze_label)
+    if not (guided_review_ui and st.session_state.get("_review_original_rows")):
+        intake_panel.markdown(ready_panel([f.name for f in uploaded_files], analyze_label, read=bool(st.session_state.get("_review_original_rows"))), unsafe_allow_html=True)
+    analyze_clicked = render_read_button(st, analyze_label, guided=guided_review_ui,
+                                       active=bool(st.session_state.get("_review_original_rows")))
     horizontal_output_slot = st.empty()
     if st.session_state.pop("_force_analyze", False):
         analyze_clicked = True
@@ -647,7 +647,7 @@ if uploaded_files:
         for completed_key in ("_horizontal_result", "_legacy_exports", "_review_result", "_review_approval", "_review_original_rows"):
             st.session_state.pop(completed_key, None)
         if not MY_API_KEY:
-            st.error("APIキーが設定されていません。環境変数 GOOGLE_API_KEY または .streamlit/secrets.toml に GOOGLE_API_KEY を設定してください。")
+            st.error("見積書の読み取りを利用できません。管理者にお問い合わせください。")
         else:
                 try:
                     read_started = time.monotonic()
@@ -1019,6 +1019,8 @@ if uploaded_files:
                         if st.button("再解析する", key="retry_ai_analysis_after_raw_busy"):
                             st.session_state["_force_analyze"] = True
                             st.rerun()
+                    elif guided_review_ui:
+                        st.error("この見積書を読み取れませんでした。ファイルが開けるか確認し、もう一度お試しください。")
                     elif "ascii" in err_msg.lower() and "codec" in err_msg.lower():
                         st.error(
                             "❌ 文字コードのエラーが発生しました。\n\n"
@@ -1208,6 +1210,7 @@ if uploaded_files and format_choice == HORIZONTAL_FORMAT:
 
 
 if profit_mode == REVIEW_MODE:
+    st.session_state["_review_beginner_guided"] = guided_review_ui
     from work_drafts import autosave
     try:
         render_review(st, api_key=MY_API_KEY)
@@ -1216,6 +1219,9 @@ if profit_mode == REVIEW_MODE:
         autosave(st)
     with workflow_slot.container():
         render_workflow_status(st)
+    if guided_review_ui:
+        with resume_slot.container():
+            render_resume_action(st)
 
 if profit_mode != REVIEW_MODE:
     render_draft_exports(st, legacy_export_signature())
