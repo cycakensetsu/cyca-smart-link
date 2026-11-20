@@ -493,6 +493,10 @@ workflow_slot = st.empty()
 resume_slot = st.empty()
 from workflow_steps_ui import render_workflow_status
 from beginner_intake_ui import render_intake, render_read_button, render_resume_action
+if profit_mode == REVIEW_MODE:
+    from work_drafts import render_recovery
+    render_recovery(st)
+
 if '_upload_epoch' not in st.session_state:
     st.session_state['_upload_epoch'] = uuid.uuid4().hex
 uploaded_files = render_intake(
@@ -505,6 +509,8 @@ upload_signature = tuple(
     (f.name, f.size, hashlib.sha256(f.getbuffer()).hexdigest()) for f in (uploaded_files or [])
 )
 if st.session_state.get("_upload_signature") != upload_signature:
+    from work_drafts import reset_tracking
+    reset_tracking(st.session_state)
     for key in list(st.session_state):
         if key.startswith(("_extracted_", "cat_profit_", "_review_", "review_", "_legacy_")) or key in (
             "_detail_df", "_vendor_summaries", "_summary_data", "_categories_summary",

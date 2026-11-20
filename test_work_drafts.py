@@ -12,7 +12,7 @@ from zipfile import ZipFile
 from estimate_review import OriginalVault, canonical, digest
 from test_saved_read_resume import stored_read
 from vault_archive import archive_bytes, restore_archive
-from work_drafts import (available_drafts, hydrate_inputs, restore_draft,
+from work_drafts import (available_drafts, begin_new_estimate, hydrate_inputs, restore_draft,
                          save_draft, validate_draft, update_head)
 
 
@@ -171,6 +171,103 @@ class WorkingDraftTest(unittest.TestCase):
         self.assertEqual(self.state['_work_draft_record'], old)
         self.assertEqual([d['id'] for d in available_drafts(self.store)], [old])
 
+    def test_switch_new_only_with_checkpoint_and_no_vault_writes(self):
+        self.state.update(_upload_epoch='old_upload', _upload_signature=(('old.pdf', 42, 'old'),),
+                          _force_analyze=True, expert_review_settings=True)
+        key = save_draft(self.state, self.store)
+        snapshot = {n: r() for n, _, r in self.store.entries()}
+        self.state['review_customer'] = '未保存の入力'
+        before = copy.deepcopy(self.state)
+        self.assertFalse(begin_new_estimate(self.state))
+        self.assertEqual(self.state, before)
+        self.state['review_customer'] = '架空のお客様 御中'
+        self.assertTrue(begin_new_estimate(self.state))
+        self.assertIn('username', self.state)
+        self.assertEqual(self.state['_auth_signature'], 'never save this')
+        self.assertTrue(self.state['expert_review_settings'])
+        self.assertNotIn('_force_analyze', self.state)
+        self.assertNotIn('_review_extraction_id', self.state)
+        self.assertNotIn('_work_draft_record', self.state)
+        self.assertNotEqual(self.state['_upload_epoch'], 'old_upload')
+        self.assertEqual(self.state['_upload_signature'], ())
+        self.assertEqual({n: r() for n, _, r in self.store.entries()}, snapshot)
+        self.assertEqual([d['id'] for d in available_drafts(self.store)], [key])
+
+    def _entry_app(self):
+        from streamlit.testing.v1 import AppTest
+        return AppTest.from_string(f"""
+import os
+os.environ['CYCA_DATA_DIR']={self.tmp.name!r}
+import streamlit as st
+from work_drafts import render_recovery
+st.session_state.setdefault('username','owner')
+render_recovery(st)
+st.file_uploader('新規のファイル',key='estimate_upload_'+st.session_state.get('_upload_epoch','initial'))
+""")
+
+    def test_new_is_default_and_draft_only_opened_after_explicit_choice(self):
+        at = self._entry_app().run()
+        self.assertIn('新しい見積を作る', [b.label for b in at.button])
+        self.assertNotIn('前回の続きから再開', [b.label for b in at.button])
+        key = save_draft(self.state, self.store)
+        before = {n: r() for n, _, r in self.store.entries()}
+        at.run()
+        self.assertEqual([b.key for b in at.button], ['work_begin_new', 'work_show_resume'])
+        self.assertNotIn('_review_extraction_id', at.session_state)
+        at.button(key='work_begin_new').click().run()
+        self.assertTrue(any('新しい見積を始めてください' in i.value for i in at.info))
+        self.assertEqual({n: r() for n, _, r in self.store.entries()}, before)
+        at.button(key='work_show_resume').click().run()
+        self.assertFalse(any('新しい見積を始めてください' in i.value for i in at.info))
+        self.assertNotIn('_review_extraction_id', at.session_state)
+        self.assertTrue(any(b.key == 'work_resume' for b in at.button))
+        at.button(key='work_begin_new').click().run()
+        self.assertFalse(any(b.key == 'work_resume' for b in at.button))
+        self.assertEqual({n: r() for n, _, r in self.store.entries()}, before)
+        at.button(key='work_show_resume').click().run()
+        at.button(key='work_resume').click().run()
+        self.assertEqual(at.session_state['review_customer'], '架空のお客様 御中')
+        self.assertEqual({n: r() for n, _, r in self.store.entries()}, before)
+        self.assertEqual([d['id'] for d in available_drafts(self.store)], [key])
+
+    def test_pending_upload_survives_opening_or_cancelling_picker_and_clears_on_resume(self):
+        save_draft(self.state, self.store)
+        at = self._entry_app()
+        at.session_state['_upload_epoch'] = 'pending_epoch'
+        at.session_state['_upload_signature'] = (('pending.pdf', 42, 'fake'),)
+        at.session_state['_force_analyze'] = True
+        at.run()
+        at.button(key='work_show_resume').click().run()
+        self.assertEqual(at.session_state['_upload_epoch'],'pending_epoch')
+        self.assertIn('選んだファイルを外して',at.button(key='work_resume').label)
+        at.button(key='work_begin_new').click().run()
+        self.assertEqual(at.session_state['_upload_epoch'],'pending_epoch')
+        self.assertNotIn('_review_extraction_id',at.session_state)
+        at.button(key='work_show_resume').click().run()
+        at.button(key='work_resume').click().run()
+        self.assertEqual(at.session_state['review_project'],'架空の工事')
+        self.assertNotEqual(at.session_state['_upload_epoch'],'pending_epoch')
+        self.assertEqual(at.session_state['_upload_signature'],())
+        self.assertNotIn('_force_analyze',at.session_state)
+
+    def test_pending_upload_cancel_or_explicit_new_without_storage_touch(self):
+        key = save_draft(self.state, self.store)
+        before = {n: r() for n, _, r in self.store.entries()}
+        at = self._entry_app()
+        at.session_state['_upload_epoch'] = 'pending_epoch'
+        at.session_state['_upload_signature'] = (('pending.pdf', 42, 'fake'),)
+        at.run()
+        at.button(key='work_begin_new').click().run()
+        self.assertEqual(at.session_state['_upload_epoch'],'pending_epoch')
+        at.button(key='work_cancel_new').click().run()
+        self.assertEqual(at.session_state['_upload_epoch'],'pending_epoch')
+        at.button(key='work_begin_new').click().run()
+        at.button(key='work_confirm_new').click().run()
+        self.assertNotEqual(at.session_state['_upload_epoch'],'pending_epoch')
+        self.assertEqual(at.session_state['_upload_signature'],())
+        self.assertEqual({n: r() for n, _, r in self.store.entries()}, before)
+        self.assertEqual([d['id'] for d in available_drafts(self.store)], [key])
+
     def test_real_streamlit_fresh_session_restores_inputs_and_requires_new_preview_and_approval(self):
         from streamlit.testing.v1 import AppTest
         # The synthetic source costs only200yen; a1000yen markup correctly
@@ -192,6 +289,7 @@ finally:
 '''
         at = AppTest.from_string(source).run()
         self.assertEqual(list(at.exception), [])
+        at.button(key='work_show_resume').click().run()
         at.button(key='work_resume').click().run()
         self.assertEqual(list(at.exception), [])
         self.assertEqual(at.session_state['review_customer'], '架空のお客様 御中')
@@ -209,6 +307,7 @@ finally:
         at.text_input(key='review_customer').set_value('接続前に変えた宛名').run()
         fresh = AppTest.from_string(source).run()
         # There are now two independent works: choose the most recently saved.
+        fresh.button(key='work_show_resume').click().run()
         fresh.button(key='work_resume').click().run()
         self.assertEqual(list(fresh.exception), [])
         self.assertEqual(fresh.session_state['review_customer'], '接続前に変えた宛名')

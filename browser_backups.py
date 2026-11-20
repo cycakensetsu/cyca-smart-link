@@ -139,5 +139,5 @@ def render(st):
         except (OSError, ValueError, KeyError, TypeError):
             st.error('ブラウザの作業データを戻せませんでした。現在のデータは保全し、PCのZIPからの復旧をお試しください。')
         else:
-            state['_vault_restore_notice'] = f'このブラウザに保存した作業データ{count}件を戻しました。上の「途中の作業から再開」で開けます。'
+            state['_vault_restore_notice'] = f'このブラウザに保存した作業データ{count}件を戻しました。上の「前回の続きから再開」で開けます。'
             st.rerun()
