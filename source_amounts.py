@@ -88,6 +88,17 @@ def read_amounts(name, data, summaries=None):
     candidates = {key: [] for key in LABELS}
     evidence = []
     lines = list(_lines(data)) if str(name).lower().endswith('.pdf') else []
+    from source_subtotal_checks import combine_checks, read_native_checks
+    scoped_summaries = [s for s in (summaries or {}).get("summary_sources", []) if s.get("元ファイル") == name]
+    ocr_checks = (summaries or {}).get("subtotal_checks_by_source", {}).get(name, [])
+    native_checks = []
+    if lines:
+        try:
+            native_checks = read_native_checks(data, lines, scoped_summaries)
+        except (ValueError, RuntimeError, AttributeError, OSError):
+            # Unsupported PDFs retain the OCR evidence and original review.
+            pass
+    subtotal_checks = combine_checks(native_checks, ocr_checks)
     for pos, (page, raw) in enumerate(lines):
         text = re.sub(r'\s+', '', unicodedata.normalize('NFKC', raw))
         plain_net=re.fullmatch(r'計[:：=]?[¥￥]?(\d[\d,]*)(?:円)?',text)
@@ -142,7 +153,7 @@ def read_amounts(name, data, summaries=None):
                              'method':'原本の個別見積合計','text':s['name']} for s in scoped_totals],
                 'quote_sections':scoped_totals,'source_notes':source_notes,
                 'source_note_records':source_note_records,'annotation_reviews':annotation_reviews,
-                'amount_notes':[],'page':scoped_totals[0]['page']}
+                'amount_notes':[],'page':scoped_totals[0]['page'],'subtotal_checks':subtotal_checks}
         from source_variants import find_amount_notes
         combined['amount_notes']=find_amount_notes(lines,(summaries or {}).get('summary_sources',[]),name,combined)
         return combined
@@ -160,7 +171,7 @@ def read_amounts(name, data, summaries=None):
                 if value is not None and value >= 0:
                     candidates[field].append({'value':value, 'priority':2 if key == '改小計' else 0, 'page':item.get('ページ') or 1, 'text':key, 'method':'AIの読み取り'})
                     break
-    result = {'net_total':None, 'tax':None, 'gross_total':None, 'tax_basis':'税抜', 'tax_rate':.10, 'conflicts':[], 'evidence':evidence, 'source_notes':source_notes, 'source_note_records':source_note_records, 'annotation_reviews':annotation_reviews}
+    result = {'net_total':None, 'tax':None, 'gross_total':None, 'tax_basis':'税抜', 'tax_rate':.10, 'conflicts':[], 'evidence':evidence, 'source_notes':source_notes, 'source_note_records':source_note_records, 'annotation_reviews':annotation_reviews, 'subtotal_checks': subtotal_checks}
     chosen = {}
     for field, items in candidates.items():
         if not items:

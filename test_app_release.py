@@ -88,6 +88,20 @@ class ReleaseRefreshTest(unittest.TestCase):
             source.write_text('version = 2')
             self.assertNotEqual(first,app_release._source_fingerprint())
 
+    def test_employee_and_subtotal_source_changes_trigger_release_refresh(self):
+        # Exercise actual on-disk changes, including a change limited to one
+        # new dependency while every existing module stays identical.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for source in Path(app_release.__file__).parent.glob('*.py'):
+                (root / source.name).write_bytes(source.read_bytes())
+            with patch.object(app_release, '_ROOT', root):
+                for name in ('source_subtotal_checks', 'source_subtotal_review_ui', 'beginner_intake_ui'):
+                    with self.subTest(module=name):
+                        before = app_release._source_fingerprint()
+                        source = root / (name + '.py')
+                        source.write_text(source.read_text() + '\n# isolated source update\n')
+                        self.assertNotEqual(before, app_release._source_fingerprint())
     def test_frontend_asset_change_also_refreshes_component(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(app_release,'_ROOT',Path(temp)), patch.object(app_release,'_MODULES',()):
             folder=Path(temp)/'work_effects_frontend';folder.mkdir()

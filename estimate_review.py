@@ -482,6 +482,92 @@ def reference_material_allowed(original_rows, source):
     return True
 
 
+def source_provisional_eligible(source, rows):
+    """Offer only a fully accounted-for higher amount, never a balancing line."""
+    checks = source.get('printed_subtotal_checks') or []
+    if not isinstance(checks, list) or not checks:
+        return None
+    if any(not isinstance(check, dict) or check.get('status') not in ('matched', 'variance') for check in checks):
+        return None
+    if not any(check['status'] == 'variance' for check in checks):
+        return None
+    if (source.get('reference_only') or source.get('read_errors')
+            or source.get('tax_basis') not in ('税抜', '非課税')
+            or source.get('amount_reading', {}).get('read_failed')
+            or source.get('amount_reading', {}).get('amount_notes')):
+        return None
+    own = [row for row in rows if row.get('原本ID') == source.get('id')]
+    if not own or any(not row.get('採用', True) or row.get('集計のみ') for row in own):
+        return None
+    try:
+        cover = integer(source.get('net_total'))
+        original_net = source.get('amount_reading', {}).get('net_total')
+        if original_net is not None and integer(original_net) != cover:
+            return None
+        computed = sum(integer(row['原価金額']) for row in own)
+        differing = [check for check in checks if check['status'] == 'variance']
+        # Multiple subscopes on one page may overlap; never double count them.
+        pages = [integer(check['page']) for check in differing]
+        variance = sum(integer(check['difference']) for check in differing)
+        if (len(set(pages)) != len(pages) or any(page < 1 for page in pages)
+                or not 0 <= cover < computed or variance != computed - cover):
+            return None
+        # A fresh choice is required if lines, source totals or applied evidence change.
+        evidence = [source['id'], checks, cover, computed, own,
+                    source.get('tax_basis'), source.get('tax_rate'), source.get('tax'), source.get('gross_total')]
+        return {'kind': 'provisional_high', 'fingerprint': digest(evidence),
+                'printed_cover': cover, 'recomputed_total': computed, 'chosen_total': computed}
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def source_provisional_active(source, rows):
+    candidate = source_provisional_eligible(source, rows)
+    return bool(candidate and source.get('source_variance_decision') == candidate)
+
+
+def source_subtotal_manual_eligible(source, rows):
+    """A matching OCR subtotal can be used only after exact visual confirmation."""
+    from collections import Counter
+    from source_subtotal_checks import manual_clean_candidate
+    checks = source.get('printed_subtotal_checks') or []
+    if (not isinstance(checks, list) or not checks or any(not isinstance(c, dict)
+            or c.get('status') not in ('matched', 'unverified') for c in checks)
+            or source.get('read_errors') or source.get('reference_only')
+            or source.get('tax_basis') not in ('税抜', '非課税')
+            or source.get('amount_reading', {}).get('read_failed')
+            or source.get('amount_reading', {}).get('amount_notes')):
+        return None
+    review = [c for c in checks if c['status'] == 'unverified']
+    own = [row for row in rows if row.get('原本ID') == source.get('id')]
+    if not review or not own or any(not r.get('採用', True) for r in own):
+        return None
+    try:
+        cover = integer(source.get('net_total'))
+        if sum(integer(r['原価金額']) for r in own) != cover:
+            return None
+        for check in review:
+            if not manual_clean_candidate(check):
+                return None
+            page, scope, section = check['page'], check['scope'], check.get('section')
+            scope_rows = [r for r in own if not r.get('集計のみ') and integer(r['ページ']) == page
+                          and (scope == 'page' or compact(r.get('部位', '')) == compact(section))]
+            actual = Counter((compact(r['品名']), integer(r['原価金額'])) for r in scope_rows)
+            evidence = Counter((compact(r['name']), integer(r['amount'])) for r in check['row_evidence'])
+            if not actual or actual != evidence:
+                return None
+        fingerprint = digest([source['id'], checks, cover, own,
+                              source.get('tax_basis'), source.get('tax_rate'), source.get('tax'), source.get('gross_total')])
+        return {'kind': 'original_subtotal_visually_checked', 'fingerprint': fingerprint}
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
+def source_subtotal_manual_active(source, rows):
+    candidate = source_subtotal_manual_eligible(source, rows)
+    return bool(candidate and candidate == source.get('source_subtotal_manual_decision'))
+
+
 def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, metadata=None, resolutions=None, *, pricing_choice=None):
     """Return a complete reviewable snapshot. Corrections never change raw data."""
     metadata = dict(metadata or {})
@@ -545,6 +631,16 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
                 issue('参考資料の確認', [], '金額のある原本は参考資料として除外できません。原本の金額と参考資料の指定を確認してください。', '停止')
             else:
                 continue
+        checks = s.get('printed_subtotal_checks')
+        mismatch = (checks is not None and (not isinstance(checks, list) or any(
+            not isinstance(check, dict) or check.get('status') != 'matched' for check in checks)))
+        provisional = mismatch and source_provisional_active(s, source_rows)
+        if (mismatch and not source_subtotal_manual_active(s, source_rows)
+                or s.get('source_variance_decision')):
+            if provisional:
+                issue('原本差額・社内仮見積', [], '原本金額の差が未確定です。社内で確認する仮見積のみ作成できます。', '停止')
+            else:
+                issue('原本差額の確認', [], '原本に印字された小計と明細を確認してください。', '停止')
         if s.get('amount_reading',{}).get('amount_notes') and not str(s.get('amount_notes_resolution') or '').strip():
             issue('原本金額の選択', [], 'NET金額・税込後の値引きがあります。原本の記載と採用する金額を確認してください。', '停止')
         if s.get("read_errors"):
@@ -553,7 +649,7 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
             issue("税区分", [], "原本ごとに税抜・非課税と税率を確認してください。税込・不明の原価は集計できません。", "停止")
         if s.get("tax_basis") == "非課税" and s.get("tax_rate") != 0:
             issue("税区分", [], "非課税の原本に税率が設定されています。", "停止")
-        if not s.get("confirmed"):
+        if not s.get("confirmed") and not provisional:
             issue("原本確認", [], "全原本の税区分と明細を確認してください。", "停止")
         all_rows = [r for r in edited_rows if r["原本ID"] == s["id"]]
         from row_evidence_gate import verified as row_evidence_verified
@@ -567,7 +663,7 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
         else:
             try:
                 actual = sum(integer(r["原価金額"]) for r in all_rows)
-                if actual != integer(s["net_total"]):
+                if actual != integer(s["net_total"]) and not provisional:
                     issue("原本小計", [r["行ID"] for r in all_rows], "訂正後の全原本明細と原本の税抜小計が一致しません。", "停止")
             except ValueError:
                 issue("数値不正", [], "原本小計・明細金額を整数円で確認してください。", "停止")
@@ -760,8 +856,8 @@ def estimate_for_output(draft):
 
 def preview_allowed(draft):
     # A suspected duplicate is a review choice, not a reason to hide the draft.
-    return all(i['種類'] in ('明細重複疑い','共通費重複疑い') and i['レベル']!='停止'
-               for i in draft['unresolved'])
+    return all((i['種類'] in ('明細重複疑い', '共通費重複疑い') and i['レベル'] != '停止')
+               or i['種類'] == '原本差額・社内仮見積' for i in draft['unresolved'])
 
 
 def build_preview(draft):

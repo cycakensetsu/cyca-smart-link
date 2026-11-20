@@ -31,14 +31,18 @@ def page_controls(st, rows, metadata):
     return metadata
 
 
-def render_preview(st, draft, valid):
+def render_preview(st, draft, valid, *, provisional=False, beginner=False):
     from workflow_steps_ui import render_step_heading
     render_step_heading(st, 4)
     st.caption('まだ確定しません。実際の流し込みデザインで、表紙から最後の明細まで確認できます。')
-    if draft['unresolved'] and valid:
+    if provisional:
+        st.info('仮見積（社内確認用）です。この画面で見るだけで、提出用には保存できません。')
+    elif draft['unresolved'] and valid:
         st.info('重複の可能性がある品目を含む確認用です。仕上がりは先に見られます。提出用の確定前に、上の重複確認で採用する内容を決めてください。')
     st.caption('今やること：下のボタンで、見積書の仕上がりを確認します。')
-    if st.button('完成イメージを見る', key='review_preview', disabled=not valid, type='primary'):
+    label = ('仮見積を見る（社内確認用）' if provisional else
+             '作成前に内容を見る' if beginner else '完成イメージを見る')
+    if st.button(label, key='review_preview', disabled=not valid, type='primary'):
         st.session_state.pop('_review_preview', None)
         try:
             from pour_layout import describe
@@ -48,7 +52,7 @@ def render_preview(st, draft, valid):
                 if not result.ok:
                     raise ValueError(' / '.join(result.errors))
                 pages = describe(estimate_for_output(draft))
-                images=render_pages(result.pdf_data)
+                images=render_pages(result.pdf_data, stamp='仮見積・社内確認用') if provisional else render_pages(result.pdf_data)
                 if len(images) != len(pages):raise ValueError('ページ数を確認できません。')
                 st.session_state['_review_preview'] = {'fingerprint': draft['fingerprint'], 'images': images, 'pages': pages}
                 from work_effects import cue
@@ -72,8 +76,9 @@ def render_preview(st, draft, valid):
                 for row in details:
                     st.write(f"No.{row['no']} {row['name']}")
         st.info('直したい場合は、上の「ページの区切りを変える」か音声相談を使い、完成イメージをもう一度確認してください。')
-        st.write('このページ分けでPDFを作成してよいですか？')
-        st.caption('よければ、下の「内容とページ分けは、これでOKです」にチェックし、「この内容で見積書を作成」を押してください。')
+        if not provisional and not beginner:
+            st.write('このページ分けでPDFを作成してよいですか？')
+            st.caption('よければ、下の「内容とページ分けは、これでOKです」にチェックし、「この内容で見積書を作成」を押してください。')
     elif preview:
-        st.info('内容やページの区切りが変わりました。「完成イメージを見る」を押して、最新の配置を確認してください。')
+        st.info(f'内容が変わりました。「{label}」を押して、最新の内容を確認してください。')
     return ready

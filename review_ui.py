@@ -210,7 +210,14 @@ def render_review(st, api_key=None):
     from review_input_ui import render_inputs
     sources=copy.deepcopy(st.session_state['_review_sources'])
     rows,sources=render_inputs(st,original,sources,vault(st))
-    ready=bool(sources) and all(source.get('confirmed') for source in sources)
+    from estimate_review import source_subtotal_manual_active
+    if any(not source_subtotal_manual_active(source, rows)
+           and any(c.get('status') != 'matched' for c in source.get('printed_subtotal_checks', []))
+           for source in sources):
+        for key in ('_review_result', '_review_approval'):
+            st.session_state.pop(key, None)
+    from estimate_review import source_provisional_active
+    ready=bool(sources) and all(source.get('confirmed') or source_provisional_active(source, rows) for source in sources)
     if ready:
         st.session_state['_review_workflow_step'] = 3
         _render_review_plan(st,api_key,original,rows,sources)
@@ -255,10 +262,17 @@ def prepare_profit_choices(state, context):
 def _render_review_plan(st,api_key,original,rows,sources):
     from conversation_ui import working_context, render_conversation
     from workflow_steps_ui import render_step_heading
+    from estimate_review import source_provisional_active
+    provisional = any(source_provisional_active(source, rows) for source in sources if not source.get('confirmed'))
+    beginner = st.session_state.get('_review_beginner_guided') is True
     render_step_heading(st, 3)
-    st.markdown('#### 見積金額と宛名を確認する')
-    st.caption('内容はA4横の見積書に自動で並びます。次の工程で、実際の仕上がりを確認できます。')
+    if provisional:
+        st.warning('仮見積（社内確認用）。原本の金額が未確定のため、提出用のPDFやNumbers用ファイルは作成できません。')
+    st.markdown('#### いくら上乗せしますか？' if beginner else '#### 見積金額と宛名を確認する')
+    if not beginner:
+        st.caption('内容はA4横の見積書に自動で並びます。次の工程で、実際の仕上がりを確認できます。')
     m = st.session_state.get('_review_metadata', {})
+    amount_slot = st.empty() if beginner else None
     with st.container(border=True):
         st.caption('見積書を渡すお客様と、表紙の工事名を確認してください。')
         customer = st.text_input('お客様名', value=customer_default(m), placeholder='例：〇〇株式会社 御中', key='review_customer')
@@ -298,15 +312,22 @@ def _render_review_plan(st,api_key,original,rows,sources):
             "顧客税率": st.selectbox("顧客向け税率", [.10, .08, 0.0], format_func=lambda x:f"{x:.0%}", key="review_customer_tax"),
         }
     if simple_profit:
-        value = st.number_input('上乗せする利益（円）', value=0.0, min_value=0.0, step=10000.0,
-            key='review_target_'+digest(['全体','上乗せ額','全体']))
+        amount_key='review_target_'+digest(['全体','上乗せ額','全体'])
+        if beginner:
+            with amount_slot.container():
+                value = st.number_input('上乗せする金額（円）', value=0.0, min_value=0.0,
+                    step=10000.0, key=amount_key)
+                st.caption('そのままの金額で作るときは、0円です。')
+        else:
+            value = st.number_input('上乗せする利益（円）', value=0.0, min_value=0.0, step=10000.0,
+                key=amount_key)
+            st.caption('仕入金額に加える金額です。0円なら仕入金額のまま作ります。話さず、ここに直接入力しても進められます。')
         targets = [Target('全体','全体','上乗せ額',value)]
-        st.caption('仕入金額に加える金額です。0円なら仕入金額のまま作ります。話さず、ここに直接入力しても進められます。')
     if st.session_state.get('_review_conversation_record'):
         metadata['相談反映記録'] = st.session_state['_review_conversation_record']
     from output_preview_ui import page_controls, render_preview
     metadata = page_controls(st, rows, metadata)
-    with st.expander('話して・文字で相談する（相談して決めたいとき）',
+    with st.expander('声・文字で相談する（任意）' if beginner else '話して・文字で相談する（相談して決めたいとき）',
                      expanded=bool(st.session_state.get('_review_proposal') or st.session_state.get('_review_assistant_notice'))):
         render_conversation(st, api_key, working_context(rows, sources, targets, discount, metadata), show_heading=False)
     from round_pricing import render_settings
@@ -356,26 +377,42 @@ def _render_review_plan(st,api_key,original,rows,sources):
     if missing_names:
         st.info('・'.join(missing_names)+'を入れると、完成イメージを見られます。')
     from estimate_review import preview_allowed
-    preview_ready = render_preview(st, draft, preview_allowed(draft) and not missing_names)
+    if provisional:
+        if render_preview(st, draft, preview_allowed(draft) and not missing_names, provisional=True):
+            st.session_state['_review_workflow_step'] = 4
+        return
+    preview_ready = (render_preview(st, draft, preview_allowed(draft) and not missing_names, beginner=True)
+                     if beginner else render_preview(st, draft, preview_allowed(draft) and not missing_names))
     if preview_ready:
         st.session_state['_review_workflow_step'] = 4
-    agree = st.checkbox("内容とページ分けは、これでOKです", disabled=not preview_ready,
-                        key="review_agree_"+draft["fingerprint"])
-    from workflow_steps_ui import render_step_heading
-    render_step_heading(st, 5)
-    st.caption('確認した内容でPDFとNumbers用ファイルを作ります。作成後に保存ボタンが出ます。')
-    if preview_ready and agree:
-        st.session_state['_review_workflow_step'] = 5
+    if beginner:
+        # With no second checkbox, the only consent is clicking this exact
+        # fingerprint's create button, after reviewing the current preview.
+        agree = preview_ready
+        if preview_ready:
+            render_step_heading(st, 5)
+    else:
+        agree = st.checkbox("内容とページ分けは、これでOKです", disabled=not preview_ready,
+                            key="review_agree_"+draft["fingerprint"])
+        render_step_heading(st, 5)
+        st.caption('確認した内容でPDFとNumbers用ファイルを作ります。作成後に保存ボタンが出ます。')
+        if preview_ready and agree:
+            st.session_state['_review_workflow_step'] = 5
     previous_approval = st.session_state.get('_review_approval')
     already_created = (previous_approval and st.session_state.get('_review_result')
         and previous_approval['fingerprint'] == draft['fingerprint'] and valid and agree and preview_ready)
-    if not already_created and not (preview_ready and agree):
+    if not beginner and not already_created and not (preview_ready and agree):
         st.caption('ステップ4で完成イメージを開き、「内容とページ分けは、これでOKです」にチェックすると作成できます。')
     create_slot = st.empty()
     create_clicked = False
-    if not already_created:
+    if not already_created and (not beginner or preview_ready and valid):
         with create_slot.container():
-            create_clicked = st.button("この内容で見積書を作成", type='primary', disabled=not (valid and agree and preview_ready), key="review_approve")
+            if beginner:
+                st.subheader('これで見積書を作りますか？', anchor=False)
+                create_clicked = st.button('はい、PDFを作る', type='primary', width='stretch',
+                    key='review_beginner_approve_' + draft['fingerprint'])
+            else:
+                create_clicked = st.button("この内容で見積書を作成", type='primary', disabled=not (valid and agree and preview_ready), key="review_approve")
     if create_clicked:
         try:
             approval = approve(draft, st.session_state["username"])
@@ -398,14 +435,22 @@ def _render_review_plan(st,api_key,original,rows,sources):
     result = st.session_state.get("_review_result")
     if approval and result and approval["fingerprint"] == draft["fingerprint"] and valid and agree and preview_ready:
         st.session_state['_review_export_ready'] = True
-        st.success("見積書ができました。まずPDFを保存してください。")
-        st.caption('印刷・お客様への提出にはPDFを使います。Numbers用ファイルも、必要な場合だけ保存できます。')
+        st.session_state['_review_workflow_step'] = 5
+        st.success("PDFができました。下のボタンでパソコンに保存してください。" if beginner
+                   else "見積書ができました。まずPDFを保存してください。")
+        if not beginner:
+            st.caption('印刷・お客様への提出にはPDFを使います。Numbers用ファイルも、必要な場合だけ保存できます。')
         st.download_button("PDFを保存", result.pdf_data, type='primary', file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf", on_click=download_cue)
         with st.expander('印刷のしかた'):
             st.write('保存したPDFを開き、「ファイル」→「プリント」を選びます。用紙はA4・横向きです。ページ数を確認してから印刷してください。')
-        st.caption('あとで表を編集する場合はこちらです（Numbers・Excelで開けます）。')
-        st.download_button("Numbers用を保存", result.data, file_name=result.file_name, key="review_xlsx", on_click=download_cue)
-        with st.expander('承認記録を見る・保存する（社内用）'):
-            st.download_button("承認記録を保存", canonical(approval).encode(), file_name="社内承認記録.json", key="review_receipt")
+        if beginner:
+            with st.expander('ほかの形式・社内記録（必要なときだけ）'):
+                st.download_button("Numbers用を保存", result.data, file_name=result.file_name, key="review_xlsx", on_click=download_cue)
+                st.download_button("社内承認記録を保存", canonical(approval).encode(), file_name="社内承認記録.json", key="review_receipt")
+        else:
+            st.caption('あとで表を編集する場合はこちらです（Numbers・Excelで開けます）。')
+            st.download_button("Numbers用を保存", result.data, file_name=result.file_name, key="review_xlsx", on_click=download_cue)
+            with st.expander('承認記録を見る・保存する（社内用）'):
+                st.download_button("承認記録を保存", canonical(approval).encode(), file_name="社内承認記録.json", key="review_receipt")
     elif result:
         st.info("内容が変わりました。完成イメージをもう一度確認して、見積書を作り直してください。")

@@ -426,6 +426,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
     items: List[Dict] = []
     normalized_sources: List[Dict] = []
     page_roles: List[str] = []
+    subtotal_checks_by_source: Dict = {}
 
     for source in summary_sources or []:
         if not isinstance(source, dict):
@@ -456,6 +457,9 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                     if coerced:
                         items.append(coerced)
                         source_items.append(coerced)
+        subtotal_checks = source.get("__subtotal_checks")
+        if isinstance(subtotal_checks, list) and subtotal_checks:
+            subtotal_checks_by_source.setdefault(source_name, []).extend(subtotal_checks)
         if source_items or source_notes or annotation_review or any(source.get(key) not in (None, "", []) for key in ("小計", "改小計", "消費税", "工事費計", "工事名称", "工事名", "件名", "project_name")):
             normalized_sources.append({
                 "見積元": source_vendor,
@@ -491,6 +495,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
         "工事項目": items,
         "summary_sources": normalized_sources,
         "page_roles": page_roles,
+        "subtotal_checks_by_source": subtotal_checks_by_source,
     }
 
 

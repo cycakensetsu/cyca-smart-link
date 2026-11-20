@@ -315,6 +315,9 @@ def render_source(st, source, store, index, detail_rows=None):
             readings[sid] = {'net_total':None,'tax':None,'gross_total':None,'tax_basis':'税抜','tax_rate':.10,'conflicts':[],'evidence':[],'page':1,'read_failed':True}
     reading = readings[sid]
     source['amount_reading'] = reading
+    source['printed_subtotal_checks'] = copy.deepcopy(reading.get('subtotal_checks', []))
+    source.pop('source_variance_decision', None)
+    source.pop('source_subtotal_manual_decision', None)
     source['source_notes'] = reading.get('source_notes',[])
     defaults = st.session_state.setdefault('_review_amount_defaults', {})
     names = {'tax_basis':'review_basis_', 'tax_rate':'review_tax_', 'net_total':'review_net_', 'tax':'review_tax_amount_', 'gross_total':'review_gross_'}
@@ -371,7 +374,9 @@ def render_source(st, source, store, index, detail_rows=None):
                     st.subheader('① 元の見積書',anchor=False)
                     if st.button('原本を大きく見る', key='review_enlarge_' + sid):
                         _large_preview(st, source, store)
-                    preview(st, source, store)
+                    first_problem = next((c.get('page') for c in source['printed_subtotal_checks']
+                        if c.get('status') in ('variance', 'unverified') and type(c.get('page')) is int), 1)
+                    preview(st, source, store, default_page=first_problem)
             with reading_column:
                 return _render_source_details(st, source, reading, rows, detail_rows)
 
@@ -472,9 +477,6 @@ def _render_source_details(st, source, reading, rows, detail_rows):
         if not str(source.get('amount_notes_resolution') or '').strip():
             problems.append('NET金額・税込後の値引きの扱いが未確認です。上の「この金額をどう扱うか確認する」を開いてください。')
     if net is None: problems.append('原本の合計金額を入力すると確認できます。')
-    if actual is not None and net is not None and actual != net:
-        problems.append(f'品目の合計と原本が{abs(actual-net):,}円違います。原本の値引き・諸経費や品目を確認し、上の修正欄で直してください。合計だけを合わせる変更はしません。')
-        st.caption(f'品目の合計：{actual:,}円 ／ 原本の工事金額：{net:,}円')
     if net is not None and show_tax is not None and source['gross_total'] is not None and net+show_tax != source['gross_total']:
         problems.append('工事金額＋消費税が原本の合計と合いません。「原本の合計と違うときだけ直す」で確認してください。')
     if source['tax'] is not None and calc_tax is not None and abs(source['tax']-calc_tax)>1 and not section_tax_matches(source):
@@ -483,8 +485,17 @@ def _render_source_details(st, source, reading, rows, detail_rows):
         problems.append('原本に複数の合計があります。「原本の合計と違うときだけ直す」で最後の合計を確認してください。')
     if source['tax_basis'] not in ('税抜','非課税') or source['tax_rate'] is None:
         problems.append('通常と異なる見積です。原本の税の扱いを確認してください。')
+    from source_subtotal_review_ui import render as render_subtotal
+    if render_subtotal(st, source, rows, actual, other_blockers=bool(problems)):
+        if any(c.get('status') == 'variance' for c in source['printed_subtotal_checks']):
+            problems.append('原本の小計が未解決です。業者に確認するまでは、提出用の見積には進めません。')
+        else:
+            problems.append('原本の小計が未確認です。原本と読み取った内容を見比べてください。')
+    elif actual is not None and net is not None and actual != net:
+        problems.append(f'品目の合計と原本が{abs(actual-net):,}円違います。原本の値引き・諸経費や品目を確認し、上の修正欄で直してください。合計だけを合わせる変更はしません。')
+        st.caption(f'品目の合計：{actual:,}円 ／ 原本の工事金額：{net:,}円')
     from estimate_review import digest
-    signature = digest([source.get(k) for k in ('tax_basis','tax_rate','net_total','tax','gross_total','amount_notes_resolution','row_evidence_confirmation')] + [rows])
+    signature = digest([source.get(k) for k in ('tax_basis','tax_rate','net_total','tax','gross_total','amount_notes_resolution','row_evidence_confirmation','source_subtotal_manual_decision')] + [rows])
     last = st.session_state.get('_review_source_signature_' + sid)
     if problems or (last is not None and last != signature):
         st.session_state['review_source_ok_' + sid] = False
