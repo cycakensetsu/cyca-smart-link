@@ -180,6 +180,14 @@ def update_head(store, key, value):
                 os.unlink(temporary)
 
 
+def _committed_inputs(state):
+    selected = copy.deepcopy(state.get('_work_draft_inputs', {}))
+    selected.update({k: copy.deepcopy(state[k]) for k in state if allowed_key(k)})
+    selected['_review_assistant_rows'] = copy.deepcopy(
+        state.get('_review_assistant_rows', state['_review_original_rows']))
+    return selected
+
+
 def save_draft(state, store, now=None):
     """Save only changed committed inputs. No credentials, uploads, AI or PDFs."""
     extraction = state.get('_review_extraction_id')
@@ -189,10 +197,7 @@ def save_draft(state, store, now=None):
         reset_tracking(state)
         state['_work_draft_extraction'] = extraction
         state['_work_draft_id'] = uuid.uuid4().hex
-    selected = copy.deepcopy(state.get('_work_draft_inputs', {}))
-    selected.update({k: copy.deepcopy(state[k]) for k in state if allowed_key(k)})
-    selected['_review_assistant_rows'] = copy.deepcopy(
-        state.get('_review_assistant_rows', state['_review_original_rows']))
+    selected = _committed_inputs(state)
     fingerprint = digest([extraction, selected])
     if fingerprint == state.get('_work_draft_fingerprint'):
         return state.get('_work_draft_record')
@@ -294,43 +299,145 @@ def restore_draft(state, store, key):
     state.pop('_vault_archive', None)
 
 
-def render_recovery(st):
+_INTAKE_KEYS = {
+    '_detail_df', '_vendor_summaries', '_summary_data', '_categories_summary',
+    '_horizontal_result', '_horizontal_signature', '_force_analyze',
+    '_effects_source_checks', '_vault_archive', '_saved_read_notice',
+}
+
+
+def _retire_upload(state):
+    # Rotate the widget only on a confirmed change. Old uploaded bytes are not
+    # reused against a new or restored set of original rows.
+    for key in list(state):
+        if (key in _INTAKE_KEYS or key.startswith(('_extracted_', 'cat_profit_', '_legacy_', 'estimate_upload_'))):
+            del state[key]
+    state['_upload_epoch'] = uuid.uuid4().hex
+    state['_upload_signature'] = ()
+    state['output_customer'] = ''
+    state['output_project'] = ''
+
+
+def _has_review(state):
+    return bool(state.get('_review_extraction_id') or state.get('_review_original_rows'))
+
+
+def _is_checkpointed(state):
+    extraction = state.get('_review_extraction_id')
+    if not (extraction and state.get('_review_original_rows') and state.get('_work_draft_record')
+            and state.get('_work_draft_extraction') == extraction):
+        return False
+    try:
+        return digest([extraction, _committed_inputs(state)]) == state.get('_work_draft_fingerprint')
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
+def begin_new_estimate(state):
+    """Leave current inputs only after a normal checkpoint. Never write to vault."""
+    if _has_review(state) and not _is_checkpointed(state):
+        return False
+    for key in list(state):
+        if key.startswith(('_review_', 'review_', '_work_draft_')):
+            del state[key]
+    _retire_upload(state)
+    state.pop('_work_resume_id', None)
+    state.pop('_work_resume_confirm', None)
+    state['_work_entry_view'] = 'new'
+    state['_work_new_tip'] = True
+    return True
+
+
+def render_recovery(st, *, allow_resume=True):
+    """Show the new-estimate entry by default; restoring a draft is explicit."""
     from review_ui import vault
-    pending = st.session_state.pop('_work_resume_id', None)
-    if pending:
+    state = st.session_state
+    if state.pop('_work_start_new_requested', False):
+        if not begin_new_estimate(state):
+            st.warning('今の入力をまだ保存できていないため、見積を切り替えていません。画面下の保存状況をご確認ください。')
+        state.pop('_work_confirm_start_new', None)
+
+    pending = state.pop('_work_resume_id', None)
+    if pending and allow_resume and not _has_review(state):
         try:
-            restore_draft(st.session_state, vault(st), pending)
+            restore_draft(state, vault(st), pending)
         except (ValueError, TypeError, KeyError, OSError):
             st.error('途中データを戻せませんでした。今の入力は変更していません。原本と保存先を確認してください。')
         else:
+            _retire_upload(state)
+            state['_work_entry_view'] = 'new'
+            state.pop('_work_new_tip', None)
             st.success('途中の訂正・宛名・金額を戻しました。原本と完成イメージを確認してから作成してください。')
-    hydrate_inputs(st.session_state)
-    if st.session_state.get('_review_extraction_id'):
-        return
-    try:
-        drafts = available_drafts(vault(st))
-    except (ValueError, OSError):
-        st.warning('途中データの一覧を確認できません。保存先を確認してください。')
-        return
-    if not drafts:
-        return
-    st.info('前の作業が自動保存されています。途中から再開できます。')
-    with st.expander('途中の作業から再開', expanded=True):
-        shown = drafts[:30]
-        def label(key):
-            value = next(v for v in shown if v['id'] == key)
-            title = value['state'].get('review_project') or '工事名の入力前'
-            when = datetime.fromisoformat(value['saved_at']).astimezone(ZoneInfo('Asia/Tokyo'))
-            return f"{when:%m/%d %H:%M} ｜ {title} ｜ 作業{value['work_id'][-4:]}"
-        chosen = st.selectbox('再開する作業', [v['id'] for v in shown], format_func=label, key='work_resume_choice')
-        st.caption('訂正・宛名・金額・相談履歴を戻します。別の人やタブの作業は上書きしません。未反映のAI提案と作成承認は戻しません。')
-        if getattr(vault(st), 'shared', False):
-            st.caption('同じログインIDなら、別の端末でも保存した作業を開けます。再開すると別の作業として保存し、元の見積や他の人の変更は上書きしません。')
+
+    hydrate_inputs(state)
+    active = _has_review(state)
+    selected_files = bool(state.get('_upload_signature'))
+    if active or selected_files:
+        state.pop('_work_new_tip', None)
+    resume_view = allow_resume and state.get('_work_entry_view') == 'resume'
+    drafts = []
+    if allow_resume and not active:
+        try:
+            drafts = available_drafts(vault(st))
+        except (ValueError, OSError):
+            st.warning('前回の作業一覧を読み込めません。新しい見積は作れます。必要に応じて保存先をご確認ください。')
+    def request_new():
+        if active or (selected_files and not resume_view):
+            state['_work_confirm_start_new'] = True
         else:
-            st.caption('アプリの再設置などで保管先が消えた場合に備え、社内用バックアップもPCへ保存してください。')
-        def choose():
-            st.session_state['_work_resume_id'] = chosen
-        st.button('この作業を途中から再開', on_click=choose, key='work_resume', type='primary')
+            state['_work_entry_view'] = 'new'
+            if not selected_files:
+                state['_work_new_tip'] = True
+            state.pop('_work_confirm_start_new', None)
+
+    def show_resume():
+        state['_work_entry_view'] = 'resume'
+        state.pop('_work_new_tip', None)
+        state.pop('_work_confirm_start_new', None)
+
+    with st.container(key='estimate_entry_choices'):
+        st.html('<style>.st-key-estimate_entry_choices [data-testid="stButton"] button{min-height:48px;font-weight:700}</style>')
+        st.button('新しい見積を作る', key='work_begin_new', type='secondary' if active else 'primary', width='stretch',
+                  on_click=request_new)
+        if drafts and not resume_view:
+            st.button('前回の続きから再開', key='work_show_resume', width='stretch',
+                      on_click=show_resume)
+        if state.get('_work_confirm_start_new'):
+            if active:
+                if _is_checkpointed(state):
+                    st.caption('保存済みの見積は残ります。品目の訂正フォームに入力中の内容がある場合は、先に「この品目の訂正を保存」を押してください。')
+                else:
+                    st.warning('今の入力の保存が確認できていません。見積を切り替えず、画面下の保存状況をご確認ください。')
+            else:
+                st.caption('選んだファイルを画面から外します。お使いの端末にあるファイルや、保存済みの見積は削除しません。')
+            yes, keep = st.columns(2)
+            yes.button('切り替えて新しい見積を作る', key='work_confirm_new',
+                       on_click=lambda: state.__setitem__('_work_start_new_requested', True),
+                       disabled=active and not _is_checkpointed(state), width='stretch')
+            keep.button('今の作業を続ける', key='work_cancel_new', width='stretch',
+                        on_click=lambda: state.pop('_work_confirm_start_new', None))
+
+    if state.get('_work_new_tip') and not (active or selected_files or resume_view):
+        st.info('下の「見積書のPDF・写真を選ぶ」から、新しい見積を始めてください。')
+
+    if not drafts or not resume_view:
+        return
+    shown = drafts[:30]
+
+    def label(key):
+        value = next(v for v in shown if v['id'] == key)
+        title = value['state'].get('review_project') or '工事名の入力前'
+        when = datetime.fromisoformat(value['saved_at']).astimezone(ZoneInfo('Asia/Tokyo'))
+        return f"{when:%m/%d %H:%M} ｜ {title} ｜ 作業{value['work_id'][-4:]}"
+
+    st.subheader('前回の続きから再開')
+    chosen = st.selectbox('再開する作業を選ぶ', [v['id'] for v in shown], format_func=label, key='work_resume_choice')
+    st.caption('選んだ作業の入力を開きます。保存済みの見積や、ほかの人の作業は上書きしません。')
+    if selected_files:
+        st.info('この作業を開くと、いま選んでいるファイルは画面から外れます。端末にあるファイルは残ります。')
+    label = '選んだファイルを外して、この作業を開く' if selected_files else 'この作業を開く'
+    st.button(label, on_click=lambda: state.__setitem__('_work_resume_id', chosen),
+              key='work_resume', type='primary', width='stretch')
 
 
 def autosave(st):
@@ -346,5 +453,5 @@ def autosave(st):
     if stamp:
         when = datetime.fromisoformat(stamp).astimezone(ZoneInfo('Asia/Tokyo'))
         destination = '共通保存先に' if getattr(vault(st), 'shared', False) else ''
-        st.caption(f'途中の入力を{destination}自動保存済み（{when:%H:%M}）。再ログイン後に「途中の作業から再開」で戻せます。')
+        st.caption(f'途中の入力を{destination}自動保存済み（{when:%H:%M}）。再ログイン後に「前回の続きから再開」で戻せます。')
         st.caption('入力欄はEnterか欄の外を押すと保存されます。1品ずつの訂正は「この品目の訂正を保存」を押してください。')

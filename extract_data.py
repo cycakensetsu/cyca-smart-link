@@ -484,6 +484,10 @@ workflow_slot = st.empty()
 resume_slot = st.empty()
 from workflow_steps_ui import render_workflow_status
 from beginner_intake_ui import render_intake, render_read_button, render_resume_action
+if profit_mode == REVIEW_MODE:
+    from work_drafts import render_recovery
+    render_recovery(st)
+
 if '_upload_epoch' not in st.session_state:
     st.session_state['_upload_epoch'] = uuid.uuid4().hex
 uploaded_files = render_intake(
@@ -514,8 +518,6 @@ if st.session_state.get("_upload_signature") != upload_signature:
 
 if profit_mode == REVIEW_MODE:
     st.session_state["_review_beginner_guided"] = guided_review_ui
-    from work_drafts import render_recovery
-    render_recovery(st)
     with workflow_slot.container():
         render_workflow_status(st)
 
