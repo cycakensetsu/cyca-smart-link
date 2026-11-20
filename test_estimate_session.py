@@ -67,11 +67,23 @@ class EstimateSessionTests(unittest.TestCase):
             at.text_input(key='review_customer').set_value('架空のお客様 御中').run()
             at.button(key='review_preview').click().run()
             next(c for c in at.checkbox if c.key.startswith('review_agree_')).check().run()
-            at.button(key='review_approve').click().run()
+            from streamlit.runtime.media_file_manager import MediaFileManager
+            # AppTest registers downloads with its real memory media manager.
+            # Record the metadata while preserving native URL registration.
+            with patch.object(MediaFileManager, 'add', autospec=True,
+                              side_effect=MediaFileManager.add) as add:
+                at.button(key='review_approve').click().run()
+            registration = next(call for call in add.call_args_list
+                                if call.kwargs.get('is_for_static_download'))
+            self.assertEqual(registration.args[2], 'application/pdf')
+            self.assertTrue(registration.kwargs['file_name'].endswith('.pdf'))
             self.assertFalse(at.exception)
             self.assertTrue(at.session_state['_review_result'].pdf_data.startswith(b'%PDF'))
             downloads = [d.proto.label for d in at.get('download_button')]
             self.assertEqual(downloads, ['PDFを保存'])
+            button = at.get('download_button')[0].proto
+            self.assertTrue(button.ignore_rerun)
+            self.assertRegex(button.url, r'/media/[^/]+\.pdf$')
             self.assertEqual(list(Path(tmp).iterdir()), [])
             at.button(key='session_estimate_new').click().run()
             at.button(key='session_estimate_cancel_new').click().run()

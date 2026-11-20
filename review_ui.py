@@ -458,7 +458,13 @@ def _render_review_plan(st,api_key,original,rows,sources):
                    else "見積書ができました。まずPDFを保存してください。")
         if not beginner and not live:
             st.caption('印刷・お客様への提出にはPDFを使います。Numbers用ファイルも、必要な場合だけ保存できます。')
-        st.download_button("PDFを保存", result.pdf_data, type='primary', file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf", on_click=download_cue)
+        filename = result.file_name.removesuffix('.xlsx') + '.pdf'
+        if live:
+            st.download_button("PDFを保存", result.pdf_data, type='primary', file_name=filename,
+                               key="review_pdf", mime='application/pdf', on_click='ignore')
+        else:
+            st.download_button("PDFを保存", result.pdf_data, type='primary', file_name=filename,
+                               key="review_pdf", on_click=download_cue)
         with st.expander('印刷のしかた'):
             st.write('保存したPDFを開き、「ファイル」→「プリント」を選びます。用紙はA4・横向きです。ページ数を確認してから印刷してください。')
         if live:
