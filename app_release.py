@@ -25,7 +25,8 @@ def _source_fingerprint():
     for name in _MODULES:
         result.update(name.encode())
         result.update((_ROOT / (name + '.py')).read_bytes())
-    for asset in sorted([*(_ROOT / 'work_effects_frontend').glob('*'),
+    for asset in sorted([_ROOT / 'estimate_uploader_ja.js',
+                         *(_ROOT / 'work_effects_frontend').glob('*'),
                          *(_ROOT / 'browser_backups_frontend').glob('*')]):
         if asset.is_file():
             result.update(asset.name.encode())
