@@ -141,3 +141,27 @@ def render(st):
         else:
             state['_vault_restore_notice'] = f'このブラウザに保存した作業データ{count}件を戻しました。上の「前回の続きから再開」で開けます。'
             st.rerun()
+
+
+_cleanup_component = None
+
+
+def render_cleanup(st):
+    """Only mount a narrowly scoped browser deletion action; no backup data."""
+    global _cleanup_component
+    state = st.session_state
+    username = state.get('username')
+    if not state.get('logged_in') or not username or not hasattr(st.components, 'v2'):
+        return
+    from hashlib import sha256
+    from pathlib import Path
+    with st.sidebar:
+        enabled = st.checkbox('このブラウザの旧データを整理（必要なときだけ）', key='estimate_cleanup_mode')
+        if not enabled:
+            return
+        if _cleanup_component is None:
+            assets = Path(__file__).parent/'browser_backups_frontend'
+            _cleanup_component = st.components.v2.component('cyca_old_work_cleanup',
+                html=(assets/'cleanup.html').read_text(), js=(assets/'cleanup.js').read_text())
+        owner = sha256(str(username).encode()).hexdigest()
+        _cleanup_component(data={'owner': owner}, key='cyca_old_work_cleanup')

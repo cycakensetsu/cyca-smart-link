@@ -453,6 +453,8 @@ workflow_slot = st.empty()
 resume_slot = st.empty()
 from workflow_steps_ui import render_workflow_status
 from beginner_intake_ui import render_intake, render_read_button, render_resume_action
+from browser_backups import render_cleanup
+render_cleanup(st)
 from estimate_session import render_entry, render_invoice_route
 render_invoice_route(st)
 render_entry(st)
