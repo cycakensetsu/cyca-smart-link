@@ -165,7 +165,7 @@ def call_gemini_with_retry(
     for model_name in models:
         if on_model_start:
             on_model_start(model_name, page_number)
-        LOGGER.info("gemini_call_start model=%s page=%s source=%s", model_name, page_number, source_name)
+        LOGGER.info("gemini_call_start model=%s page=%s", model_name, page_number)
         for attempt in range(1, max_attempts_per_model + 1):
             try:
                 arguments = {'model': model_name, 'contents': contents}
@@ -174,11 +174,10 @@ def call_gemini_with_retry(
                 response = client.models.generate_content(**arguments)
                 text = _get_response_text(response)
                 LOGGER.info(
-                    "gemini_call_success model=%s retry_count=%s page=%s source=%s",
+                    "gemini_call_success model=%s retry_count=%s page=%s",
                     model_name,
                     attempt - 1,
                     page_number,
-                    source_name,
                 )
                 return GeminiCallResult(text=text, model_name=model_name, retry_count=attempt - 1)
             except Exception as exc:
@@ -186,33 +185,30 @@ def call_gemini_with_retry(
                 last_code = _extract_error_code(exc)
                 last_error_was_model_unavailable = _is_model_unavailable(exc)
                 LOGGER.warning(
-                    "gemini_call_error model=%s attempt=%s/%s error_code=%s page=%s source=%s error=%s",
+                    "gemini_call_error model=%s attempt=%s/%s error_code=%s page=%s error=%s",
                     model_name,
                     attempt,
                     max_attempts_per_model,
                     last_code,
                     page_number,
-                    source_name,
                     type(exc).__name__,
                 )
                 if last_error_was_model_unavailable:
                     LOGGER.warning(
-                        "gemini_model_unavailable model=%s error_code=%s page=%s source=%s",
+                        "gemini_model_unavailable model=%s error_code=%s page=%s",
                         model_name,
                         last_code,
                         page_number,
-                        source_name,
                     )
                     break
                 if not _is_retryable(exc):
                     raise
                 if attempt >= max_attempts_per_model:
                     LOGGER.warning(
-                        "gemini_model_exhausted model=%s error_code=%s page=%s source=%s",
+                        "gemini_model_exhausted model=%s error_code=%s page=%s",
                         model_name,
                         last_code,
                         page_number,
-                        source_name,
                     )
                     break
                 base_delay = backoff_seconds[min(attempt - 1, len(backoff_seconds) - 1)]
@@ -220,21 +216,19 @@ def call_gemini_with_retry(
                 if on_retry:
                     on_retry(model_name, attempt, delay, last_code, page_number)
                 LOGGER.info(
-                    "gemini_retry_wait model=%s attempt=%s delay=%.2f error_code=%s page=%s source=%s",
+                    "gemini_retry_wait model=%s attempt=%s delay=%.2f error_code=%s page=%s",
                     model_name,
                     attempt,
                     delay,
                     last_code,
                     page_number,
-                    source_name,
                 )
                 time.sleep(delay)
 
     LOGGER.error(
-        "gemini_call_failed final_error_code=%s failed_page=%s source=%s final_error=%s",
+        "gemini_call_failed final_error_code=%s failed_page=%s final_error=%s",
         last_code,
         page_number,
-        source_name,
         type(last_error).__name__ if last_error else None,
     )
     if last_error_was_model_unavailable and last_error is not None:
@@ -304,7 +298,7 @@ def prepare_upload_for_gemini_pages(path: str, source_name: str) -> List[GeminiP
                 )
             ]
         except Exception as exc:
-            LOGGER.error("pdf_preprocess_failed source=%s error_type=%s", source_name, type(exc).__name__)
+            LOGGER.error("pdf_preprocess_failed error_type=%s", type(exc).__name__)
             raise
 
     from PIL import Image

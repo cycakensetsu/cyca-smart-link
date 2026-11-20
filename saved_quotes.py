@@ -90,3 +90,26 @@ def render_saved_quotes(st, store):
             if ready[2].get('xlsx'):
                 st.download_button('保存済みNumbers用を開く・保存', ready[2]['xlsx'],
                                    file_name='CYCA_保存済み見積_'+chosen[:12]+'.xlsx', key='saved_quote_xlsx')
+
+
+
+def render_historical_invoices(st, store):
+    """Existing completed quotes may inform invoices, not restart estimate work."""
+    try:
+        quotes = completed_quotes(store)
+    except (OSError, ValueError, KeyError, TypeError):
+        st.warning('過去の見積を確認できません。接続を確認してから開き直してください。')
+        return
+    if not quotes:
+        st.info('請求書に使える過去の見積がありません。')
+        return
+    by_id = {quote['id']: quote for quote in quotes}
+
+    def label(key):
+        quote = by_id[key]
+        return f"{quote['when'].astimezone(ZoneInfo('Asia/Tokyo')):%m/%d %H:%M} ｜ {quote['title']} ｜ {key[-4:]}"
+
+    st.caption('ここでは、以前に保存された見積を請求書に使います。新しく作る見積は保存されず、この一覧には追加されません。')
+    chosen = st.selectbox('請求書のもとにする見積', list(by_id), format_func=label, key='invoice_historical_quote')
+    from invoice_workflow_ui import render_invoice_workflow
+    render_invoice_workflow(st, store, chosen)
