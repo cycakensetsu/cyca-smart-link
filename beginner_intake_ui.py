@@ -1,11 +1,17 @@
 """One clear next action for employees; no change to file intake or permissions."""
 from contextlib import nullcontext
+from inspect import signature
+from pathlib import Path
 
 from workflow_steps_ui import current_step, render_next_action, render_step_heading
 
 STYLE = """<style>
 .cyca-start {color:#173c52;font-size:1.18rem;line-height:1.65;margin:.25rem 0 .55rem}
 .st-key-beginner_intake [data-testid="stFileUploaderDropzone"] {min-height:78px}
+.st-key-beginner_intake [data-testid="stFileUploaderDropzone"] button {
+background:#164f68;color:white;border-color:#164f68;padding-inline:18px}
+.st-key-beginner_intake [data-testid="stFileUploaderDropzone"] button:not(:disabled):hover {
+background:#24677e;color:white}
 .st-key-beginner_intake [data-testid="stFileUploaderDropzone"] button,
 .st-key-beginner_read_button button {min-height:48px;font-size:1.05rem;font-weight:700}
 .st-key-beginner_intake button:focus-visible,.st-key-beginner_read_button button:focus-visible {
@@ -27,8 +33,14 @@ def render_intake(st, *, key, max_upload_size=None, guided=True):
                 st.caption('PDF・写真に対応しています。複数の業者分も一度に選べます。')
             else:
                 st.caption('別の見積書を選ぶと、この画面は新しい見積に切り替わります。')
-            return st.file_uploader('見積書のPDF・写真を選ぶ', type=['pdf', 'jpg', 'jpeg', 'png'],
-                                    accept_multiple_files=True, key=key, **options)
+            value = st.file_uploader('見積書のPDF・写真を選ぶ', type=['pdf', 'jpg', 'jpeg', 'png'],
+                                     accept_multiple_files=True, key=key, **options)
+    # Use a fixed bundled script, never filenames or browser input. Native
+    # upload remains usable on older Streamlit versions that lack this option.
+    if 'unsafe_allow_javascript' in signature(st.html).parameters:
+        script = Path(__file__).with_name('estimate_uploader_ja.js').read_text(encoding='utf-8')
+        st.html('<script>' + script + '</script>', unsafe_allow_javascript=True)
+    return value
 
 
 def render_resume_action(st):

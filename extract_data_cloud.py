@@ -50,7 +50,7 @@ from template_fill_test import TEMPLATE_FILL_TEST_NAME, build_template_fill_test
 import template_fill_test_v2 as tfv2
 from horizontal_estimate_flow import build_horizontal_estimate
 from estimate_review import REVIEW_MODE
-from review_ui import preserve_uploads, capture_extraction, render_review, render_archive, vault
+from review_ui import preserve_uploads, capture_extraction, render_review
 from legacy_exports import queue_draft_export, render_draft_exports
 from work_effects import cue, render as render_work_effects
 from product_design import STYLE as PRODUCT_STYLE, loading_panel, ready_panel
@@ -438,51 +438,11 @@ st.caption("正式な見積書を作る前に、読み取った内容を元の�
 # ==========================================
 # 画面レイアウト（2カラムで見やすく）
 # ==========================================
-with st.sidebar.expander("詳しい利益設定・従来の出力形式", expanded=False):
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown('<div class="sub-header">💰 利益シミュレーション</div>', unsafe_allow_html=True)
-        profit_mode = st.radio(
-            "利益の上乗せ方法を選択してください",
-            (REVIEW_MODE, "上乗せしない（原価そのまま）", "固定金額（円）を全体に割り振る", "パーセンテージ（%）で全体に乗せる", "見積元（会社）ごとに金額を指定する")
-        )
-
-        profit_val = 0.0
-        if profit_mode == "パーセンテージ（%）で全体に乗せる":
-            profit_val = st.number_input("上乗せする割合（%）を入力", min_value=0.0, value=10.0, step=1.0)
-            st.markdown(f"<div class='highlight-red'>🚀 {profit_val} ％ 上乗せ</div>", unsafe_allow_html=True)
-        elif profit_mode == "固定金額（円）を全体に割り振る":
-            profit_val = st.number_input("上乗せする金額を入力（数字のみ）", min_value=0, value=3000000, step=100000)
-            st.markdown(f"<div class='highlight-red'>💰 上乗せ額: {int(profit_val):,} 円</div>", unsafe_allow_html=True)
-        elif profit_mode == "見積元（会社）ごとに金額を指定する":
-            st.caption("PDFを解析した後、見積元（会社）ごとの原価が表示されます。各社に上乗せ額を入力してください。")
-
-    with col2:
-        st.markdown('<div class="sub-header">📋 出力フォーマット設定</div>', unsafe_allow_html=True)
-        current_username = st.session_state.get("username", "")
-
-        format_choice = st.radio(
-            "出力フォーマットを選んでください",
-            (
-                HORIZONTAL_FORMAT,
-                "彩架建設 企業用見積（2シート：一式表＋明細）",
-                "彩架建設 簡易工事見積（1シート：明細のみ）",
-                "汎用フォーマット（Excel）",
-            ),
-            disabled=profit_mode == REVIEW_MODE,
-        )
-        if profit_mode == REVIEW_MODE:
-            st.caption("承認付き統合では、アプリ既存の横型流し込みテンプレートを使います。表紙・工事品目集計・明細を分け、明細は20行ごとに改ページします。")
-        if format_choice == HORIZONTAL_FORMAT:
-            st.caption("新しい見積書をアップロードして解析すると、表紙・一式まとめ・明細を印刷ページごとに分けたA4横型のNumbers対応ファイルを作成します。テストデータは使用しません。")
-
-        elif format_choice == "彩架建設 企業用見積（2シート：一式表＋明細）":
-            st.caption("Numbers の「工事内容」と「工事内容明細」にそのままコピペできる形式です。列順: No. / 工事品目 / 仕様 / 数量 / 単位 / 単価 / 金額 / 備考")
-        elif format_choice == "彩架建設 簡易工事見積（1シート：明細のみ）":
-            st.caption("1枚ペラの簡易見積用。Numbers にそのままコピペできます。列順: 商品名・工事名 / 数量 / 単 / 単価（円）/ 金額（円）")
-        else:
-            st.caption("工事品目・仕様・数量・単位・単価・金額・備考の汎用 Excel を出力します。")
+# This employee estimate entrypoint always uses approval + PDF.
+# Detailed review is available below; former persisted/legacy exports are not.
+profit_mode = REVIEW_MODE
+format_choice = HORIZONTAL_FORMAT
+profit_val = 0.0
 
 with st.sidebar:
     show_detailed_review = st.checkbox('詳細な確認・設定を表示する', value=False, key='expert_review_settings')
@@ -493,9 +453,11 @@ workflow_slot = st.empty()
 resume_slot = st.empty()
 from workflow_steps_ui import render_workflow_status
 from beginner_intake_ui import render_intake, render_read_button, render_resume_action
-if profit_mode == REVIEW_MODE:
-    from work_drafts import render_recovery
-    render_recovery(st)
+from browser_backups import render_cleanup
+render_cleanup(st)
+from estimate_session import render_entry, render_invoice_route
+render_invoice_route(st)
+render_entry(st)
 
 if '_upload_epoch' not in st.session_state:
     st.session_state['_upload_epoch'] = uuid.uuid4().hex
@@ -509,8 +471,9 @@ upload_signature = tuple(
     (f.name, f.size, hashlib.sha256(f.getbuffer()).hexdigest()) for f in (uploaded_files or [])
 )
 if st.session_state.get("_upload_signature") != upload_signature:
-    from work_drafts import reset_tracking
-    reset_tracking(st.session_state)
+    # The currently selected set owns every in-memory original and read cache.
+    for key in ('_live_estimate_store', '_complete_document_cache', '_extraction_cache'):
+        st.session_state.pop(key, None)
     for key in list(st.session_state):
         if key.startswith(("_extracted_", "cat_profit_", "_review_", "review_", "_legacy_")) or key in (
             "_detail_df", "_vendor_summaries", "_summary_data", "_categories_summary",
@@ -660,6 +623,7 @@ if uploaded_files:
         if not MY_API_KEY:
             st.error("見積書の読み取りを利用できません。管理者にお問い合わせください。")
         else:
+                temp_paths = []
                 try:
                     read_started = time.monotonic()
                     intake_panel.empty()
@@ -676,7 +640,6 @@ if uploaded_files:
                     status_area.markdown(loading_panel(n_files), unsafe_allow_html=True)
 
                     page_jobs = []
-                    temp_paths = []
                     source_paths = {}
                     primary_model, fallback_models = get_configured_gemini_models(st.secrets)
                     from complete_document_cache import get_document, put_document
@@ -736,8 +699,7 @@ if uploaded_files:
                             client_factory=lambda: PacedGeminiClient(genai.Client(api_key=MY_API_KEY,
                                 http_options={"timeout":90000,"retry_options":{"attempts":1}})),
                             primary_model=primary_model, fallback_models=fallback_models,
-                            cache=st.session_state.setdefault('_extraction_cache', {}),
-                            checkpoint_store=vault(st)):
+                            cache=st.session_state.setdefault('_extraction_cache', {})):
                         kind = event['kind']
                         if kind == 'done':
                             job = page_jobs[event['index']]
@@ -787,7 +749,6 @@ if uploaded_files:
                         log_gemini_analysis_complete(successful_models, len(page_jobs))
 
 
-                    _cleanup_temp_paths(temp_paths)
                     progress_bar.progress(86, text="品目と金額を整理しています…")
 
                     progress_bar.progress(90, text="原本と品目の対応・金額を確認しています…")
@@ -811,6 +772,8 @@ if uploaded_files:
                             st.toast("読み取り結果を下に表示しました。", icon=":material/check_circle:")
                         cue(st, "read")
                         if profit_mode == REVIEW_MODE:
+                            from workflow_steps_ui import render_next_action
+                            render_next_action(st, 2, '次へ：読み取った内容を確認する')
                             raise _CatInputNeeded()
                         df = cost_df
                         issues = validate_intermediate(cost_df, {}) + validate_intermediate(detail_df, {})
@@ -1006,7 +969,6 @@ if uploaded_files:
                 except _CatInputNeeded:
                     pass
                 except GeminiTemporaryUnavailable:
-                    _cleanup_temp_paths(locals().get("temp_paths", []))
                     try:
                         status_area.empty()
                     except Exception:
@@ -1016,7 +978,6 @@ if uploaded_files:
                         st.session_state["_force_analyze"] = True
                         st.rerun()
                 except Exception as e:
-                    _cleanup_temp_paths(locals().get("temp_paths", []))
                     try:
                         err_msg = str(e)
                     except Exception:
@@ -1044,6 +1005,8 @@ if uploaded_files:
                             st.error(f"❌ エラーが発生しました: {err_msg}")
                         except Exception:
                             st.error("❌ エラーが発生しました。")
+                finally:
+                    _cleanup_temp_paths(temp_paths)
 
 # ==========================================
 # 見積元（会社）ごとに金額を指定するモード（2段階目）
@@ -1233,6 +1196,5 @@ if profit_mode != REVIEW_MODE:
     render_draft_exports(st, legacy_export_signature())
 
 # Stable component position preserves the user-activated audio context across reruns.
-render_archive(st)
 with effects_slot:
     render_work_effects(st)

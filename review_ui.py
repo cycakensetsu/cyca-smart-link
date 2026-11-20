@@ -13,6 +13,13 @@ from estimate_review import (OriginalVault, Target, REVIEW_MODE, review_rows, bu
 
 
 def vault(st):
+    from estimate_session import estimate_originals, is_session_estimate
+    if is_session_estimate(st.session_state):
+        return estimate_originals(st.session_state)
+    return durable_vault(st)
+
+
+def durable_vault(st):
     root = os.environ.get("CYCA_DATA_DIR", str(Path(__file__).parent / ".private_data"))
     secrets = getattr(st, 'secrets', {})
     try:
@@ -179,8 +186,10 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
     st.session_state["_review_original_rows"] = rows
     st.session_state["_review_metadata"] = dict(summaries or {})
     st.session_state["_review_extraction_id"] = extraction_id
-    from source_spec_history import ensure_spec_history
-    ensure_spec_history(st.session_state, store, raw)
+    from estimate_session import is_session_estimate
+    if not is_session_estimate(st.session_state):
+        from source_spec_history import ensure_spec_history
+        ensure_spec_history(st.session_state, store, raw)
     for key in list(st.session_state):
         if key.startswith(('review_source_ok_', 'review_reference_only_', 'review_agree_', 'review_resolve_totals_', 'review_cap_override_')):
             # Identical originals reuse widget IDs. Deletion resets the server
@@ -194,15 +203,19 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
 
 
 def render_review(st, api_key=None):
-    from work_drafts import hydrate_inputs
-    hydrate_inputs(st.session_state)
+    from estimate_session import is_session_estimate
+    live = is_session_estimate(st.session_state)
+    if not live:
+        from work_drafts import hydrate_inputs
+        hydrate_inputs(st.session_state)
     st.session_state['_review_export_ready'] = False
     original = st.session_state.get("_review_original_rows")
     st.session_state['_review_workflow_step'] = 2 if original else 1
     if not original:
         return
-    from source_spec_history import ensure_spec_history
-    ensure_spec_history(st.session_state, vault(st))
+    if not live:
+        from source_spec_history import ensure_spec_history
+        ensure_spec_history(st.session_state, vault(st))
     from conversation_ui import apply_pending, working_context, render_conversation
     apply_pending(st, vault(st))
     if st.session_state.pop('_review_clear_instruction', False):
@@ -265,9 +278,12 @@ def _render_review_plan(st,api_key,original,rows,sources):
     from estimate_review import source_provisional_active
     provisional = any(source_provisional_active(source, rows) for source in sources if not source.get('confirmed'))
     beginner = st.session_state.get('_review_beginner_guided') is True
+    from estimate_session import is_session_estimate
+    live = is_session_estimate(st.session_state)
     render_step_heading(st, 3)
     if provisional:
-        st.warning('仮見積（社内確認用）。原本の金額が未確定のため、提出用のPDFやNumbers用ファイルは作成できません。')
+        st.warning('仮見積（社内確認用）。原本の金額が未確定のため、提出用のPDFは作成できません。' if live
+                   else '仮見積（社内確認用）。原本の金額が未確定のため、提出用のPDFやNumbers用ファイルは作成できません。')
     st.markdown('#### いくら上乗せしますか？' if beginner else '#### 見積金額と宛名を確認する')
     if not beginner:
         st.caption('内容はA4横の見積書に自動で並びます。次の工程で、実際の仕上がりを確認できます。')
@@ -395,7 +411,8 @@ def _render_review_plan(st,api_key,original,rows,sources):
         agree = st.checkbox("内容とページ分けは、これでOKです", disabled=not preview_ready,
                             key="review_agree_"+draft["fingerprint"])
         render_step_heading(st, 5)
-        st.caption('確認した内容でPDFとNumbers用ファイルを作ります。作成後に保存ボタンが出ます。')
+        st.caption('確認した内容でPDFを作ります。作成後に保存ボタンが出ます。' if live
+                   else '確認した内容でPDFとNumbers用ファイルを作ります。作成後に保存ボタンが出ます。')
         if preview_ready and agree:
             st.session_state['_review_workflow_step'] = 5
     previous_approval = st.session_state.get('_review_approval')
@@ -420,10 +437,11 @@ def _render_review_plan(st,api_key,original,rows,sources):
             if not result.ok:
                 st.error("帳票の検証に失敗しました。" + " / ".join(result.errors))
                 return
-            store = vault(st)
-            store.snapshot("approvals", approval)
-            store.export(approval, "xlsx", result.data)
-            store.export(approval, "pdf", result.pdf_data)
+            if not live:
+                store = vault(st)
+                store.snapshot("approvals", approval)
+                store.export(approval, "xlsx", result.data)
+                store.export(approval, "pdf", result.pdf_data)
             st.session_state.pop('_vault_archive', None)
             st.session_state["_review_result"] = result
             st.session_state["_review_approval"] = approval
@@ -436,14 +454,22 @@ def _render_review_plan(st,api_key,original,rows,sources):
     if approval and result and approval["fingerprint"] == draft["fingerprint"] and valid and agree and preview_ready:
         st.session_state['_review_export_ready'] = True
         st.session_state['_review_workflow_step'] = 5
-        st.success("PDFができました。下のボタンでパソコンに保存してください。" if beginner
+        st.success("PDFができました。下のボタンでパソコンに保存してください。" if beginner or live
                    else "見積書ができました。まずPDFを保存してください。")
-        if not beginner:
+        if not beginner and not live:
             st.caption('印刷・お客様への提出にはPDFを使います。Numbers用ファイルも、必要な場合だけ保存できます。')
-        st.download_button("PDFを保存", result.pdf_data, type='primary', file_name=result.file_name.removesuffix('.xlsx')+'.pdf', key="review_pdf", on_click=download_cue)
+        filename = result.file_name.removesuffix('.xlsx') + '.pdf'
+        if live:
+            st.download_button("PDFを保存", result.pdf_data, type='primary', file_name=filename,
+                               key="review_pdf", mime='application/pdf', on_click='ignore')
+        else:
+            st.download_button("PDFを保存", result.pdf_data, type='primary', file_name=filename,
+                               key="review_pdf", on_click=download_cue)
         with st.expander('印刷のしかた'):
             st.write('保存したPDFを開き、「ファイル」→「プリント」を選びます。用紙はA4・横向きです。ページ数を確認してから印刷してください。')
-        if beginner:
+        if live:
+            st.caption('このPDFはアプリに残りません。必要な場合は、この画面を閉じる前にPCに保存してください。')
+        elif beginner:
             with st.expander('ほかの形式・社内記録（必要なときだけ）'):
                 st.download_button("Numbers用を保存", result.data, file_name=result.file_name, key="review_xlsx", on_click=download_cue)
                 st.download_button("社内承認記録を保存", canonical(approval).encode(), file_name="社内承認記録.json", key="review_receipt")

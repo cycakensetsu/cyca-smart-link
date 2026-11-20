@@ -29,7 +29,10 @@ class BeginnerIntakeTests(unittest.TestCase):
                 self.assertEqual(widget.proto.label,'見積書のPDF・写真を選ぶ')
                 self.assertTrue(widget.proto.multiple_files)
                 self.assertTrue(any('まず、業者から届いた見積書を選んでください' in m.value for m in at.markdown))
-                self.assertTrue(any(e.label == '詳しい利益設定・従来の出力形式' for e in at.sidebar.expander))
+                self.assertFalse(any(e.label == '詳しい利益設定・従来の出力形式' for e in at.sidebar.expander))
+                self.assertIn('新しい見積を作る', [b.label for b in at.button])
+                self.assertNotIn('前回の続きから再開', [b.label for b in at.button])
+                self.assertTrue(at.session_state['_live_estimate_session'])
                 # AppTest on newer Streamlit retains the one-run login widget even
                 # after the app has deliberately erased its password. Reopen the
                 # app with only the real validated session fields, no password.
