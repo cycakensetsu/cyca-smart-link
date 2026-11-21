@@ -161,7 +161,7 @@ class SourceSectionsTest(unittest.TestCase):
         out=reconcile_sections(rows,summaries,'a.pdf')
         self.assertTrue(any(r['品名']=='工事一式' and r['__page_number']==1 for r in out))
 
-    def test_unique_full_detail_pages_can_prove_broadly_classified_cover_headings(self):
+    def test_same_amount_full_pages_cannot_alone_prove_broadly_classified_cover_headings(self):
         summary={'__source_name':'a.pdf','__page_number':1,'__page_role':'cover_summary_page',
                  '工事項目':[{'工事項目':'外壁改修工事費','金額':30000},
                               {'工事項目':'屋上改修工事','金額':40000}]}
@@ -172,7 +172,7 @@ class SourceSectionsTest(unittest.TestCase):
                 rows.append(dict(品名='原本にある施工',数量=1,単位='式',単価=value,金額=value,
                                  工事種別='改修工事',__source_name='a.pdf',__page_number=page))
         out=reconcile_sections(rows,[summary],'a.pdf')
-        self.assertEqual(out,rows[2:])
+        self.assertEqual([r['品名'] for r in out],[r['品名'] for r in rows])
         duplicate_page=[dict(r,__page_number=4) for r in rows[2:4]]
         ambiguous=reconcile_sections(rows+duplicate_page,[summary],'a.pdf')
         self.assertTrue(any(r['品名']=='外壁改修工事' for r in ambiguous))

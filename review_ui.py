@@ -175,6 +175,8 @@ def capture_extraction(st, detail, summaries, records, read_errors=()):
     for source in sources:
         source.update(confirmed=False, reference_only=False, reference_confirmed=False)
         source['read_errors'] = [e for e in read_errors if e['source'] == source['name']]
+        source['aggregate_reconciliations'] = [item for summary in (summaries or {}).get('summary_sources', [])
+            if summary.get('元ファイル') == source['name'] for item in summary.get('表紙集計照合', [])]
     rows = review_rows(detail, sources)
     summary_only = {(r.get('__source_name'),r.get('__page_number'),str(r.get('品名')),r.get('金額')) for r in records if r.get('__summary_only')}
     for r in rows:
@@ -347,7 +349,7 @@ def _render_review_plan(st,api_key,original,rows,sources):
                      expanded=bool(st.session_state.get('_review_proposal') or st.session_state.get('_review_assistant_notice'))):
         render_conversation(st, api_key, working_context(rows, sources, targets, discount, metadata), show_heading=False)
     from round_pricing import render_settings
-    rounding = render_settings(st, rows, targets, digest)
+    rounding = render_settings(st, rows, targets, digest, compact=beginner)
     if rounding is not None:
         metadata['個別単価案'] = rounding
     decision_context = digest([rows, sources, [target.__dict__ for target in targets], discount, rounding])
@@ -364,7 +366,7 @@ def _render_review_plan(st,api_key,original,rows,sources):
         if options and reconcile_choice(st.session_state, options):
             st.info('金額条件が変わったため、値引き案の採用を解除しました。')
             draft = build_draft(original, rows, sources, targets, discount, metadata)
-        render_options(st, options)
+        render_options(st, options, compact=beginner)
         from review_findings_ui import render_findings
         resolutions=render_findings(st,draft,all(source.get('confirmed') for source in sources))
         draft = build_draft(original, rows, sources, targets, discount, metadata, resolutions,
@@ -374,9 +376,13 @@ def _render_review_plan(st,api_key,original,rows,sources):
         return
     totals = draft["payload"]["合計"]
     st.text('宛名：' + metadata['宛名'] + '　／　工事名称：' + metadata['工事名称'])
-    st.metric('仕入原価（税抜）', f"{totals['仕入原価']:,}円")
-    st.metric('最終利益（値引き後・税抜）', f"{totals['粗利益']:,}円")
-    st.metric('お客様への税込見積額', f"{totals['税込売価']:,}円")
+    if beginner:
+        st.metric('上乗せ後の金額（税込）', f"{totals['税込売価']:,}円")
+        st.caption(f"上乗せ額 {totals['粗利益']:,}円（税抜） ／ 税抜合計 {totals['税抜売価']:,}円 ／ 消費税 {totals['税額']:,}円")
+    else:
+        st.metric('仕入原価（税抜）', f"{totals['仕入原価']:,}円")
+        st.metric('最終利益（値引き後・税抜）', f"{totals['粗利益']:,}円")
+        st.metric('お客様への税込見積額', f"{totals['税込売価']:,}円")
     if totals['顧客値引き']:
         st.caption(f"採用済みの顧客値引き：{totals['顧客値引き']:,}円 ／ 値引き後の粗利益：{totals['粗利益']:,}円")
     with st.expander('原価・売価・税・粗利益の内訳を確認'):

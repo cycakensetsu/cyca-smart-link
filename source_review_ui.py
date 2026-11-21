@@ -193,8 +193,48 @@ def _render_spec_comparisons(st, rows, sid):
                       on_click=_show_spec_original, args=(st.session_state, sid, page))
 
 
+def _source_exception_card(st, rows, source):
+    """Show mismatches and a narrow, explicit row action before the long list."""
+    from item_correction_ui import apply_inclusion
+    selected = [r for r in rows if r.get('採用', True)]
+    try:
+        actual = sum(Decimal(str(r['原価金額'])) for r in selected)
+        if not actual.is_finite(): actual = None
+    except (ValueError, TypeError, KeyError, ArithmeticError):
+        actual = None
+    net = st.session_state.get('review_net_' + source['id'], source.get('net_total'))
+    mismatch = actual is not None and net is not None and actual != net
+    excluded = [r for r in rows if not r.get('採用', True)]
+    if not mismatch and not excluded:
+        return
+    with st.container(border=True):
+        if mismatch:
+            st.markdown(f'**先に品目を確認してください。品目の合計 {actual:,.0f}円 ／ 原本 {net:,}円 ／ 差 {abs(actual-net):,.0f}円。**')
+            st.write('表紙の集計を明細にも数えていないか、原本のページを見比べてください。本物の工事・諸経費は残します。')
+        for row in excluded:
+            st.caption(f"計算から外した品目：{row['品名']} ／ {row.get('除外理由', '')}")
+        options = {r['行ID']: r for r in rows}
+        sid = source['id']
+        chosen = st.selectbox('確認する品目', list(options),
+            format_func=lambda k: f"{options[k].get('ページ', '?')}ページ：{options[k]['品名']} ／ {_number(options[k].get('原価金額'))}円",
+            key='review_exception_row_' + sid)
+        row = options[chosen]
+        st.write(f"確認する行：{row['品名']} ／ {_number(row.get('原価金額'))}円")
+        choice = st.radio('この行をどう扱いますか？', ['見積に含める', '表紙の集計なので明細には含めない'],
+                          key='review_exception_choice_' + sid + '_' + chosen)
+        reason = st.text_input('原本で確認した内容（必須）', key='review_exception_reason_' + sid + '_' + chosen,
+                               placeholder='例：1ページの作業Aは2ページの内訳をまとめた集計です')
+        if not str(reason).strip():
+            st.caption('原本で行の役割を確認し、上の欄に理由を入れると反映できます。金額だけで判断しないでください。')
+        st.button('この行の扱いを反映する', key='review_exception_apply_' + sid,
+                  disabled=not str(reason).strip(), on_click=apply_inclusion,
+                  args=(st.session_state, rows, chosen, choice == '見積に含める', reason))
+        st.caption('数量や金額の読み取り違いは、下の「1品ずつ入力して直す」で訂正できます。')
+
+
 def _render_items(st, rows, sid):
-    st.subheader(f'② 読み取った品目（{len(rows)}件）',anchor=False)
+    included = [r for r in rows if r.get('採用', True)]
+    st.subheader(f'② 読み取った品目（{len(included)}件）',anchor=False)
     table_slot = st.container()
     with st.expander('品目の読み取りが違うときだけ直す'):
         import pandas as pd
@@ -249,9 +289,10 @@ def _render_items(st, rows, sid):
                 by_id[change['行ID']].update({k:clean(v) for k,v in change.items() if k != '品名'})
             updated = list(by_id.values())
         from item_correction_ui import render_item_correction
-        render_item_correction(st, updated, sid)
+        if not st.session_state.get('_review_quick_correction_' + sid):
+            render_item_correction(st, updated, sid)
     with table_slot:
-        st.html(_items_html(updated))
+        st.html(_items_html([r for r in updated if r.get('採用', True)]))
         _render_spec_comparisons(st, updated, sid)
     return updated
 
@@ -357,6 +398,12 @@ def render_source(st, source, store, index, detail_rows=None):
             st.session_state['review_source_ok_' + sid] = False
             st.checkbox('原本と品目・数量・金額が合っています',key='review_source_ok_'+sid,disabled=True)
             return detail_rows
+        # Exceptions must precede the tall original preview, including when
+        # responsive columns stack vertically on ordinary laptop widths.
+        for item in source.get('aggregate_reconciliations', []):
+            st.info(f"表紙の「{item['name']}」{item['amount']:,}円は、明細の区分・全行・小計と照合しました。二重には数えません。")
+        _source_exception_card(st, rows, source)
+        evidence_slot = st.container()
         compare = 'source_compare_' + sid
         original_pane = 'source_original_' + sid
         columns_css = f'.st-key-{compare} > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"]'
@@ -378,20 +425,31 @@ def render_source(st, source, store, index, detail_rows=None):
                         if c.get('status') in ('variance', 'unverified') and type(c.get('page')) is int), 1)
                     preview(st, source, store, default_page=first_problem)
             with reading_column:
-                return _render_source_details(st, source, reading, rows, detail_rows)
+                return _render_source_details(st, source, reading, rows, detail_rows, evidence_slot=evidence_slot)
 
 
-def _render_source_details(st, source, reading, rows, detail_rows):
+def _render_source_details(st, source, reading, rows, detail_rows, *, evidence_slot=None):
     sid = source['id']
     # A file with extracted priced rows cannot silently become a reference
     # attachment through old UI state or a restored source dictionary.
     source.update(reference_only=False, reference_confirmed=False)
     if any(review.get('status') != 'completed' for review in reading.get('annotation_reviews', [])):
         st.info('欄外の注記は自動確認が終わっていません。左の原本で工事の範囲・除外条件も見比べてから、下の確認にチェックしてください。')
+    if evidence_slot is None:
+        evidence_slot = st.container()
     if rows:
+        from item_correction_ui import render_item_correction
+        if any(any(r.get(k) in (None, '') for k in ('数量', '単位', '原価単価', '原価金額')) for r in rows if r.get('採用', True)):
+            render_item_correction(st, rows, sid, expanded=True)
+            st.session_state['_review_quick_correction_' + sid] = True
+        else:
+            st.session_state['_review_quick_correction_' + sid] = False
         rows = _render_items(st, rows, sid)
         changes = {r['行ID']:r for r in rows}
         detail_rows = [changes.get(r['行ID'], r) for r in detail_rows]
+    from row_evidence_gate import render as render_row_evidence
+    with evidence_slot:
+        row_evidence_ready = render_row_evidence(st, rows, source)
     if source['source_notes']:
         conditions = list(dict.fromkeys(str(note) for note in source['source_notes']
             if re.search(r'除く|除外|別途|対象外|含まれない|含まない|含みません|含んでいません|入っておりません', str(note))))
@@ -437,19 +495,20 @@ def _render_source_details(st, source, reading, rows, detail_rows):
     for label, value in zip(['工事金額（税抜）', '消費税', '合計（税込）'], [net, show_tax, show_gross]):
         st.markdown(f'**{label}　{value:,}円**' if value is not None else f'**{label}　未確認**')
     problems=[]
-    from row_evidence_gate import render as render_row_evidence
-    if not render_row_evidence(st, rows, source):
+    if not row_evidence_ready:
         problems.append('仕様・注記を原本と照合した内容が未入力です。「仕様・注記の読み取りを見比べる」で確認してください。')
     if reading.get('read_failed'): problems.append('原本を読み取れませんでした。画像として保存した原本をもう一度読み込んでください。')
     if source.get('read_errors'): problems.append('読み取れていないページがあります。この見積をもう一度読み込んでください。')
     try:
         from estimate_review import integer,section_tax_matches
-        actual = sum(integer(r['原価金額']) for r in rows) if rows else None
+        actual = sum(integer(r['原価金額']) for r in rows if r.get('採用', True)) if rows else None
     except (ValueError, TypeError, OverflowError):
         actual = None
     if rows:
         bad=[]
         for number,row in enumerate(rows,1):
+            if not row.get('採用', True):
+                continue
             fields=[]
             for field,label in [('数量','数量'),('原価単価','単価'),('原価金額','金額')]:
                 try:

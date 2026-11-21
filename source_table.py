@@ -303,3 +303,129 @@ def reconcile_native_pdf(path, records, summaries):
             row["仕様"] = f"対象：{native[idx - 2]['品名']}"
     summaries = [dict(s, 見積元=vendor, **({"工事名称": project} if project else {})) for s in summaries]
     return native, summaries
+
+
+@isolated_pdf
+def read_native_cover_groups(data, source_name, records, summaries):
+    """Prove cover ledgers against complete physical detail sections, not money alone.
+
+    Unsupported/scanned layouts return no proof. Every priced body line must
+    match one unique extracted row (name, page, quantity, unit, price, amount),
+    bounded by printed section headings and a printed full-page subtotal.
+    """
+    import fitz
+    import unicodedata
+    from decimal import Decimal, InvalidOperation
+    from source_sections import _coherent_net, _integer
+
+    def key(value):
+        return re.sub(r'[\s,]', '', unicodedata.normalize('NFKC', str(value or ''))).replace('−', '-')
+
+    def num(value):
+        try:
+            n = Decimal(str(value).replace(',', ''))
+            return format(n.normalize(), 'f') if n.is_finite() else '?'
+        except (ValueError, InvalidOperation):
+            return '?'
+
+    def row_text(row):
+        return key(row.get('品名')) + num(row.get('数量')) + key(row.get('単位')) + num(row.get('単価')) + num(row.get('金額'))
+
+    priced_bands = set()
+
+    def lines(page):
+        bands = []
+        for word in sorted(page.get_text('words'), key=lambda w: (w[1], w[0])):
+            center = (word[1]+word[3])/2
+            if not bands or abs(bands[-1][0]-center) > 3:
+                bands.append([center, []])
+            bands[-1][1].append(word)
+        result = []
+        for _, words in bands:
+            ordered = sorted(words, key=lambda w: w[0])
+            value = key(''.join(w[4] for w in ordered))
+            # Quantity, price and amount occupy distinct physical words even
+            # when the unit is unusual. Do not enumerate allowed unit names.
+            if sum(bool(re.match(r'^-?\d', key(w[4]))) for w in ordered) >= 3:
+                priced_bands.add(value)
+            result.append(value)
+        return result
+
+    covers = [s for s in summaries if s.get('__source_name') == source_name
+              and s.get('__page_role') in ('cover_summary_page', 'summary_page')]
+    proofs = []
+    with fitz.open(stream=data, filetype='pdf') as doc:
+        pages = [lines(page) for page in doc]
+        for summary in covers:
+            page = _integer(summary.get('__page_number'))
+            net = _coherent_net(summary)
+            if page is None or not 1 <= page <= len(pages) or net is None:
+                continue
+            if sum(s.get('__page_number') == page for s in covers) != 1:
+                continue
+            cover = [r for r in records if r.get('__source_name') == source_name and r.get('__page_number') == page]
+            values = [_integer(r.get('金額')) for r in cover]
+            if not values or None in values or sum(values) != net:
+                continue
+            printed = pages[page-1]
+            if not all(key(r.get('品名')) + str(_integer(r['金額'])) in printed for r in cover):
+                continue
+            if not (any(re.fullmatch(r'税抜合計' + str(net), line) for line in printed)
+                    and any(re.fullmatch(r'消費税(?:\(10%\))?' + str(_integer(summary.get('消費税'))), line) for line in printed)
+                    and any(re.fullmatch(r'税込合計' + str(_integer(summary.get('工事費計'))), line) for line in printed)):
+                continue
+            trades = [r for r in cover if not re.search('諸経費|運搬|福利|処分|養生|値引|調整|荷揚', key(r.get('品名')))]
+            labels = {key(r.get('品名')): r for r in trades}
+            if len(trades) < 2 or len(labels) != len(trades):
+                continue
+            end = min([_integer(s.get('__page_number')) for s in covers
+                       if (_integer(s.get('__page_number')) or 0) > page] or [len(pages)+1])
+            later = [r for r in records if r.get('__source_name') == source_name
+                     and page < (_integer(r.get('__page_number')) or 0) < end]
+            groups = {label: [] for label in labels}
+            checks, used, valid = [], set(), True
+            for number in range(page+1, end):
+                active, section, found, footer = False, None, [], False
+                for line in pages[number-1]:
+                    if line == '工事項目数量単位単価金額':
+                        if active: valid = False
+                        active = True
+                        continue
+                    if not active:
+                        # A priced row outside the bounded table is not silently
+                        # ignored, even if OCR omitted it and totals still tie.
+                        if (line in priced_bands
+                                or re.search(r'\d[^\d\s]*[^\d\s,./:：-][^\d\s]*-?\d', line)
+                                or footer and re.fullmatch(r'[^\d]+-?\d+(?:円)?', line)):
+                            valid = False
+                        continue
+                    if line in labels:
+                        section = line
+                        continue
+                    subtotal = re.fullmatch(r'(?:作業代)?小計(?:\(税抜\))?(\d+)', line)
+                    if subtotal:
+                        amount = int(subtotal[1])
+                        if not found or sum(_integer(r['金額']) for r in found) != amount:
+                            valid = False
+                        checks.append(dict(status='matched', blocking=False, page=number, scope='page', section='',
+                            printed_subtotal=amount, computed_subtotal=amount, difference=0,
+                            reason='原本の列・区分見出し・全行・印字小計を照合しました。', printed_evidence=line,
+                            row_evidence=[dict(page=number, name=r['品名'], amount=_integer(r['金額']), evidence=row_text(r)) for r in found],
+                            method='native_geometry'))
+                        active = False; footer = True
+                        continue
+                    matches = [(i, r) for i, r in enumerate(later) if r.get('__page_number') == number and row_text(r) == line]
+                    if section is None or len(matches) != 1 or matches[0][0] in used:
+                        valid = False; continue
+                    i, row = matches[0]; used.add(i); found.append(row); groups[section].append(row)
+                if active or not footer: valid = False
+            if not valid or len(used) != len(later):
+                continue
+            if not all(len(groups[label]) >= 2 and sum(_integer(r['金額']) for r in groups[label]) == _integer(row['金額'])
+                       for label, row in labels.items()):
+                continue
+            proofs.append(dict(cover_page=page, removed=trades, checks=checks,
+                sections=[dict(label=labels[label]['品名'], rows=group) for label, group in groups.items()],
+                groups=[dict(name=row['品名'], amount=_integer(row['金額']), cover_page=page,
+                             detail_pages=sorted({r['__page_number'] for r in groups[label]})) for label, row in labels.items()]))
+    return proofs

@@ -292,7 +292,7 @@ def _review_group_markup(group, total, *, allow_low_price_cap_override=False):
         allow_low_price_cap_override=allow_low_price_cap_override)
 
 
-def _natural_price_warnings(source_rows, priced_rows, targets):
+def _natural_price_warnings(source_rows, priced_rows, targets, *, substantive_only=False):
     """Flag awkward customer prices or a small item carrying most of the profit."""
     warnings = []
     positive = []
@@ -311,11 +311,12 @@ def _natural_price_warnings(source_rows, priced_rows, targets):
             step = 100 if rate >= 10000 else 50 if rate >= 1000 else 10 if rate >= 100 else 1
             def neat(value):
                 return abs(value / step - round(value / step)) < 1e-7
-            if not neat(rate) and not neat(rate - base_rate):
+            if not substantive_only and not neat(rate) and not neat(rate - base_rate):
                 warnings.append(f'{name}の見積単価に端数があります（{rate:,.2f}円）。')
         positive.append((name, cost, max(0, markup)))
-    from round_pricing import price_flags
-    warnings.extend(message for _, message in price_flags(source_rows, priced_rows.to_dict('records')))
+    from round_pricing import price_findings
+    warnings.extend(item['message'] for item in price_findings(source_rows, priced_rows.to_dict('records'))
+                    if not substantive_only or item['kind'] != 'unit_tick')
     total_cost = sum(cost for _, cost, _ in positive)
     total_markup = sum(markup for _, _, markup in positive)
     if len(positive) >= 2 and total_cost > 0 and total_markup > 0:
@@ -709,7 +710,18 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
             warnings = (_natural_price_warnings(accepted,pd.DataFrame(options['no_discount']['rows']),targets)
                         if options['no_discount'] else [])
             options['warnings'] = warnings
-            options['requires_confirmation'] = bool(warnings) or options['no_discount'] is None or metadata.get('個別単価案') is not None
+            substantive = (_natural_price_warnings(accepted,pd.DataFrame(options['no_discount']['rows']),targets,substantive_only=True)
+                           if options['no_discount'] else [])
+            options['blocking_warnings'] = substantive
+            options['rounding_notes'] = [note for note in warnings if note not in substantive]
+            exact = options['no_discount']
+            exact_matches = bool(exact and exact['totals']['顧客値引き'] == 0
+                and exact['totals']['最終利益'] == options['desired_profit']
+                and exact['totals']['税抜売価'] == exact['totals']['仕入原価'] + options['desired_profit'])
+            options['requires_confirmation'] = (bool(substantive) or not exact_matches
+                or metadata.get('個別単価案') is not None or bool(requested_discount and warnings))
+            options['ordinary_exact'] = bool(exact_matches and not options['requires_confirmation'])
+            options['comparison_requested'] = bool(requested_discount or metadata.get('個別単価案') is not None)
             entries = []
             for key, variant in [('no_discount',options['no_discount']),('rounding_discount',options['proposal'])]:
                 if variant:
@@ -728,9 +740,11 @@ def build_draft(original_rows, edited_rows, sources, targets=(), discount=0, met
                     pricing_choice=choice_for(options,pricing_choice['id']=='rounding_discount')
             plan = selected(options, pricing_choice)
             if options['requires_confirmation'] and pricing_choice is None:
-                issue('利益配分案', [], '端数単価または利益の偏りを確認し、値引きなし・値引き調整のどちらかを選んでください。', '停止')
+                issue('利益配分案', [], '希望額との差や単価・利益配分を確認してください。比較欄で確認した内容に合う案を選ぶと進めます。', '停止')
             elif pricing_choice is not None:
                 selected_plan=next(e for e in entries if e['id']==('rounding_discount' if pricing_choice.get('mode') == 'discount_adjustment' else 'no_discount'))
+            if plan['totals']['最終利益'] != options['desired_profit']:
+                issue('希望額との差', [], '上乗せ額が希望額と一致しません。上乗せ額を見直すか、希望額に合う比較案を明示して選んでください。', '停止')
             allocated = pd.DataFrame(plan['rows'])
             discount = plan['totals']['顧客値引き']
             if discount and not str(metadata.get('値引き理由', '')).strip():

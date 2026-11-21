@@ -54,13 +54,12 @@ class ProfitProposalsTest(unittest.TestCase):
         self.assertEqual([row['上乗せ額'] for row in draft['payload']['計算明細']], [60000, 60000])
         self.assertEqual(draft['payload']['合計']['粗利益'], 120000)
 
-    def test_awkward_exact_amount_blocks_approval_and_offers_two_clear_choices(self):
+    def test_cosmetic_exact_amount_keeps_optional_choices_without_extra_approval(self):
         draft = draft_for(self.ODD, 100001)
-        self.assertTrue(draft['profit_plan']['requires_confirmation'])
-        self.assertIn('利益配分案', [issue['種類'] for issue in draft['unresolved']])
-        self.assertFalse(preview_allowed(draft))
-        with self.assertRaises(ValueError):
-            approve(draft, '確認者')
+        self.assertFalse(draft['profit_plan']['requires_confirmation'])
+        self.assertNotIn('利益配分案', [issue['種類'] for issue in draft['unresolved']])
+        self.assertTrue(preview_allowed(draft))
+        self.assertTrue(approve(draft, '確認者'))
         self.assertEqual(draft['payload']['値引き'], 0)
         options = {option['id']: option for option in draft['profit_plan']['options']}
         self.assertEqual(options['no_discount']['markup'], 100001)
