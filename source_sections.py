@@ -219,21 +219,9 @@ def reconcile_sections(records, summaries, source_name):
                     if body and all(_integer(d['金額'])>=0 for d in body) and sum(_integer(d['金額']) for d in body)==amount:
                         details=body;values=[_integer(d['金額']) for d in body]
                         repeated_discounts=negatives
-            elif (not shared and not details and all(any(
-                    _integer(r.get('金額'))==_integer(i.get('金額'))
-                    and _item_key(r.get('品名'))==_item_key(i.get('工事項目',i.get('品名')))
-                    for r in cover) for i in trade_items)):
-                # A broad AI trade label may differ from the printed heading.
-                # A unique, complete physical detail page whose total exactly
-                # matches this verified cover heading can prove its aggregate.
-                # Never search arbitrary subsets of rows for a matching amount.
-                pages={_integer(r.get('__page_number')) for r in later}
-                groups=[[r for r in later if _integer(r.get('__page_number'))==p] for p in pages]
-                matches=[g for g in groups if g and all(_integer(r.get('金額')) is not None for r in g)
-                         and sum(_integer(r.get('金額')) for r in g)==amount]
-                same_amount=sum(_integer(i.get('金額'))==amount for i in trade_items)
-                if len(matches)==1 and same_amount==1:
-                    details=matches[0];values=[_integer(r.get('金額')) for r in details]
+            # A complete page with the same total alone cannot prove that a
+            # cover row is its aggregate. Native section evidence is reconciled
+            # separately; ambiguous broad classifications stay for review.
             aggregate=(not shared and _integer(row.get('数量'))==1 and str(row.get('単位') or '')=='式'
                        and details and all(v is not None for v in values) and sum(values)==amount)
             if aggregate:
@@ -278,3 +266,24 @@ def reconcile_sections(records, summaries, source_name):
                        '__source_name':source_name,'__page_number':page,'__summary_only':True,
                        '抽出元テキスト範囲':summary.get('抽出元テキスト範囲')})
     return output
+
+
+def reconcile_native_cover_sections(records, summaries, source_name, data):
+    """Remove only native-proved aggregates; retain every actual fee/detail."""
+    from source_table import read_native_cover_groups
+    proofs = read_native_cover_groups(data, source_name, records, summaries)
+    output = [dict(r) for r in records]
+    summaries = [dict(s) for s in summaries]
+    for proof in proofs:
+        for row in proof['removed']:
+            if row in output:
+                output.remove(row)
+        for section in proof['sections']:
+            for row in output:
+                if row in section['rows'] and not str(row.get('部位') or '').strip():
+                    row['部位'] = section['label']
+        for summary in summaries:
+            if summary.get('__source_name') == source_name and summary.get('__page_number') == proof['cover_page']:
+                summary['表紙集計照合'] = proof['groups']
+                summary['__subtotal_checks'] = [*summary.get('__subtotal_checks', []), *proof['checks']]
+    return output, summaries

@@ -50,7 +50,7 @@ from template_fill_test import TEMPLATE_FILL_TEST_NAME, build_template_fill_test
 import template_fill_test_v2 as tfv2
 from horizontal_estimate_flow import build_horizontal_estimate
 from estimate_review import REVIEW_MODE
-from review_ui import preserve_uploads, capture_extraction, render_review
+from review_ui import preserve_uploads, capture_extraction, render_review, vault as review_vault
 from legacy_exports import queue_draft_export, render_draft_exports
 from work_effects import cue, render as render_work_effects
 from product_design import STYLE as PRODUCT_STYLE, loading_panel, ready_panel
@@ -736,7 +736,8 @@ if uploaded_files:
                     summary_sources.sort(key=lambda row: source_order.get(row.get('__source_name'), n_files))
                     from extraction_batch import reconcile_document_results
                     all_extracted_data,summary_sources=reconcile_document_results(
-                        st.session_state['_review_sources'],all_extracted_data,summary_sources)
+                        st.session_state['_review_sources'],all_extracted_data,summary_sources,
+                        original_reader=lambda source: review_vault(st).read(source['id']))
                     for source, _ in prepared_uploads:
                         source_result = (
                             [r for r in summary_sources if r.get('__source_name') == source['name']],

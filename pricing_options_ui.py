@@ -42,7 +42,7 @@ def reconcile_inputs(state, rows, targets, tax_rate, requested_discount, roundin
     return False
 
 
-def render_options(st, options):
+def _render_comparison(st, options):
     if not options:
         return
     if reconcile_choice(st.session_state, options):
@@ -53,8 +53,8 @@ def render_options(st, options):
     st.markdown('#### 単価の整え方を選ぶ')
     st.caption('通常は値引きなしです。案を見るだけでは適用されません。最終利益は指定した金額を守ります。')
     if options.get('requires_confirmation'):
-        st.warning('端数単価または利益の偏りがあります。案を選ぶまで確定・出力しません。')
-        for warning in options.get('warnings',[]):
+        st.warning('このままでは進めません。希望額との差・対象の単価・利益配分を見て、下の案を選んでください。')
+        for warning in options.get('blocking_warnings', options.get('warnings', [])):
             st.caption(warning)
     alternatives = []
     if options['no_discount']:
@@ -89,3 +89,18 @@ def render_options(st, options):
         if st.button('値引きなしにする', disabled=not bool(options['no_discount']), key='review_reject_discount'):
             set_choice(st.session_state, choice_for(options, False))
             st.rerun()
+
+
+def render_options(st, options, *, compact=False):
+    if not options:
+        return
+    if not compact:
+        return _render_comparison(st, options)
+    choice = st.session_state.get(KEY)
+    adopted = bool(choice and choice.get('mode') == 'discount_adjustment')
+    if options.get('ordinary_exact') and not adopted:
+        st.caption('希望の上乗せ額に、値引きなしで合わせています。' +
+                   ('一部の単価に端数がありますが、数量×単価・明細合計・税の計算は一致しています。' if options.get('rounding_notes') else ''))
+    with st.expander('単価・値引きの比較を見る（必要なときだけ）',
+                     expanded=bool(options.get('requires_confirmation') or options.get('comparison_requested') or adopted)):
+        _render_comparison(st, options)

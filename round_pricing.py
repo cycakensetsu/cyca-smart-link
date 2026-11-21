@@ -96,8 +96,8 @@ def custom_candidate(rows, targets, base, settings):
     return candidate
 
 
-def price_flags(source_rows, priced_rows):
-    """Conservative display checks, not a claim about market or legal rates."""
+def price_findings(source_rows, priced_rows):
+    """Typed findings keep cosmetic ticks distinct from substantive review."""
     flags = []
     if not any(float(p['見積金額']) > float(s['原価金額']) for s, p in zip(source_rows, priced_rows)):
         return flags
@@ -107,15 +107,22 @@ def price_flags(source_rows, priced_rows):
         rate = Decimal(str(priced['見積単価']))
         if welfare(source):
             if str(source['単位']).strip() in ('式', '一式') and rate % 1000:
-                flags.append((source['行ID'], f"{source['品名']}が{rate:,.0f}円です。算定根拠のある端数か、丸い金額へ調整するか確認してください。"))
+                flags.append(dict(row_id=source['行ID'], kind='welfare_basis',
+                    message=f"{source['品名']}が{rate:,.0f}円です。算定根拠のある端数か、丸い金額へ調整するか確認してください。"))
         elif (str(source['単位']).strip() not in ('式', '一式')
               and priced['見積金額'] > source['原価金額']
               and (rate < 100 or rate % (50 if rate < 1000 else 100))):
-            flags.append((source['行ID'], f"{source['品名']}の単価{rate:,.2f}円を確認してください。刻みを整える案と、そのままの案を比較できます。"))
+            flags.append(dict(row_id=source['行ID'], kind='low_unit_price' if rate < 100 else 'unit_tick',
+                message=f"{source['品名']}の単価{rate:,.2f}円を確認してください。刻みを整える案と、そのままの案を比較できます。"))
     return flags
 
 
-def render_settings(st, rows, targets, digest):
+def price_flags(source_rows, priced_rows):
+    """Compatibility view: preserve every existing display message."""
+    return [(item['row_id'], item['message']) for item in price_findings(source_rows, priced_rows)]
+
+
+def render_settings(st, rows, targets, digest, *, compact=False):
     accepted = [r for r in rows if r.get('採用', True)]
     flags = []
     try:
@@ -125,8 +132,9 @@ def render_settings(st, rows, targets, digest):
             flags = price_flags(accepted, baseline)
     except (ValueError, TypeError, KeyError):
         baseline = []
-    if flags:
-        st.warning('単価や法定福利費に確認したい端数があります。調整して値引きするか、そのまま作るか選んでください。')
+    important = [item for item in price_findings(accepted, baseline) if item['kind'] != 'unit_tick'] if baseline else []
+    if flags and (not compact or important):
+        st.warning('対象の単価・法定福利費の根拠を確認してください。下で比較案を見るか、元の配分で進むかを明示して選びます。' if compact else '単価や法定福利費に確認したい端数があります。調整して値引きするか、そのまま作るか選んでください。')
         for _, message in flags:
             st.caption(message)
         for floor in (150, 200):
@@ -134,7 +142,7 @@ def render_settings(st, rows, targets, digest):
                 if st.button(f'低額単価を{floor}円に整える案を見る', key=f'review_round_quick_{floor}'):
                     st.session_state['review_round_enabled'] = True
                     st.session_state['review_round_low_floor'] = floor
-    with st.expander('単価を個別に整える（比較案のみ）', expanded=bool(flags)):
+    with st.expander('単価を個別に整える（必要なときだけ）' if compact else '単価を個別に整える（比較案のみ）', expanded=bool(important or st.session_state.get('review_round_enabled')) if compact else bool(flags)):
         if not st.checkbox('丸い単価の比較案を作る', key='review_round_enabled'):
             return None
         st.caption('指定利益まで不足する場合は、単価未指定の実数量工事へ丸い単価で配分します。単価倍率上限を超える案も比較できます。適用は後の「この値引き案を採用」で行います。法定福利費は自動で増額しません。25,000円・30,000円などへ変える場合も、算定根拠を確認してください。')

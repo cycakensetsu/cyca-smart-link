@@ -31,8 +31,8 @@ def apply_correction(state, current_rows, row_id, fields):
     state['_review_export_ready'] = False
 
 
-def render_item_correction(st, rows, sid):
-    with st.expander('1品ずつ入力して直す（表の操作が難しいとき）'):
+def render_item_correction(st, rows, sid, *, expanded=False):
+    with st.expander('1品ずつ入力して直す（表の操作が難しいとき）', expanded=expanded):
         options = {r['行ID']:r for r in rows}
         if not options:
             return
@@ -61,3 +61,23 @@ def render_item_correction(st, rows, sid):
                     st.error(str(exc))
                 else:
                     st.rerun()
+
+
+def apply_inclusion(state, rows, row_id, include, reason):
+    """An explicit source-bound choice; never delete or alter the original row."""
+    if not isinstance(include, bool) or not str(reason or '').strip():
+        raise ValueError('原本を確認した理由を入力してください。')
+    own = {r['行ID']: r for r in rows}
+    full = copy.deepcopy(state.get('_review_assistant_rows', state.get('_review_original_rows', [])))
+    if row_id not in own or row_id not in {r['行ID'] for r in full}:
+        raise ValueError('確認する品目を選び直してください。')
+    for row in full:
+        if row['行ID'] == row_id:
+            row['採用'] = include
+            row['除外理由'] = '' if include else str(reason).strip()
+    state['_review_assistant_rows'] = full
+    state['_review_editor_epoch'] = state.get('_review_editor_epoch', 0) + 1
+    state['review_source_ok_' + own[row_id]['原本ID']] = False
+    for key in ('_review_preview', '_review_approval', '_review_result', '_review_proposal', '_vault_archive'):
+        state.pop(key, None)
+    state['_review_export_ready'] = False

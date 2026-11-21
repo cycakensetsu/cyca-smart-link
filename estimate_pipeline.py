@@ -469,6 +469,7 @@ def normalize_summary_data(summary_sources: List[Dict]) -> Dict:
                 "見積区分確認": bool(source.get("__quote_scope_verified")),
                 "工事名称": normalize_text(_first_present(source, ["工事名称", "工事名", "件名", "project_name"], "")),
                 "工事項目": source_items,
+                "表紙集計照合": source.get("表紙集計照合", []),
                 "原本備考": source_notes,
                 "annotation_review": dict(annotation_review) if annotation_review else None,
                 "小計": parse_money(_first_present(source, ["小計", "subtotal"])),
