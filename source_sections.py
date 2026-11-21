@@ -268,22 +268,30 @@ def reconcile_sections(records, summaries, source_name):
     return output
 
 
-def reconcile_native_cover_sections(records, summaries, source_name, data):
+def reconcile_native_cover_sections(records, summaries, source_name, data, *, diagnostics=None):
     """Remove only native-proved aggregates; retain every actual fee/detail."""
     from source_table import read_native_cover_groups
-    proofs = read_native_cover_groups(data, source_name, records, summaries)
+    if diagnostics is None:
+        proofs = read_native_cover_groups(data, source_name, records, summaries)
+    else:
+        result = read_native_cover_groups(data, source_name, records, summaries, explain=True)
+        proofs = result['proofs']
+        diagnostics.extend(result['diagnostics'])
     output = [dict(r) for r in records]
+    removed = set()
     summaries = [dict(s) for s in summaries]
     for proof in proofs:
-        for row in proof['removed']:
-            if row in output:
-                output.remove(row)
+        # Worker results cross a pickle boundary. Whole-dict equality is not
+        # row identity: an unrelated NaN field compares unequal after transfer.
+        # Positions refer to this exact input and do not weaken physical proof.
+        removed.update(proof['removed_indices'])
         for section in proof['sections']:
-            for row in output:
-                if row in section['rows'] and not str(row.get('部位') or '').strip():
+            for index in section['row_indices']:
+                row = output[index]
+                if not str(row.get('部位') or '').strip():
                     row['部位'] = section['label']
         for summary in summaries:
             if summary.get('__source_name') == source_name and summary.get('__page_number') == proof['cover_page']:
                 summary['表紙集計照合'] = proof['groups']
                 summary['__subtotal_checks'] = [*summary.get('__subtotal_checks', []), *proof['checks']]
-    return output, summaries
+    return [row for index, row in enumerate(output) if index not in removed], summaries

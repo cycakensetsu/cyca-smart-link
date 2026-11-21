@@ -214,12 +214,16 @@ def reconcile_document_results(sources,records,summaries, *, original_reader=Non
     summaries=[reconcile_printed_totals(s) for s in summaries]
     for source in sources:
         name=source['name']
+        source['aggregate_check_diagnostics'] = []
         if original_reader is not None and name.lower().endswith('.pdf'):
             from source_sections import reconcile_native_cover_sections
             try:
-                records,summaries=reconcile_native_cover_sections(records,summaries,name,original_reader(source))
+                records,summaries=reconcile_native_cover_sections(records,summaries,name,original_reader(source),
+                    diagnostics=source['aggregate_check_diagnostics'])
             except (ValueError, RuntimeError, OSError, AttributeError):
-                pass  # Unsupported native layout retains all rows for review.
+                source['aggregate_check_diagnostics'] = [dict(status='unverified',
+                    reason='original_verification_unavailable', page=None)]
+                # Retain all rows; do not expose exception text or document data.
         records,summaries=reconcile_financial_pages(records,summaries,name)
         records=reconcile_sections(records,summaries,name)
         records=include_printed_discount(records,summaries,name,source['pages'])

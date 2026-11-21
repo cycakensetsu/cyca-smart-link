@@ -306,7 +306,7 @@ def reconcile_native_pdf(path, records, summaries):
 
 
 @isolated_pdf
-def read_native_cover_groups(data, source_name, records, summaries):
+def read_native_cover_groups(data, source_name, records, summaries, *, explain=False):
     """Prove cover ledgers against complete physical detail sections, not money alone.
 
     Unsupported/scanned layouts return no proof. Every priced body line must
@@ -351,32 +351,49 @@ def read_native_cover_groups(data, source_name, records, summaries):
             result.append(value)
         return result
 
+    def explicit_role(summary):
+        # Accept an already supplied alias only inside the physical proof.
+        # Do not promote it globally into less strict aggregate heuristics.
+        return next((summary.get(field) for field in
+            ('__page_role', 'page_role', 'role', 'ページ種別')
+            if summary.get(field) not in (None, '')), None)
     covers = [s for s in summaries if s.get('__source_name') == source_name
-              and s.get('__page_role') in ('cover_summary_page', 'summary_page')]
-    proofs = []
+              and explicit_role(s) in ('cover_summary_page', 'summary_page')]
+    proofs, diagnostics = [], []
+    positions = {id(row): index for index, row in enumerate(records)}
+    def note(reason, page=None, status='unverified'):
+        diagnostics.append(dict(status=status, reason=reason, page=page))
+    if not covers:
+        note('cover_classification_missing')
     with fitz.open(stream=data, filetype='pdf') as doc:
         pages = [lines(page) for page in doc]
         for summary in covers:
             page = _integer(summary.get('__page_number'))
             net = _coherent_net(summary)
             if page is None or not 1 <= page <= len(pages) or net is None:
+                note('cover_page_or_totals_unverified', page)
                 continue
             if sum(s.get('__page_number') == page for s in covers) != 1:
+                note('cover_page_ambiguous', page)
                 continue
             cover = [r for r in records if r.get('__source_name') == source_name and r.get('__page_number') == page]
             values = [_integer(r.get('金額')) for r in cover]
             if not values or None in values or sum(values) != net:
+                note('cover_ledger_incomplete', page)
                 continue
             printed = pages[page-1]
             if not all(key(r.get('品名')) + str(_integer(r['金額'])) in printed for r in cover):
+                note('cover_rows_not_printed', page)
                 continue
             if not (any(re.fullmatch(r'税抜合計' + str(net), line) for line in printed)
                     and any(re.fullmatch(r'消費税(?:\(10%\))?' + str(_integer(summary.get('消費税'))), line) for line in printed)
                     and any(re.fullmatch(r'税込合計' + str(_integer(summary.get('工事費計'))), line) for line in printed)):
+                note('cover_totals_not_printed', page)
                 continue
             trades = [r for r in cover if not re.search('諸経費|運搬|福利|処分|養生|値引|調整|荷揚', key(r.get('品名')))]
             labels = {key(r.get('品名')): r for r in trades}
             if len(trades) < 2 or len(labels) != len(trades):
+                note('cover_sections_ambiguous', page)
                 continue
             end = min([_integer(s.get('__page_number')) for s in covers
                        if (_integer(s.get('__page_number')) or 0) > page] or [len(pages)+1])
@@ -420,12 +437,17 @@ def read_native_cover_groups(data, source_name, records, summaries):
                     i, row = matches[0]; used.add(i); found.append(row); groups[section].append(row)
                 if active or not footer: valid = False
             if not valid or len(used) != len(later):
+                note('detail_evidence_incomplete', page)
                 continue
             if not all(len(groups[label]) >= 2 and sum(_integer(r['金額']) for r in groups[label]) == _integer(row['金額'])
                        for label, row in labels.items()):
+                note('section_totals_mismatch', page)
                 continue
+            note('matched', page, 'matched')
             proofs.append(dict(cover_page=page, removed=trades, checks=checks,
-                sections=[dict(label=labels[label]['品名'], rows=group) for label, group in groups.items()],
+                removed_indices=[positions[id(row)] for row in trades],
+                sections=[dict(label=labels[label]['品名'], rows=group,
+                               row_indices=[positions[id(row)] for row in group]) for label, group in groups.items()],
                 groups=[dict(name=row['品名'], amount=_integer(row['金額']), cover_page=page,
                              detail_pages=sorted({r['__page_number'] for r in groups[label]})) for label, row in labels.items()]))
-    return proofs
+    return dict(proofs=proofs, diagnostics=diagnostics) if explain else proofs

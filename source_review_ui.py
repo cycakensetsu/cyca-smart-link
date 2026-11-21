@@ -213,6 +213,23 @@ def _source_exception_card(st, rows, source):
         if mismatch:
             st.markdown(f'**先に品目を確認してください。品目の合計 {actual:,.0f}円 ／ 原本 {net:,}円 ／ 差 {abs(actual-net):,.0f}円。**')
             st.write('表紙の集計を明細にも数えていないか、原本のページを見比べてください。本物の工事・諸経費は残します。')
+            notices = {
+                'cover_classification_missing': '表紙の区分',
+                'cover_page_or_totals_unverified': '表紙のページと税抜・消費税・税込の対応',
+                'cover_page_ambiguous': '表紙と集計のページ対応',
+                'cover_ledger_incomplete': '表紙の全項目と合計の対応',
+                'cover_rows_not_printed': '表紙の品目名と金額の記載',
+                'cover_totals_not_printed': '表紙に印字された合計',
+                'cover_sections_ambiguous': '表紙の工事区分と明細の対応',
+                'detail_evidence_incomplete': '明細の全行・区分・小計との対応',
+                'section_totals_mismatch': '工事区分ごとの明細合計',
+                'original_verification_unavailable': '原本ファイルとの照合',
+            }
+            pending = list(dict.fromkeys(notices.get(item.get('reason'), '原本と明細の対応')
+                for item in source.get('aggregate_check_diagnostics', [])
+                if item.get('status') != 'matched'))
+            if pending:
+                st.caption('自動で確認できなかった点：' + '、'.join(pending) + '。原本を見比べて確認してください。')
         for row in excluded:
             st.caption(f"計算から外した品目：{row['品名']} ／ {row.get('除外理由', '')}")
         options = {r['行ID']: r for r in rows}
