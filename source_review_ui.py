@@ -196,9 +196,11 @@ def _render_spec_comparisons(st, rows, sid):
 def _source_exception_card(st, rows, source):
     """Show mismatches and a narrow, explicit row action before the long list."""
     from item_correction_ui import apply_inclusion
+    if not rows:
+        return
     selected = [r for r in rows if r.get('採用', True)]
     try:
-        actual = sum(Decimal(str(r['原価金額'])) for r in selected)
+        actual = sum((Decimal(str(r['原価金額'])) for r in selected), Decimal(0))
         if not actual.is_finite(): actual = None
     except (ValueError, TypeError, KeyError, ArithmeticError):
         actual = None

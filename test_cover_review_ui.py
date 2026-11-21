@@ -56,3 +56,17 @@ st.session_state['source_result']=source
         with self.assertRaises(ValueError):apply_inclusion(state,[row],'a',False,'')
         with self.assertRaises(ValueError):apply_inclusion(state,[row],'other',False,'原本照合')
         self.assertTrue(state['_review_original_rows'][0]['採用'])
+
+    def test_empty_and_all_excluded_rows_do_not_crash_exception_card(self):
+        for rows in ([], [dict(行ID='fictional',品名='架空の集計',原価金額=500,採用=False,除外理由='原本で集計と照合')]):
+            with self.subTest(rows=rows):
+                app=f"""
+import streamlit as st
+from source_review_ui import _source_exception_card
+_source_exception_card(st, {rows!r}, dict(id='fictional',net_total=500))
+"""
+                at=AppTest.from_string(app).run()
+                self.assertFalse(at.exception)
+                self.assertEqual(len(at.selectbox), 1 if rows else 0)
+                if rows:
+                    self.assertTrue(any('品目の合計 0円' in x.value for x in at.markdown))
